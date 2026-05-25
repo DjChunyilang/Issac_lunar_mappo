@@ -1,0 +1,11 @@
+experiment:
+  name: exp_002_oracle_ablation
+  seed: 11
+  num_envs: 32
+  device: cuda
+  total_steps: 1024
+  rollout_steps: 32
+
+reward:
+  oracle_weight: 0.0
+

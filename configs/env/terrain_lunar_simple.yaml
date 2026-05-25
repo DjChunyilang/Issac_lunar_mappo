@@ -1,0 +1,10 @@
+terrain:
+  type: lunar_heightfield_proxy
+  use_handcrafted_features: true
+  features:
+    - slope
+    - roughness
+    - local_height_diff
+    - obstacle_density
+    - traversable_width
+

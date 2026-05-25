@@ -1,0 +1,14 @@
+experiment:
+  name: exp_003_terrain_ablation
+  seed: 13
+  num_envs: 32
+  device: cuda
+  total_steps: 1024
+  rollout_steps: 32
+
+terrain:
+  type: lunar_heightfield_proxy
+  amplitude: 0.18
+  wavelength: 4.0
+  roughness_scale: 1.0
+  traversability_slope_scale: 0.6

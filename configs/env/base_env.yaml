@@ -1,0 +1,18 @@
+simulation:
+  simulator: IsaacSim
+  framework: IsaacLab
+  device: cuda
+  headless: true
+  num_envs: 32
+  physics_dt: 0.05
+  control_decimation: 4
+  episode_length_s: 20.0
+
+task:
+  name: Isaac-MultiRover-Gathering-Direct-v0
+  n_agents: 4
+  scene_dim: "2.5D/3D"
+  explicit_goal_in_execution: false
+  oracle_optimal_gather_point_in_training: true
+  docking_considered: false
+

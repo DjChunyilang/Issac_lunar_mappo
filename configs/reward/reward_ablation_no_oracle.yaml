@@ -1,0 +1,10 @@
+reward:
+  weights:
+    gather: 1.0
+    oracle: 0.0
+    energy: 0.02
+    safety: 1.0
+    motion: 0.05
+    consistency: 0.02
+    terminal: 1.0
+

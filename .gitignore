@@ -1,0 +1,12 @@
+.venv_isaaclab/
+external/IsaacLab/
+outputs/runs/
+outputs/checkpoints/*.pt
+outputs/logs/**
+outputs/videos/**
+outputs/figures/**
+runs/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/

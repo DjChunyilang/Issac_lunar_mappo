@@ -1,0 +1,15 @@
+algorithm:
+  name: MAPPO
+  library: SKRL
+  framework: IsaacLab
+  shared_actor: true
+  centralized_critic: true
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  entropy_coef: 0.01
+  value_loss_coef: 0.5
+  ppo_epochs: 2
+  rollout_steps: 64
+  learning_rate: 0.0003
+

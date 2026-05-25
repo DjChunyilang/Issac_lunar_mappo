@@ -1,0 +1,24 @@
+reward:
+  weights:
+    gather: 1.0
+    oracle: 0.5
+    energy: 0.02
+    safety: 1.0
+    motion: 0.05
+    consistency: 0.02
+    terminal: 1.0
+  coefficients:
+    dmax_progress: 2.0
+    dispersion_progress: 1.0
+    oracle_mean_distance_progress: 1.5
+    path_length: 0.2
+    slope_cost: 0.0
+    turn_cost: 0.05
+    terrain_cost: 0.0
+    obstacle_collision: 8.0
+    inter_agent_collision: 8.0
+    near_distance: 0.5
+    subgoal_turn: 0.05
+    subgoal_stagnation: 0.1
+    action_consistency: 0.02
+

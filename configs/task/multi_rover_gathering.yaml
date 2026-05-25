@@ -1,0 +1,26 @@
+planner:
+  action_type: local_subgoal_polar
+  action_dim: 2
+  action_fields: [rho, beta]
+  output_coordinate: body_relative
+  rho_max: 1.2
+  beta_max: 1.57079632679
+
+trajectory_generator:
+  input_type: local_subgoal
+  output_type: time_stamped_trajectory
+  n_trajectory_points: 8
+  geometry_method: line
+  terrain_height_query: false
+  assign_timestamp: true
+  assign_reference_speed: true
+  reference_speed: 0.8
+
+low_level_control:
+  first_stage_mode: simplified_velocity_tracking
+  command_type: body_twist
+  command_fields: [v_cmd, omega_cmd]
+  isaac_articulation_interface: proxy_unicycle
+  max_linear_speed: 1.0
+  max_angular_speed: 2.5
+

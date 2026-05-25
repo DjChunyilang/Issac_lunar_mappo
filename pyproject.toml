@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multi-rover-gathering-isaac"
+version = "0.1.0"
+description = "First-stage multi-rover gathering task scaffold for Isaac Sim / Isaac Lab and SKRL-MAPPO."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "gymnasium>=0.29",
+  "numpy>=1.26",
+  "pyyaml>=6.0",
+  "torch>=2.10",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["source/lunar_rover_tasks"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+

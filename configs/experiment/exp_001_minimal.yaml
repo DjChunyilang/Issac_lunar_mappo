@@ -1,0 +1,29 @@
+experiment:
+  name: exp_001_minimal_proxy
+  seed: 7
+  num_envs: 32
+  device: cuda
+  total_steps: 512
+  rollout_steps: 32
+  log_dir: outputs/logs/exp_001_minimal
+  checkpoint_dir: outputs/checkpoints
+  run_dir: outputs/runs
+  save_checkpoint: true
+  require_skrl_import: true
+
+simulation:
+  episode_length_s: 20.0
+  physics_dt: 0.05
+  control_decimation: 4
+
+task:
+  n_agents: 4
+
+planner:
+  rho_max: 1.2
+  beta_max: 1.57079632679
+
+algorithm:
+  gamma: 0.99
+  learning_rate: 0.0005
+
