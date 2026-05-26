@@ -589,6 +589,96 @@ GIF: 1280 x 720, 16K, mean_rgb [221.21, 221.22, 218.96]
 
 结论：当前架构已支持低精度 proxy 训练、无渲染快速验证、Isaac Sim PhysX 官方轮式资产高保真评估，以及显式渲染展示。PhysX 尚未进入正式训练 loop。
 
+## Proxy 策略初步收敛
+
+目标：在简化 PyTorch proxy 环境中得到可复现的多车集合初步收敛 checkpoint。验收标准采用趋势优先口径：固定评估 256 个 env、100 步 rollout 后，`final_dmax / initial_dmax <= 0.4`，成功率记录但不作为硬门槛。
+
+本轮新增：
+
+```text
+configs/experiment/exp_004_proxy_convergence.yaml
+scripts/train_proxy_convergence.py
+scripts/evaluate_proxy_policy.py
+tests/test_convergence_tools.py
+```
+
+实现要点：
+
+- 配置解析已支持 `reward.weights`、`reward.coefficients`、`success_thresholds`、`low_level_control` 覆盖。
+- 奖励新增默认关闭的绝对紧凑度 shaping：`dmax_level`、`dispersion_level`。
+- 终端奖惩改为配置项：`success_bonus`、`failure_penalty`。
+- 收敛训练入口使用 shared actor + centralized critic checkpoint 格式，兼容现有 `play.py` 和 PhysX 评估加载。
+- warm-start 使用 scripted gathering controller 做行为克隆；随后执行 PPO 微调，并按 deterministic eval 的 dmax ratio 保存 best checkpoint。
+
+训练命令：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_proxy_convergence.py \
+  --config configs/experiment/exp_004_proxy_convergence.yaml \
+  --device cuda \
+  --bc-steps 200
+```
+
+说明：配置默认保留 `bc_steps: 2000`，但 2000-step warm-start 在当前实现下耗时偏高。本轮为在 2 小时内拿到初步收敛结果，实际采用 `--bc-steps 200`；该 run 已达到验收标准。
+
+训练摘要：
+
+```text
+device: cuda
+bc_steps: 200
+ppo_updates: 15
+best_phase: bc
+initial_dmax: 7.2455
+final_dmax: 0.8875
+dmax_reduction_ratio: 0.1225
+initial_dispersion: 12.3021
+final_dispersion: 0.1485
+mean_reward: 0.6207
+success_rate: 0.9453
+collision_rate: 0.0586
+timeout_rate: 0.0
+```
+
+独立验收命令：
+
+```bash
+.venv_isaaclab/bin/python scripts/evaluate_proxy_policy.py \
+  --config configs/experiment/exp_004_proxy_convergence.yaml \
+  --checkpoint outputs/checkpoints/exp_004_proxy_converged.pt \
+  --device cuda \
+  --num-envs 256 \
+  --steps 100 \
+  --output outputs/logs/exp_004_proxy_convergence/final_eval.json
+```
+
+独立验收结果：
+
+```text
+initial_dmax: 7.2260
+final_dmax: 0.8900
+dmax_reduction_ratio: 0.1232
+initial_dispersion: 12.2414
+final_dispersion: 0.1479
+mean_reward: 0.5486
+success_rate: 0.9453
+collision_rate: 0.0703
+timeout_rate: 0.0
+mean_done_step: 73.8672
+```
+
+产物：
+
+```text
+outputs/checkpoints/exp_004_proxy_converged.pt
+outputs/logs/exp_004_proxy_convergence/train_metrics.jsonl
+outputs/logs/exp_004_proxy_convergence/eval_metrics.json
+outputs/logs/exp_004_proxy_convergence/final_eval.json
+outputs/logs/exp_004_proxy_convergence/convergence_curves.png
+outputs/logs/exp_004_proxy_convergence/eval_rollout.gif
+```
+
+结论：在当前简化 proxy 环境中，warm-start + PPO 链路已得到一个初步收敛 checkpoint。该结果不是纯 RL 从零收敛；best checkpoint 来自 BC 阶段，PPO 阶段保持了较高 reward，但没有超过 BC 的 dmax ratio。
+
 ## 已知问题与风险
 
 `pip check` 当前会报告 Isaac Sim 6.0.0 与 Isaac Lab v3 beta 的部分依赖元数据冲突，例如 `packaging`、`llvmlite`、`coverage`、`typing_extensions`、`starlette`。这些冲突目前没有阻断实际 import、Isaac Sim/Lab 启动、单元测试或 SKRL-MAPPO 短训练。
@@ -611,6 +701,7 @@ GIF: 1280 x 720, 16K, mean_rgb [221.21, 221.22, 218.96]
 .venv_isaaclab/bin/python scripts/view_proxy_rovers_isaac.py --keep-open
 .venv_isaaclab/bin/python scripts/physx_jetbot_smoke.py --terrain rough --steps 60
 .venv_isaaclab/bin/python scripts/evaluate_physx_four_jetbots.py --terrain rough --steps 40 --checkpoint outputs/checkpoints/exp_001_minimal_proxy.pt
+.venv_isaaclab/bin/python scripts/evaluate_proxy_policy.py --config configs/experiment/exp_004_proxy_convergence.yaml --checkpoint outputs/checkpoints/exp_004_proxy_converged.pt --device cuda --num-envs 256 --steps 100
 ```
 
 第一阶段短训练：
@@ -633,8 +724,8 @@ GIF: 1280 x 720, 16K, mean_rgb [221.21, 221.22, 218.96]
 
 ## 下一步建议
 
-1. 固化代理环境第一阶段训练曲线和日志格式。
-2. 增加 GPU 训练回归，确认 CUDA 下长一点的 rollout 稳定性。
+1. 将 proxy 收敛训练纳入固定 GPU 回归，并优化 BC 进度日志与采样吞吐。
+2. 对比 pure RL、BC warm-start、BC+PPO 三条曲线，明确论文/报告中采用哪一种训练设定。
 3. 接入真实 rover USD/URDF 前，先确定关节命名、控制接口和期望控制模式。
 4. 将四车 PhysX 评估步数扩展到完整 episode，形成稳定高保真评估表。
 5. 对比 Jetbot 与 NovaCarter 的崎岖地形稳定性和吞吐，再决定是否更换高保真评估资产。

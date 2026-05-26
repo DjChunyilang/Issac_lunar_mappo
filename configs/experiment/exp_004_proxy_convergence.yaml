@@ -1,0 +1,77 @@
+experiment:
+  name: exp_004_proxy_convergence
+  seed: 23
+  num_envs: 512
+  device: cuda
+  total_env_steps: 1000000
+  rollout_steps: 128
+  log_dir: outputs/logs/exp_004_proxy_convergence
+  checkpoint_dir: outputs/checkpoints
+  checkpoint_name: exp_004_proxy_converged.pt
+  eval_interval_updates: 4
+  eval_num_envs: 256
+  eval_steps: 100
+
+simulation:
+  episode_length_s: 20.0
+  physics_dt: 0.05
+  control_decimation: 4
+
+task:
+  n_agents: 4
+
+planner:
+  rho_max: 1.2
+  beta_max: 1.57079632679
+
+low_level_control:
+  max_linear_speed: 1.0
+  max_angular_speed: 2.5
+  k_linear: 1.6
+  k_angular: 3.0
+
+reward:
+  weights:
+    gather: 1.0
+    oracle: 0.5
+    energy: 0.005
+    safety: 1.0
+    motion: 0.01
+    consistency: 0.005
+    terminal: 1.0
+  coefficients:
+    dmax_progress: 3.0
+    dispersion_progress: 1.2
+    dmax_level: 0.04
+    dispersion_level: 0.004
+    oracle_mean_distance_progress: 2.0
+    path_length: 0.08
+    turn_cost: 0.02
+    near_distance: 0.5
+    inter_agent_collision: 8.0
+    subgoal_turn: 0.02
+    subgoal_stagnation: 0.05
+    action_consistency: 0.01
+    success_bonus: 20.0
+    failure_penalty: 20.0
+
+success_thresholds:
+  dmax: 1.25
+  dispersion: 0.30
+  speed: 0.25
+  hold_steps: 8
+
+algorithm:
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  ppo_epochs: 4
+  mini_batches: 8
+  learning_rate: 0.0003
+  max_grad_norm: 0.5
+  value_loss_coef: 0.5
+  entropy_coef_start: 0.01
+  entropy_coef_end: 0.001
+  bc_steps: 2000
+  bc_batch_size: 8192
+  bc_learning_rate: 0.001

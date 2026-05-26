@@ -36,6 +36,8 @@ def compute_gather_reward(
     return (
         coeff.dmax_progress * (prev_metrics.dmax - metrics.dmax)
         + coeff.dispersion_progress * (prev_metrics.dispersion - metrics.dispersion)
+        - coeff.dmax_level * metrics.dmax
+        - coeff.dispersion_level * metrics.dispersion
     )
 
 
@@ -90,11 +92,12 @@ def compute_consistency_reward(
     return -cfg.reward_coefficients.action_consistency * delta.square().sum(dim=-1).mean(dim=-1)
 
 
-def compute_terminal_reward(done: DoneFlags) -> torch.Tensor:
+def compute_terminal_reward(done: DoneFlags, cfg: MultiRoverGatheringEnvCfg) -> torch.Tensor:
+    coeff = cfg.reward_coefficients
     reward = torch.zeros_like(done.success, dtype=torch.float32)
-    reward = torch.where(done.success, reward + 10.0, reward)
+    reward = torch.where(done.success, reward + coeff.success_bonus, reward)
     fail = done.collision | done.out_of_bounds
-    reward = torch.where(fail, reward - 10.0, reward)
+    reward = torch.where(fail, reward - coeff.failure_penalty, reward)
     return reward
 
 
@@ -121,7 +124,7 @@ def compute_reward(
     safety = compute_safety_reward(positions, done, cfg)
     motion = compute_motion_reward(physical_action, cfg)
     consistency = compute_consistency_reward(physical_action, previous_physical_action, cfg)
-    terminal = compute_terminal_reward(done)
+    terminal = compute_terminal_reward(done, cfg)
     total = (
         weights.gather * gather
         + weights.oracle * oracle
@@ -144,4 +147,3 @@ def compute_reward(
         ),
         mean_oracle_distance,
     )
-

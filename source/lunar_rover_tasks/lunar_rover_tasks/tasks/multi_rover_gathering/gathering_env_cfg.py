@@ -82,6 +82,8 @@ class RewardWeightsCfg:
 class RewardCoefficientsCfg:
     dmax_progress: float = 2.0
     dispersion_progress: float = 1.0
+    dmax_level: float = 0.0
+    dispersion_level: float = 0.0
     oracle_mean_distance_progress: float = 1.5
     path_length: float = 0.2
     slope_cost: float = 0.0
@@ -93,6 +95,8 @@ class RewardCoefficientsCfg:
     subgoal_turn: float = 0.05
     subgoal_stagnation: float = 0.1
     action_consistency: float = 0.02
+    success_bonus: float = 10.0
+    failure_penalty: float = 10.0
 
 
 @dataclass(slots=True)

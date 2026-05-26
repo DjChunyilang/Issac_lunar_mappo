@@ -22,6 +22,13 @@ def load_yaml(path: str | Path) -> dict:
         return yaml.safe_load(stream) or {}
 
 
+def _apply_values(target, values: dict) -> None:
+    for key, value in values.items():
+        if hasattr(target, key):
+            current = getattr(target, key)
+            setattr(target, key, type(current)(value))
+
+
 def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     data = load_yaml(path)
     cfg = MultiRoverGatheringEnvCfg()
@@ -29,7 +36,10 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     simulation = data.get("simulation", {})
     task = data.get("task", {})
     planner = data.get("planner", {})
+    low_level_control = data.get("low_level_control", {})
     terrain = data.get("terrain", {})
+    reward = data.get("reward", {})
+    success_thresholds = data.get("success_thresholds", {})
     algorithm = data.get("algorithm", {})
     del algorithm
 
@@ -46,6 +56,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     cfg.task.n_agents = int(task.get("n_agents", cfg.task.n_agents))
     cfg.planner.rho_max = float(planner.get("rho_max", cfg.planner.rho_max))
     cfg.planner.beta_max = float(planner.get("beta_max", cfg.planner.beta_max))
+    _apply_values(cfg.low_level_control, low_level_control)
     cfg.terrain.type = str(terrain.get("type", cfg.terrain.type))
     cfg.terrain.amplitude = float(terrain.get("amplitude", cfg.terrain.amplitude))
     cfg.terrain.wavelength = float(terrain.get("wavelength", cfg.terrain.wavelength))
@@ -55,6 +66,9 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     cfg.terrain.traversability_slope_scale = float(
         terrain.get("traversability_slope_scale", cfg.terrain.traversability_slope_scale)
     )
+    _apply_values(cfg.reward_weights, reward.get("weights", {}))
+    _apply_values(cfg.reward_coefficients, reward.get("coefficients", {}))
+    _apply_values(cfg.success_thresholds, success_thresholds)
     return cfg
 
 
