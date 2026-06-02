@@ -54,8 +54,13 @@ def evaluate_checkpoint(
     collision_seen = torch.zeros_like(active)
     timeout_seen = torch.zeros_like(active)
     done_step = torch.full((env.num_envs,), -1, dtype=torch.long, device=env.device)
+    first_collision_step = torch.full((env.num_envs,), -1, dtype=torch.long, device=env.device)
     reward_sum = torch.tensor(0.0, device=env.device)
     reward_count = torch.tensor(0.0, device=env.device)
+    nearest_sum = torch.tensor(0.0, device=env.device)
+    nearest_count = torch.tensor(0.0, device=env.device)
+    near_violation_count = torch.tensor(0.0, device=env.device)
+    global_min_nearest = torch.tensor(float("inf"), device=env.device)
 
     for step_id in range(steps):
         active_before = active.clone()
@@ -75,8 +80,21 @@ def evaluate_checkpoint(
         first_done = done.done & active_before
         done_step = torch.where(first_done, torch.full_like(done_step, step_id + 1), done_step)
         success_seen = success_seen | (done.success & active_before)
+        first_collision = done.collision & active_before & ~collision_seen
+        first_collision_step = torch.where(
+            first_collision,
+            torch.full_like(first_collision_step, step_id + 1),
+            first_collision_step,
+        )
         collision_seen = collision_seen | (done.collision & active_before)
         timeout_seen = timeout_seen | (done.timeout & active_before)
+        nearest = metrics.nearest_neighbor_distance.amin(dim=-1)
+        active_nearest = nearest[active_before]
+        if active_nearest.numel() > 0:
+            nearest_sum = nearest_sum + active_nearest.sum()
+            nearest_count = nearest_count + torch.tensor(float(active_nearest.numel()), device=env.device)
+            near_violation_count = near_violation_count + (active_nearest < env.cfg.safety.near_distance).float().sum()
+            global_min_nearest = torch.minimum(global_min_nearest, active_nearest.amin())
         active = active & ~done.done
         if not active.any():
             break
@@ -104,6 +122,13 @@ def evaluate_checkpoint(
         "mean_done_step": float(done_step[done_step > 0].float().mean().detach().cpu())
         if (done_step > 0).any()
         else None,
+        "min_nearest_distance": float(global_min_nearest.detach().cpu()) if torch.isfinite(global_min_nearest) else None,
+        "mean_nearest_distance": float((nearest_sum / nearest_count.clamp_min(1.0)).detach().cpu()),
+        "near_violation_rate": float((near_violation_count / nearest_count.clamp_min(1.0)).detach().cpu()),
+        "first_collision_step_mean": float(first_collision_step[first_collision_step > 0].float().mean().detach().cpu())
+        if (first_collision_step > 0).any()
+        else None,
+        "collision_episode_ids": torch.nonzero(collision_seen, as_tuple=False).flatten().detach().cpu().tolist(),
     }
     output_path = _resolve_path(output)
     if output_path is not None:

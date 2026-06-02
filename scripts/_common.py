@@ -39,6 +39,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     low_level_control = data.get("low_level_control", {})
     terrain = data.get("terrain", {})
     reward = data.get("reward", {})
+    safety = data.get("safety", {})
     success_thresholds = data.get("success_thresholds", {})
     algorithm = data.get("algorithm", {})
     del algorithm
@@ -68,6 +69,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     )
     _apply_values(cfg.reward_weights, reward.get("weights", {}))
     _apply_values(cfg.reward_coefficients, reward.get("coefficients", {}))
+    _apply_values(cfg.safety, safety)
     _apply_values(cfg.success_thresholds, success_thresholds)
     return cfg
 

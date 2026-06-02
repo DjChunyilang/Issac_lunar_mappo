@@ -1,0 +1,85 @@
+experiment:
+  name: exp_005_safety_tuned_bc_ppo
+  seed: 23
+  num_envs: 512
+  device: cuda
+  total_env_steps: 1000000
+  rollout_steps: 128
+  log_dir: outputs/logs/exp_005_safety_tuned
+  checkpoint_dir: outputs/checkpoints
+  checkpoint_name: exp_005_safety_tuned_bc_ppo.pt
+  eval_interval_updates: 4
+  eval_num_envs: 512
+  eval_steps: 160
+
+simulation:
+  episode_length_s: 32.0
+  physics_dt: 0.05
+  control_decimation: 4
+
+task:
+  n_agents: 4
+
+planner:
+  rho_max: 1.2
+  beta_max: 1.57079632679
+
+low_level_control:
+  max_linear_speed: 1.0
+  max_angular_speed: 2.5
+  k_linear: 1.6
+  k_angular: 3.0
+
+safety:
+  world_xy_limit: 12.0
+  collision_distance: 0.28
+  near_distance: 0.85
+
+reward:
+  weights:
+    gather: 1.0
+    oracle: 0.5
+    energy: 0.005
+    safety: 1.0
+    motion: 0.01
+    consistency: 0.005
+    terminal: 1.0
+  coefficients:
+    dmax_progress: 3.0
+    dispersion_progress: 1.2
+    dmax_level: 0.04
+    dispersion_level: 0.004
+    oracle_mean_distance_progress: 2.0
+    path_length: 0.08
+    turn_cost: 0.02
+    near_distance: 3.0
+    inter_agent_collision: 40.0
+    subgoal_turn: 0.02
+    subgoal_stagnation: 0.05
+    action_consistency: 0.01
+    success_bonus: 20.0
+    failure_penalty: 40.0
+
+success_thresholds:
+  dmax: 1.25
+  dispersion: 0.30
+  speed: 0.25
+  hold_steps: 8
+
+algorithm:
+  mode: bc_ppo
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  ppo_epochs: 4
+  mini_batches: 8
+  learning_rate: 0.0003
+  max_grad_norm: 0.5
+  value_loss_coef: 0.5
+  entropy_coef_start: 0.01
+  entropy_coef_end: 0.001
+  bc_steps: 300
+  bc_batch_size: 8192
+  bc_learning_rate: 0.001
+  teacher_stop_radius: 0.45
+  teacher_slow_distance: 0.40
