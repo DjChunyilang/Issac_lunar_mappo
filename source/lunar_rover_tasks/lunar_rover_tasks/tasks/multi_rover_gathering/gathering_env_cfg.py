@@ -65,6 +65,16 @@ class TerrainCfg:
     wavelength: float = 4.0
     roughness_scale: float = 1.0
     traversability_slope_scale: float = 0.6
+    dynamics_enabled: bool = False
+    slope_speed_scale: float = 0.75
+    min_speed_scale: float = 0.35
+    crater_count: int = 0
+    crater_min_radius: float = 0.45
+    crater_max_radius: float = 1.20
+    crater_depth_to_diameter: float = 0.06
+    crater_rim_height_to_diameter: float = 0.015
+    crater_field_size: float = 9.0
+    crater_seed: int = 11
 
 
 @dataclass(slots=True)
@@ -73,6 +83,7 @@ class RewardWeightsCfg:
     oracle: float = 0.5
     energy: float = 0.02
     safety: float = 1.0
+    terrain: float = 1.0
     motion: float = 0.05
     consistency: float = 0.02
     terminal: float = 1.0

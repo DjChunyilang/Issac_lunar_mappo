@@ -12,12 +12,21 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from _common import cfg_from_experiment  # noqa: E402
+from evaluate_physx_four_jetbots import phase_c_acceptance  # noqa: E402
 from evaluate_proxy_policy import evaluate_checkpoint  # noqa: E402
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore  # noqa: E402
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import make_debug_cfg  # noqa: E402
 from run_proxy_convergence_suite import build_strict_acceptance  # noqa: E402
 from train import Actor, Critic  # noqa: E402
-from train_proxy_convergence import run_behavior_cloning, scripted_gather_action, strict_acceptance  # noqa: E402
+from train_proxy_convergence import (  # noqa: E402
+    Rollout,
+    _checkpoint_candidate_allowed,
+    _is_better_checkpoint_candidate,
+    ppo_update,
+    run_behavior_cloning,
+    scripted_gather_action,
+    strict_acceptance,
+)
 
 
 def test_cfg_from_experiment_parses_reward_control_and_success_thresholds(tmp_path: Path) -> None:
@@ -32,6 +41,19 @@ def test_cfg_from_experiment_parses_reward_control_and_success_thresholds(tmp_pa
                     "coefficients": {"dmax_level": 0.25, "success_bonus": 12.0},
                 },
                 "safety": {"near_distance": 0.95},
+                "terrain": {
+                    "type": "lunar_crater_proxy",
+                    "dynamics_enabled": True,
+                    "slope_speed_scale": 1.25,
+                    "min_speed_scale": 0.25,
+                    "crater_count": 5,
+                    "crater_min_radius": 0.4,
+                    "crater_max_radius": 1.1,
+                    "crater_depth_to_diameter": 0.07,
+                    "crater_rim_height_to_diameter": 0.02,
+                    "crater_field_size": 8.0,
+                    "crater_seed": 19,
+                },
                 "success_thresholds": {"dmax": 0.9, "hold_steps": 4},
             }
         ),
@@ -44,6 +66,17 @@ def test_cfg_from_experiment_parses_reward_control_and_success_thresholds(tmp_pa
     assert cfg.reward_coefficients.dmax_level == 0.25
     assert cfg.reward_coefficients.success_bonus == 12.0
     assert cfg.safety.near_distance == 0.95
+    assert cfg.terrain.type == "lunar_crater_proxy"
+    assert cfg.terrain.dynamics_enabled is True
+    assert cfg.terrain.slope_speed_scale == 1.25
+    assert cfg.terrain.min_speed_scale == 0.25
+    assert cfg.terrain.crater_count == 5
+    assert cfg.terrain.crater_min_radius == 0.4
+    assert cfg.terrain.crater_max_radius == 1.1
+    assert cfg.terrain.crater_depth_to_diameter == 0.07
+    assert cfg.terrain.crater_rim_height_to_diameter == 0.02
+    assert cfg.terrain.crater_field_size == 8.0
+    assert cfg.terrain.crater_seed == 19
     assert cfg.success_thresholds.dmax == 0.9
     assert cfg.success_thresholds.hold_steps == 4
 
@@ -103,6 +136,16 @@ def test_evaluate_proxy_policy_outputs_finite_ratio(tmp_path: Path) -> None:
     assert "min_nearest_distance" in result
     assert "near_violation_rate" in result
     assert "collision_episode_ids" in result
+    for key in (
+        "mean_terrain_height",
+        "terrain_height_range",
+        "mean_roughness",
+        "max_roughness",
+        "min_traversability",
+        "mean_terrain_speed_scale",
+    ):
+        assert key in result
+        assert torch.isfinite(torch.tensor(result[key]))
     assert Path(result["artifact"]).exists()
 
 
@@ -148,3 +191,95 @@ def test_strict_acceptance_and_suite_summary() -> None:
     )
     assert suite["passed"]
     assert len(suite["seeds"]) == 2
+
+
+def test_phase_c_acceptance_uses_success_and_collision_rates() -> None:
+    passing = phase_c_acceptance(0.95, 0.01, min_success_rate=0.9, max_collision_rate=0.02)
+    low_success = phase_c_acceptance(0.85, 0.01, min_success_rate=0.9, max_collision_rate=0.02)
+    high_collision = phase_c_acceptance(0.95, 0.03, min_success_rate=0.9, max_collision_rate=0.02)
+
+    assert passing["passed"]
+    assert not low_success["passed"]
+    assert not high_collision["passed"]
+
+
+def test_required_ppo_checkpoint_filter_rejects_bc_candidates() -> None:
+    assert _checkpoint_candidate_allowed("ppo", "ppo", "ppo")
+    assert _checkpoint_candidate_allowed("ppo", "all", "ppo")
+    assert not _checkpoint_candidate_allowed("bc", "all", "ppo")
+    assert not _checkpoint_candidate_allowed("initial", "all", "ppo")
+
+
+def test_strict_checkpoint_candidate_is_not_replaced_by_lower_dmax_failure() -> None:
+    strict_candidate = {
+        "dmax_reduction_ratio": 0.16,
+        "success_rate": 1.0,
+        "collision_rate": 0.0,
+        "timeout_rate": 0.0,
+        "phase": "ppo",
+    }
+    lower_dmax_failure = {
+        "dmax_reduction_ratio": 0.14,
+        "success_rate": 0.99,
+        "collision_rate": 0.0,
+        "timeout_rate": 0.01,
+        "phase": "ppo",
+    }
+    safer_strict_candidate = {
+        "dmax_reduction_ratio": 0.17,
+        "success_rate": 1.0,
+        "collision_rate": 0.0,
+        "timeout_rate": 0.0,
+        "phase": "ppo",
+    }
+    assert _is_better_checkpoint_candidate(strict_candidate, lower_dmax_failure, "ppo")
+    assert not _is_better_checkpoint_candidate(lower_dmax_failure, strict_candidate, "ppo")
+    assert _is_better_checkpoint_candidate(safer_strict_candidate, strict_candidate, "ppo") is False
+
+
+def test_ppo_update_outputs_health_metrics() -> None:
+    cfg = make_debug_cfg(num_envs=2, device="cpu")
+    actor = Actor(cfg.actor_obs_dim)
+    critic = Critic(cfg.critic_state_dim)
+    rollout_steps = 2
+    obs = torch.randn(rollout_steps, cfg.simulation.num_envs, cfg.task.n_agents, cfg.actor_obs_dim)
+    states = torch.randn(rollout_steps, cfg.simulation.num_envs, cfg.critic_state_dim)
+    with torch.no_grad():
+        flat_obs = obs.reshape(-1, cfg.actor_obs_dim)
+        dist = actor(flat_obs)
+        flat_actions = dist.sample()
+        log_probs = dist.log_prob(flat_actions).sum(dim=-1).view(
+            rollout_steps,
+            cfg.simulation.num_envs,
+            cfg.task.n_agents,
+        )
+    rollout = Rollout(
+        obs=obs,
+        states=states,
+        actions=flat_actions.view(rollout_steps, cfg.simulation.num_envs, cfg.task.n_agents, 2),
+        teacher_actions=torch.zeros(rollout_steps, cfg.simulation.num_envs, cfg.task.n_agents, 2),
+        log_probs=log_probs,
+        rewards=torch.randn(rollout_steps, cfg.simulation.num_envs),
+        dones=torch.zeros(rollout_steps, cfg.simulation.num_envs),
+        values=torch.randn(rollout_steps, cfg.simulation.num_envs),
+        returns=torch.randn(rollout_steps, cfg.simulation.num_envs),
+        advantages=torch.randn(rollout_steps, cfg.simulation.num_envs),
+    )
+    optimizer = torch.optim.Adam(list(actor.parameters()) + list(critic.parameters()), lr=1.0e-4)
+    metrics = ppo_update(
+        rollout,
+        actor,
+        critic,
+        optimizer,
+        clip_epsilon=0.2,
+        ppo_epochs=1,
+        mini_batches=2,
+        value_loss_coef=0.5,
+        entropy_coef=0.01,
+        max_grad_norm=0.5,
+        scripted_teacher_coef=0.1,
+    )
+    for key in ("approx_kl", "clip_fraction", "explained_variance", "scripted_teacher_loss"):
+        assert key in metrics
+        assert torch.isfinite(torch.tensor(metrics[key]))
+    assert 0.0 <= metrics["clip_fraction"] <= 1.0

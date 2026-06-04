@@ -125,6 +125,131 @@ def add_rough_terrain(
     _bind_preview_material(stage, mesh.GetPrim(), "/World/Materials/RoughTerrain", (0.38, 0.36, 0.32))
 
 
+def _crater_layout_np(
+    count: int,
+    min_radius: float,
+    max_radius: float,
+    field_size: float,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    count = max(0, int(count))
+    if count <= 0:
+        return np.zeros((0, 2), dtype=np.float32), np.zeros(0, dtype=np.float32)
+    if count == 1:
+        return (
+            np.zeros((1, 2), dtype=np.float32),
+            np.full((1,), float(max_radius), dtype=np.float32),
+        )
+    index = np.arange(count, dtype=np.float32)
+    seed_phase = float(seed) * 0.61803398875
+    field_radius = 0.45 * float(field_size)
+    radial = field_radius * np.sqrt((index + 0.5) / float(count))
+    theta = index * 2.39996322973 + seed_phase
+    centers = np.stack((radial * np.cos(theta), radial * np.sin(theta)), axis=-1)
+    radius_mix = 0.5 + 0.5 * np.sin(index * 12.9898 + seed_phase)
+    radii = float(min_radius) + (float(max_radius) - float(min_radius)) * radius_mix
+    return centers.astype(np.float32), np.maximum(radii.astype(np.float32), 1.0e-3)
+
+
+def lunar_crater_height_np(
+    x: float | np.ndarray,
+    y: float | np.ndarray,
+    *,
+    amplitude: float = 0.025,
+    wavelength: float = 2.8,
+    crater_count: int = 7,
+    crater_min_radius: float = 0.35,
+    crater_max_radius: float = 1.15,
+    crater_depth_to_diameter: float = 0.06,
+    crater_rim_height_to_diameter: float = 0.015,
+    crater_field_size: float = 9.0,
+    crater_seed: int = 11,
+) -> np.ndarray:
+    x_arr = np.asarray(x, dtype=np.float32)
+    y_arr = np.asarray(y, dtype=np.float32)
+    height = np.zeros(np.broadcast_shapes(x_arr.shape, y_arr.shape), dtype=np.float32)
+    if amplitude != 0.0:
+        k = 2.0 * math.pi / max(float(wavelength), 1.0e-6)
+        height = height + float(amplitude) * (
+            np.sin(k * x_arr) * np.cos(k * y_arr)
+            + 0.45 * np.sin(1.7 * k * x_arr + 0.35) * np.sin(1.3 * k * y_arr)
+        )
+    centers, radii = _crater_layout_np(
+        crater_count,
+        crater_min_radius,
+        crater_max_radius,
+        crater_field_size,
+        crater_seed,
+    )
+    for center, radius in zip(centers, radii, strict=True):
+        distance = np.sqrt((x_arr - center[0]) ** 2 + (y_arr - center[1]) ** 2)
+        diameter = 2.0 * float(radius)
+        depth = float(crater_depth_to_diameter) * diameter
+        rim_height = float(crater_rim_height_to_diameter) * diameter
+        normalized = distance / max(float(radius), 1.0e-6)
+        bowl = np.maximum(1.0 - normalized**2, 0.0) ** 2
+        rim = np.exp(-((normalized - 1.0) / 0.22) ** 2)
+        height = height - depth * bowl + rim_height * rim
+    return height.astype(np.float32)
+
+
+def add_lunar_crater_terrain(
+    stage,
+    size: float = 9.0,
+    resolution: int = 64,
+    amplitude: float = 0.025,
+    wavelength: float = 2.8,
+    crater_count: int = 7,
+    crater_min_radius: float = 0.35,
+    crater_max_radius: float = 1.15,
+    crater_depth_to_diameter: float = 0.06,
+    crater_rim_height_to_diameter: float = 0.015,
+    crater_seed: int = 11,
+) -> None:
+    from pxr import Gf, UsdGeom, UsdPhysics
+
+    xs = np.linspace(-size / 2.0, size / 2.0, resolution + 1)
+    ys = np.linspace(-size / 2.0, size / 2.0, resolution + 1)
+    points = []
+    for y in ys:
+        for x in xs:
+            z = lunar_crater_height_np(
+                x,
+                y,
+                amplitude=amplitude,
+                wavelength=wavelength,
+                crater_count=crater_count,
+                crater_min_radius=crater_min_radius,
+                crater_max_radius=crater_max_radius,
+                crater_depth_to_diameter=crater_depth_to_diameter,
+                crater_rim_height_to_diameter=crater_rim_height_to_diameter,
+                crater_field_size=size,
+                crater_seed=crater_seed,
+            )
+            points.append(Gf.Vec3f(float(x), float(y), float(z)))
+
+    row = resolution + 1
+    counts = []
+    indices = []
+    for iy in range(resolution):
+        for ix in range(resolution):
+            i0 = iy * row + ix
+            counts.append(4)
+            indices.extend((i0, i0 + 1, i0 + row + 1, i0 + row))
+
+    mesh = UsdGeom.Mesh.Define(stage, "/World/Terrain")
+    mesh.CreatePointsAttr(points)
+    mesh.CreateFaceVertexCountsAttr(counts)
+    mesh.CreateFaceVertexIndicesAttr(indices)
+    UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+    try:
+        mesh_collision = UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim())
+        mesh_collision.CreateApproximationAttr("meshSimplification")
+    except Exception:
+        pass
+    _bind_preview_material(stage, mesh.GetPrim(), "/World/Materials/LunarCraterTerrain", (0.36, 0.35, 0.32))
+
+
 def set_camera() -> None:
     from isaacsim.core.utils.viewports import set_camera_view
 

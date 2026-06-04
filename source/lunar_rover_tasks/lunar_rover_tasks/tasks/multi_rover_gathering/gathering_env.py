@@ -30,6 +30,11 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.simple_controller import (
     compute_control,
 )
 from lunar_rover_tasks.tasks.multi_rover_gathering.state import build_critic_state
+from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
+    is_flat_terrain,
+    query_height,
+    query_terrain_features,
+)
 from lunar_rover_tasks.tasks.multi_rover_gathering.termination import DoneFlags, compute_done
 from lunar_rover_tasks.tasks.multi_rover_gathering.trajectory_generator import (
     Trajectory,
@@ -79,6 +84,9 @@ class MultiRoverGatheringCore:
         self.metrics = self.prev_metrics
         self.last_trajectory: Trajectory | None = None
         self.last_control: ControlCommand | None = None
+        self.last_terrain_features = torch.zeros(self.num_envs, self.n_agents, 5, device=self.device)
+        self.last_terrain_speed_scale = torch.ones(self.num_envs, self.n_agents, device=self.device)
+        self.last_height_delta = torch.zeros(self.num_envs, self.n_agents, device=self.device)
         self.reset()
 
     @property
@@ -105,7 +113,15 @@ class MultiRoverGatheringCore:
         )
         xy = centers + radius * base[None, :, :] + jitter
         self.positions[env_ids, :, :2] = xy
-        self.positions[env_ids, :, 2] = 0.0
+        if self._terrain_dynamics_enabled:
+            terrain_features = query_terrain_features(xy, self.cfg.terrain)
+            self.positions[env_ids, :, 2] = terrain_features[..., 0]
+            self.last_terrain_features[env_ids] = terrain_features
+        else:
+            self.positions[env_ids, :, 2] = 0.0
+            self.last_terrain_features[env_ids] = 0.0
+        self.last_terrain_speed_scale[env_ids] = 1.0
+        self.last_height_delta[env_ids] = 0.0
         self.yaws[env_ids] = torch.atan2(-xy[..., 1], -xy[..., 0])
         self.velocities_xy[env_ids] = 0.0
         self.angular_velocities[env_ids] = 0.0
@@ -123,6 +139,7 @@ class MultiRoverGatheringCore:
 
     def get_observations(self) -> tuple[torch.Tensor, torch.Tensor]:
         metrics = compute_team_metrics(self.positions, self.velocities_xy)
+        terrain_features = self.last_terrain_features if self._terrain_dynamics_enabled else None
         actor_obs = build_actor_observation(
             self.positions,
             self.yaws,
@@ -130,6 +147,7 @@ class MultiRoverGatheringCore:
             self.angular_velocities,
             self.communication_radius,
             self.cfg,
+            terrain_features,
         )
         critic_state = build_critic_state(
             self.positions,
@@ -140,6 +158,7 @@ class MultiRoverGatheringCore:
             self.oracle_point,
             self.success_hold_count,
             self.cfg,
+            terrain_features,
         )
         return actor_obs, critic_state
 
@@ -189,6 +208,7 @@ class MultiRoverGatheringCore:
             decoded.physical,
             self.previous_physical_action,
             done,
+            self.last_terrain_features,
             self.cfg,
         )
         self.prev_mean_oracle_distance = mean_oracle
@@ -196,6 +216,9 @@ class MultiRoverGatheringCore:
         self.metrics = metrics
         self.last_trajectory = trajectory
         self.last_control = control
+        terrain_features = self.last_terrain_features.clone()
+        terrain_speed_scale = self.last_terrain_speed_scale.clone()
+        height_delta = self.last_height_delta.clone()
 
         if done.done.any():
             env_ids = torch.nonzero(done.done, as_tuple=False).flatten()
@@ -216,6 +239,9 @@ class MultiRoverGatheringCore:
                 "metrics": metrics,
                 "trajectory": trajectory,
                 "control": control,
+                "terrain_features": terrain_features,
+                "terrain_speed_scale": terrain_speed_scale,
+                "height_delta": height_delta,
                 "oracle_point": self.oracle_point.clone(),
             },
         )
@@ -227,14 +253,42 @@ class MultiRoverGatheringCore:
             generator=self.generator,
         )
 
+    @property
+    def _terrain_dynamics_enabled(self) -> bool:
+        return bool(self.cfg.terrain.dynamics_enabled) and not is_flat_terrain(self.cfg.terrain)
+
     def _integrate(self, control: ControlCommand) -> None:
         dt = self.cfg.simulation.planning_dt
         old_positions = self.positions.clone()
         self.yaws = wrap_to_pi(self.yaws + control.angular * dt)
         direction = torch.stack((torch.cos(self.yaws), torch.sin(self.yaws)), dim=-1)
-        delta_xy = direction * control.linear.unsqueeze(-1) * dt
-        self.positions[..., :2] = self.positions[..., :2] + delta_xy
-        self.positions[..., 2] = 0.0
+        speed_scale = torch.ones_like(control.linear)
+        if self._terrain_dynamics_enabled:
+            current_features = self.last_terrain_features
+            slope_xy = current_features[..., 1:3]
+            directional_slope = torch.abs((slope_xy * direction).sum(dim=-1))
+            traversability = current_features[..., 4]
+            speed_scale = traversability * torch.exp(
+                -directional_slope * float(self.cfg.terrain.slope_speed_scale)
+            )
+            speed_scale = speed_scale.clamp(
+                min=float(self.cfg.terrain.min_speed_scale),
+                max=1.0,
+            )
+            delta_xy = direction * control.linear.unsqueeze(-1) * speed_scale.unsqueeze(-1) * dt
+            next_xy = old_positions[..., :2] + delta_xy
+            next_features = query_terrain_features(next_xy, self.cfg.terrain)
+            self.positions[..., :2] = next_xy
+            self.positions[..., 2] = next_features[..., 0]
+            self.last_terrain_features = next_features
+            self.last_height_delta = self.positions[..., 2] - old_positions[..., 2]
+        else:
+            delta_xy = direction * control.linear.unsqueeze(-1) * dt
+            self.positions[..., :2] = self.positions[..., :2] + delta_xy
+            self.positions[..., 2] = 0.0
+            self.last_terrain_features.zero_()
+            self.last_height_delta.zero_()
+        self.last_terrain_speed_scale = speed_scale
         self.velocities_xy = (self.positions[..., :2] - old_positions[..., :2]) / dt
         self.angular_velocities = control.angular
 

@@ -6,26 +6,32 @@
 
 当前主训练路径仍是 PyTorch kinematic proxy env，不使用 Isaac Sim 物理仿真，也不依赖渲染。这个选择是有意保留的：proxy 环境吞吐高、可快速验证观测、奖励、终止、控制链路，并且适合做多车集合策略的第一阶段算法调试。
 
-Isaac Sim / PhysX 当前定位为高保真验证和展示层，已经可以加载官方 Jetbot 资产、运行单车/四车 smoke evaluation，并输出截图或 GIF。它尚未进入正式训练 loop。
+Isaac Sim / PhysX 当前定位为高保真验证和展示层，已经可以加载官方 Jetbot 资产、运行单车/四车 smoke evaluation，并完成 lunar crater headless 多 episode evaluation。它尚未进入正式训练 loop。
 
-截至本记录，项目已经得到一个初步收敛的四车集合 checkpoint：
+截至 2026-06-02，当前推荐阶段 C checkpoint 是：
 
 ```text
-outputs/checkpoints/exp_004_proxy_converged.pt
+outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/checkpoints/best.pt
 ```
 
-独立评估结果表明，在 256 个并行 proxy env、100 步 rollout 下：
+当前 canonical run 目录：
 
 ```text
-initial_dmax: 7.2260
-final_dmax: 0.8900
-dmax_reduction_ratio: 0.1232
-success_rate: 0.9453
-collision_rate: 0.0703
+outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/
+```
+
+独立 proxy 复评结果表明，在 1024 个并行 proxy env、220 步 rollout 下：
+
+```text
+initial_dmax: 7.2538
+final_dmax: 1.0163
+dmax_reduction_ratio: 0.1401
+success_rate: 1.0000
+collision_rate: 0.0000
 timeout_rate: 0.0
 ```
 
-这满足当前“趋势优先”的初步收敛标准：`final_dmax / initial_dmax <= 0.4`。
+这满足当前严格 proxy 标准：`dmax_reduction_ratio <= 0.2`、`success_rate >= 0.9`、`collision_rate <= 0.02`、`timeout_rate == 0`，并且 checkpoint metrics 中 `phase=ppo`。
 
 ## 阶段 A/B 严格收敛完成记录（2026-05-26）
 
@@ -126,14 +132,30 @@ configs/experiment/exp_006_ppo_selected_pure_rl.yaml
 主配置相对 exp_005 的主要变化：
 
 ```text
+device: cuda
 num_envs: 1024
+rollout_steps: 128
 total_env_steps: 2_000_000
+actual updates: 15
+steps per PPO update: 131072
 eval_interval_updates: 1
+eval_num_envs: 512
+eval_steps: 160
+gamma: 0.99
+gae_lambda: 0.95
 learning_rate: 5e-5
 clip_epsilon: 0.15
 ppo_epochs: 2
+mini_batches: 8
+max_grad_norm: 0.5
+value_loss_coef: 0.5
 entropy_coef: 0.002 -> 0.0002
 reference_policy_coef: 1.0 -> 0.25
+bc_steps: 300
+bc_batch_size: 8192
+bc_learning_rate: 1e-3
+teacher_stop_radius: 0.45
+teacher_slow_distance: 0.40
 best_source: ppo
 required_best_phase: ppo
 ```
@@ -179,6 +201,61 @@ TensorBoard 查看命令：
   --port 6006
 ```
 
+TensorBoard 重点曲线整理：
+
+```text
+00_overview/eval_reward       评估平均 reward，优先看整体回报趋势
+00_overview/success_rate      任务完成率
+00_overview/dmax_ratio        四车集合收敛比例，越低越好
+00_overview/collision_rate    碰撞率，安全主指标
+00_overview/timeout_rate      超时率，检查是否拖延未完成
+00_overview/rollout_reward    PPO 采样阶段 reward，观察训练过程
+```
+
+PPO 诊断曲线放在 `01_ppo_health/`：
+
+```text
+policy_loss
+value_loss
+entropy
+approx_kl
+clip_fraction
+explained_variance
+reference_policy_loss
+```
+
+任务细节曲线放在 `02_task_detail/`：
+
+```text
+final_dmax
+final_dispersion
+mean_nearest_distance
+min_nearest_distance
+near_violation_rate
+```
+
+保留旧的 `bc/`、`eval/`、`ppo/`、`best/` 原始 tag，用于细查；优先阅读 `00_overview/`，再看 `01_ppo_health/` 判断 PPO 是否稳定。重点曲线选择参考了 PPO 常见日志实践：回报/episode 表现、policy/value loss、entropy、KL、clip fraction 和 value fit。
+
+TensorBoard tag 检查命令：
+
+```bash
+.venv_isaaclab/bin/python scripts/summarize_tensorboard_tags.py \
+  --logdir outputs/logs/exp_006_ppo_selected
+```
+
+旧 exp_006 训练发生在 `00_overview/01_ppo_health/02_task_detail` 新 tag 加入之前。为了不重训也能查看完整重点曲线，可以从已有 JSON/JSONL 回填到独立目录：
+
+```bash
+.venv_isaaclab/bin/python scripts/backfill_tensorboard_curated_tags.py \
+  --log-root outputs/logs/exp_006_ppo_selected \
+  --output-subdir tensorboard_curated \
+  --overwrite
+```
+
+回填目录为每个 run 下的 `tensorboard_curated/`，不会覆盖原始 `tensorboard/`。旧日志可回填 `00_overview/`、`02_task_detail/` 以及 `01_ppo_health/policy_loss|value_loss|entropy|reference_policy_loss`；旧训练没有记录 `approx_kl`、`clip_fraction`、`explained_variance`，因此不伪造这些曲线。
+
+默认回填会跳过名字包含 `smoke` 的短测试 run，避免 TensorBoard 中混入只有 1-2 个点的测试曲线；需要检查 smoke run 时可额外加 `--include-smoke`。
+
 已写出的 TensorBoard run：
 
 ```text
@@ -194,7 +271,165 @@ outputs/logs/exp_006_ppo_selected/weak_warmstart_seed_23/tensorboard/
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | weak_warmstart_seed_23 | 50 | 0.1812 | 0.2383 | 0.0000 | 0.7734 | false |
 
-结论：50 step 弱 warm-start 下，PPO 能把 dmax ratio 压到严格阈值以内，但无法稳定满足 success / timeout 标准。结合 exp_005 pure RL 三 seed 均失败的结果，当前任务仍依赖足够强的 warm-start；后续若要减少 warm-start，需要增加课程学习、成功判据分阶段、或更长训练预算，而不是简单减少 BC step。
+结论：原始 50 step 弱 warm-start 下，PPO 能把 dmax ratio 压到严格阈值以内，但无法稳定满足 success / timeout 标准。这个结论已经被后续 exp_007 阶段 C 更新：通过提高弱 BC 的学习效率并在 PPO 阶段加入可记录的 teacher regularization，最终 checkpoint 已来自 PPO 阶段并通过 proxy / PhysX 指标。
+
+## 阶段 C 月面崎岖地形与 PPO-only 收敛记录（2026-06-02）
+
+阶段 C 已完成第一版：新增月面 crater proxy terrain、PhysX lunar crater mesh、多 episode 四 Jetbot 高保真评估，并得到一个最终 best 来自 PPO 阶段的弱 warm-start checkpoint。
+
+月面地形尺度依据：
+
+- NASA Moon Craters 页面说明 simple lunar craters 通常较小，约不超过 10-15 km，形态为相对较深的 bowl/cone shape。
+- NASA impact crater 资料说明较小撞击坑可呈 bowl-shaped form。
+- NASA mare pit crater 资料给出月面 mare pit craters 约 100 m 直径的例子。
+- NASA Surveyor/Apollo 资料提到 Surveyor crater 约 200 m 尺度。
+
+阶段 C 采用的是 Jetbot/四车场景可承受的米级缩尺 crater field，不是把百米/公里级月坑直接放入 9 m 场景。当前默认 PhysX profile：
+
+```text
+terrain: lunar_crater
+size: 9.0 m
+resolution: 64
+amplitude: 0.025 m
+wavelength: 2.8 m
+crater_count: 7
+crater_min_radius: 0.35 m
+crater_max_radius: 1.15 m
+crater_depth_to_diameter: 0.06
+crater_rim_height_to_diameter: 0.015
+```
+
+新增/调整内容：
+
+```text
+configs/experiment/exp_007_phase_c_weak_warmstart.yaml
+configs/experiment/exp_007_phase_c_pure_rl.yaml
+scripts/evaluate_physx_four_jetbots.py
+scripts/physx_jetbot_common.py
+source/lunar_rover_tasks/.../terrain_features.py
+source/lunar_rover_tasks/.../gathering_env_cfg.py
+```
+
+关键训练设置：
+
+```text
+mode: weak_warmstart
+bc_steps: 50
+bc_learning_rate: 3e-3
+total_env_steps: 2,000,000
+actual PPO updates: 7
+num_envs: 2048
+rollout_steps: 128
+checkpoint selection: required_best_phase=ppo
+scripted_teacher_coef: 0.35 -> 0.10
+```
+
+说明：本轮仍不是 pure RL 从零收敛；它是弱 BC 初始化 + PPO 阶段继续优化，并且最终 checkpoint 必须来自 PPO 阶段。训练脚本已收紧：当 `required_best_phase=ppo` 时，BC/baseline 不会被保存为 best checkpoint。
+
+最终 checkpoint：
+
+```text
+outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/checkpoints/best.pt
+```
+
+训练内 best 指标：
+
+```text
+phase: ppo
+update: 7
+dmax_reduction_ratio: 0.1430
+success_rate: 1.0000
+collision_rate: 0.0000
+timeout_rate: 0.0000
+```
+
+独立 proxy 复评：
+
+```bash
+.venv_isaaclab/bin/python scripts/evaluate_proxy_policy.py \
+  --config configs/experiment/exp_007_phase_c_weak_warmstart.yaml \
+  --checkpoint outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/checkpoints/best.pt \
+  --device cuda \
+  --num-envs 1024 \
+  --steps 220 \
+  --seed 2026 \
+  --output outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/metrics/final_eval_proxy.json
+```
+
+复评结果：
+
+```text
+dmax_reduction_ratio: 0.1401
+success_rate: 1.0000
+collision_rate: 0.0000
+timeout_rate: 0.0000
+mean_done_step: 83.53
+```
+
+PhysX lunar crater 三集评估：
+
+```bash
+.venv_isaaclab/bin/python scripts/evaluate_physx_four_jetbots.py \
+  --config configs/experiment/exp_007_phase_c_weak_warmstart.yaml \
+  --checkpoint outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/checkpoints/best.pt \
+  --terrain lunar_crater \
+  --episodes 3 \
+  --steps 100 \
+  --sim-steps-per-control 8 \
+  --seed 2026 \
+  --run-dir outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m
+```
+
+PhysX 结果：
+
+```text
+success_rate: 1.0000
+collision_rate: 0.0000
+mean_final_dmax: 0.7977
+mean_final_dispersion: 0.1427
+mean_max_tilt_deg: 14.87
+mean_physics_updates_per_s: 158.19
+phase_c_acceptance: passed
+```
+
+当前 shell 没有 `DISPLAY` / `WAYLAND_DISPLAY`，也没有 `xvfb-run`，因此本轮只完成 Isaac Sim headless PhysX 评估，没有生成 viewport 渲染 GIF。headless 日志显示 RTX 5090 被 Isaac Sim Vulkan 后端识别并用于 PhysX/渲染后端初始化。
+
+阶段 C 当前产物：
+
+```text
+outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/checkpoints/best.pt
+outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/metrics/eval_metrics.json
+outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/metrics/final_eval_proxy.json
+outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/figures/convergence_curves.png
+outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/figures/safety_diagnostics.png
+outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/videos/proxy_eval_rollout.gif
+outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/physx/metrics/lunar_crater_headless.json
+outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/physx/metrics/lunar_crater_render.json
+outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/physx/videos/lunar_crater_rollout.gif
+outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/run_manifest.json
+```
+
+长期输出管理规范见：
+
+```text
+docs/output_management.md
+```
+
+本轮回归：
+
+```text
+.venv_isaaclab/bin/python -m pytest
+27 passed
+```
+
+参考链接：
+
+```text
+https://science.nasa.gov/moon/lunar-craters/
+https://www.nasa.gov/solar-system/asteroid-day-and-impact-craters/
+https://science.nasa.gov/photojournal/how-common-are-mare-pit-craters/
+https://www.nasa.gov/missions/lunar-reconnaissance-orbiter-looks-at-apollo-12-surveyor-3-landing-sites/
+```
 
 ## 已完成能力
 
@@ -265,6 +500,7 @@ scripts/view_proxy_rovers_isaac.py
 - 官方 Jetbot 资产可加载
 - 单 Jetbot 平地 / 崎岖地形 PhysX smoke 可运行
 - 四 Jetbot closed-loop evaluation 可运行
+- 四 Jetbot lunar crater 多 episode headless evaluation 可运行
 - 可输出截图和 GIF
 
 PhysX 层当前用于验证和展示，不参与 policy rollout 采样。
@@ -280,7 +516,7 @@ PhysX 层当前用于验证和展示，不参与 policy rollout 采样。
 最近验证结果：
 
 ```text
-23 passed
+27 passed
 ```
 
 测试覆盖包括：
@@ -297,9 +533,9 @@ PhysX 层当前用于验证和展示，不参与 policy rollout 采样。
 
 ## 当前重要限制
 
-1. 当前收敛 checkpoint 不是纯 RL 从零训练结果。
+1. 当前阶段 C 收敛 checkpoint 不是 pure RL 从零训练结果。
 
-   当前 best checkpoint 来自 scripted controller warm-start 阶段。PPO 阶段保持了较高 reward，但未进一步超过 BC 阶段的 dmax ratio。因此后续如果需要强调“强化学习自主收敛”，必须补充 pure RL 或弱 warm-start 对照实验。
+   当前 best checkpoint 来自弱 BC 初始化后的 PPO 阶段，不是强 warmup checkpoint。训练脚本已经保证 `required_best_phase=ppo` 时不会保存 BC/baseline 为 best。若后续需要强调“纯强化学习自主收敛”，仍需继续推进 pure RL 配置。
 
 2. Proxy 动力学仍是简化模型。
 
@@ -360,26 +596,29 @@ collision_rate <= 0.02
 timeout_rate == 0
 ```
 
-### 阶段 C：PhysX 高保真闭环评估
+### 阶段 C：PhysX 高保真闭环评估（已完成第一版）
 
 目标：验证 proxy checkpoint 在 Isaac Sim 轮式资产和崎岖地形中的迁移表现。
 
-计划：
+完成情况：
 
-1. 用 `exp_004_proxy_converged.pt` 跑四 Jetbot PhysX 完整 episode。
-2. 输出 high-fidelity evaluation JSON，包括 dmax、dispersion、碰撞、翻车、卡住、sim throughput。
-3. 保存一段短视频或 GIF，用于直观检查四车集合过程。
-4. 对比 proxy rollout 和 PhysX rollout 的轨迹误差。
-5. 如果 Jetbot 崎岖地形稳定性不足，再评估 NovaCarter 或自定义 rover 资产。
+1. 已用 canonical checkpoint `outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/checkpoints/best.pt` 跑四 Jetbot lunar crater PhysX 三集评估。
+2. 已输出 high-fidelity evaluation JSON，包括 dmax、dispersion、碰撞、tilt 和 sim throughput。
+3. 当前无显示后端，未生成 viewport 渲染 GIF；proxy rollout GIF 已生成。
+4. 后续仍可补充 proxy / PhysX 轨迹误差对比。
+5. Jetbot 在当前米级缩尺 crater field 中稳定；更大坡度/坑深再考虑 NovaCarter 或自定义 rover 资产。
 
 建议命令：
 
 ```bash
 .venv_isaaclab/bin/python scripts/evaluate_physx_four_jetbots.py \
-  --terrain rough \
+  --config configs/experiment/exp_007_phase_c_weak_warmstart.yaml \
+  --checkpoint outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/checkpoints/best.pt \
+  --terrain lunar_crater \
+  --episodes 3 \
   --steps 100 \
-  --checkpoint outputs/checkpoints/exp_004_proxy_converged.pt \
-  --output outputs/logs/physx_four_jetbots/evaluation_exp004.json
+  --sim-steps-per-control 8 \
+  --run-dir outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m
 ```
 
 ### 阶段 D：真实 rover 资产与控制接口选型
@@ -401,7 +640,7 @@ timeout_rate == 0
 计划：
 
 1. 将实验命令、结果、产物路径统一记录到 `docs/`。
-2. 为每个实验配置建立清晰命名：`exp_004_proxy_convergence`、`exp_005_safety_tuned`、`exp_006_physx_eval`。
+2. 为每个实验配置建立清晰命名：`exp_004_proxy_convergence`、`exp_005_safety_tuned`、`exp_006_ppo_selected`、`exp_007_phase_c`。
 3. 保留每次关键 checkpoint 对应的配置和 final_eval。
 4. 在 README 中增加推荐运行顺序。
 
@@ -411,26 +650,29 @@ timeout_rate == 0
 
 ```bash
 .venv_isaaclab/bin/python scripts/evaluate_proxy_policy.py \
-  --config configs/experiment/exp_004_proxy_convergence.yaml \
-  --checkpoint outputs/checkpoints/exp_004_proxy_converged.pt \
+  --config configs/experiment/exp_007_phase_c_weak_warmstart.yaml \
+  --checkpoint outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/checkpoints/best.pt \
   --device cuda \
-  --num-envs 256 \
-  --steps 100
+  --num-envs 1024 \
+  --steps 220
 ```
 
-2. 跑四车 PhysX 评估：
+2. 跑四车 lunar crater PhysX 评估：
 
 ```bash
 .venv_isaaclab/bin/python scripts/evaluate_physx_four_jetbots.py \
-  --terrain rough \
+  --config configs/experiment/exp_007_phase_c_weak_warmstart.yaml \
+  --checkpoint outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/checkpoints/best.pt \
+  --terrain lunar_crater \
+  --episodes 3 \
   --steps 100 \
-  --checkpoint outputs/checkpoints/exp_004_proxy_converged.pt \
-  --output outputs/logs/physx_four_jetbots/evaluation_exp004.json
+  --sim-steps-per-control 8 \
+  --run-dir outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m
 ```
 
-3. 调整安全奖励并形成 `exp_005_safety_tuned.yaml`。
+3. 在有显示后端时补跑 `--render` 版本，生成 viewport 截图/GIF。
 
-4. 做 pure RL / BC-only / BC+PPO 对照，明确论文或报告中采用的实验口径。
+4. 继续推进 pure RL 配置，明确论文或报告中“弱 warm-start + PPO”和“pure RL”的实验口径。
 
 ## 当前推荐判断
 
@@ -444,3 +686,153 @@ proxy 高吞吐训练
 ```
 
 只有当 PhysX 评估中出现 proxy 无法解释的系统性失败时，再考虑把部分高保真动力学引入训练或做 domain randomization。
+
+## 2026-06-03 输出结构整理
+
+本次将长期产物管理统一到 run-oriented layout：
+
+```text
+outputs/runs/<experiment_id>/<run_id>/
+```
+
+关键变更：
+
+1. 新增/更新 `docs/output_management.md`，记录 canonical 目录结构、run 命名规则、迁移命令、TensorBoard / proxy eval / PhysX eval 的推荐输出路径。
+2. 扩展 `scripts/organize_outputs.py`：支持 `--all-known`、`--experiment`、`--preset exp007_phase_c`、`--dry-run`、`--mode symlink|copy`，并生成每个 run 的 `run_manifest.json` 与全局 `outputs/runs/_index.json`。
+3. `scripts/train_proxy_convergence.py` 在 `experiment.output_layout: run` 时会直接写入 `config/experiment.yaml`、`metrics/summary.json`、`run_manifest.json`、`metrics/`、`figures/`、`videos/`、`checkpoints/` 和 `tensorboard/`。
+4. `scripts/evaluate_proxy_policy.py` 增加 `--run-dir`，默认将独立 proxy 评估写入 `metrics/final_eval_proxy.json`。
+5. 已将现有 legacy 产物以 symlink 方式整理到 `outputs/runs/`，并刷新了 `exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m` 的 PhysX 展示产物链接。
+
+当前索引：
+
+```text
+outputs/runs/_index.json
+```
+
+推荐以后查看成果时优先使用：
+
+```text
+outputs/runs/exp_006_ppo_selected/bc_ppo_seed_23/
+outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/
+```
+
+后续新训练命名建议：
+
+```text
+<mode>_seed<seed>_<budget>_<terrain>_<short_tag>
+```
+
+示例：
+
+```text
+weak_warmstart_seed23_6m_lunar_crater_bc20
+pure_rl_seed31_2m_lunar_crater
+smoke_seed23_8k_cpu
+```
+
+## 2026-06-03 exp_008 Terrain3D 严格收敛结果
+
+本阶段将 proxy 环境从平面运动学升级为 terrain-aware 3D 简化动力学：
+
+1. `terrain.dynamics_enabled=true` 时，reset 和 step 会根据 `query_height(xy)` 更新 rover 的 `z`。
+2. 有坡度或低 traversability 区域会降低有效线速度，并在 `info` 中记录 `terrain_features`、`terrain_speed_scale`、`height_delta`。
+3. reward 新增 `terrain` 项：
+
+```text
+terrain_reward = -mean(slope_cost * roughness + terrain_cost * (1 - traversability))
+```
+
+4. `lunar_crater_proxy` 采用 9 m 缩尺月坑地形，训练前 sanity check 显示不是平地：
+
+```text
+height_range ~= 0.241 m
+roughness_max ~= 0.360
+traversability_min ~= 0.549
+```
+
+### 训练口径
+
+先按 pure RL 优先执行：
+
+- `pure_rl_seed23_8m_lunar_crater_cpu`：失败，`dmax_ratio=0.321`、`success_rate=0.032`、`timeout_rate=0.966`。
+- `pure_rl_seed23_15m_lunar_crater_cpu_continued`：失败，`dmax_ratio=0.302`、`success_rate=0.0`、`timeout_rate=0.998`。
+
+因此按计划切换到弱 warm-start fallback，仍限制为 `bc_steps <= 20`，最终 selected policy 是：
+
+```text
+weak warm-start (20 BC steps max) + PPO
+```
+
+训练中发现并修复了两个选择/评估问题：
+
+1. checkpoint 选择不能只按更低 `dmax_ratio` 覆盖，否则会用 timeout 非零的 checkpoint 覆盖严格通过 checkpoint；已改为 strict-pass 优先。
+2. `scripts/play.py` 对 actor checkpoint 做了第二次 `tanh`，导致独立评估动作幅度被压小；已修复为直接使用 `actor(...).mean`，与训练内 deterministic eval 保持一致。
+
+### 严格复验结果
+
+最终独立 proxy evaluation 命令统一使用：
+
+```bash
+.venv_isaaclab/bin/python scripts/evaluate_proxy_policy.py \
+  --device cpu \
+  --num-envs 1024 \
+  --steps 220 \
+  --run-dir <run_dir>
+```
+
+严格标准：
+
+```text
+dmax_reduction_ratio <= 0.2
+success_rate >= 0.9
+collision_rate <= 0.02
+timeout_rate == 0
+```
+
+最终 3 个 seeds 全部通过：
+
+| seed | final run | dmax_ratio | success | collision | timeout |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 23 | `weak_warmstart_seed23_8m_lunar_crater_cpu` | 0.1539 | 1.0000 | 0.0000 | 0.0000 |
+| 31 | `weak_warmstart_completion_seed31_4m_evalseed0_cpu` | 0.1345 | 0.9961 | 0.0049 | 0.0000 |
+| 47 | `weak_warmstart_select_seed47_8m_lunar_crater_cpu` | 0.1560 | 1.0000 | 0.0000 | 0.0000 |
+
+Suite 汇总：
+
+```text
+outputs/runs/exp_008_terrain3d/_suite/metrics/strict_acceptance.json
+outputs/runs/exp_008_terrain3d/_suite/metrics/suite_summary.json
+outputs/runs/exp_008_terrain3d/_suite/figures/comparison_curves.png
+outputs/runs/exp_008_terrain3d/_suite/checkpoints/seed_23_best.pt
+outputs/runs/exp_008_terrain3d/_suite/checkpoints/seed_31_best.pt
+outputs/runs/exp_008_terrain3d/_suite/checkpoints/seed_47_best.pt
+```
+
+每个 selected run 还包含：
+
+```text
+metrics/final_eval_proxy.json
+figures/convergence_curves.png
+figures/safety_diagnostics.png
+figures/terrain_height_map.png
+videos/proxy_eval_rollout.gif
+tensorboard/
+```
+
+其中 `proxy_eval_rollout.gif` 已叠加 terrain height heatmap 背景，`figures/terrain_height_map.png` 单独展示本次 lunar crater heightfield；suite 入口也包含：
+
+```text
+outputs/runs/exp_008_terrain3d/_suite/figures/terrain_height_map.png
+```
+
+### 当前结论
+
+在 3D terrain-aware proxy 和缩尺 lunar crater 地形下，pure RL 在当前预算内未收敛；弱 warm-start + PPO 达到了严格 proxy gate。这个结果仍应表述为“弱 warm-start 初始化后的 PPO 收敛”，不能表述为纯 RL 从零严格收敛。
+
+## 后续进度文档
+
+从 2026-06-05 起，新的阶段结果不再继续追加到本文档。exp009 强地形训练与复验记录迁移到：
+
+```text
+docs/progress_summary_2026-06-05.md
+```

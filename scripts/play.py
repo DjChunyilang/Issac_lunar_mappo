@@ -22,7 +22,7 @@ def _load_policy_players(checkpoint: dict, cfg, device):
         actor.eval()
 
         def act(actor_obs):
-            return torch.tanh(actor(actor_obs).mean)
+            return actor(actor_obs).mean
 
         return act, "smoke"
 

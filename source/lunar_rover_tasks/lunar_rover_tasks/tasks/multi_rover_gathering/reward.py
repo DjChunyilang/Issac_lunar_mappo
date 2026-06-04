@@ -21,6 +21,7 @@ class RewardTerms:
     oracle: torch.Tensor
     energy: torch.Tensor
     safety: torch.Tensor
+    terrain: torch.Tensor
     motion: torch.Tensor
     consistency: torch.Tensor
     terminal: torch.Tensor
@@ -76,6 +77,22 @@ def compute_safety_reward(
     return -(coeff.near_distance * near_penalty + collision_penalty)
 
 
+def compute_terrain_reward(
+    terrain_features: torch.Tensor | None,
+    cfg: MultiRoverGatheringEnvCfg,
+    positions: torch.Tensor,
+) -> torch.Tensor:
+    coeff = cfg.reward_coefficients
+    if terrain_features is None or (coeff.slope_cost == 0.0 and coeff.terrain_cost == 0.0):
+        return torch.zeros(positions.shape[0], dtype=positions.dtype, device=positions.device)
+    roughness = terrain_features[..., 3]
+    traversability = terrain_features[..., 4]
+    return -(
+        coeff.slope_cost * roughness
+        + coeff.terrain_cost * (1.0 - traversability)
+    ).mean(dim=-1)
+
+
 def compute_motion_reward(physical_action: torch.Tensor, cfg: MultiRoverGatheringEnvCfg) -> torch.Tensor:
     coeff = cfg.reward_coefficients
     turn = physical_action[..., 1].square().mean(dim=-1) * coeff.subgoal_turn
@@ -110,6 +127,7 @@ def compute_reward(
     physical_action: torch.Tensor,
     previous_physical_action: torch.Tensor,
     done: DoneFlags,
+    terrain_features: torch.Tensor | None,
     cfg: MultiRoverGatheringEnvCfg,
 ) -> tuple[RewardTerms, torch.Tensor]:
     weights = cfg.reward_weights
@@ -122,6 +140,7 @@ def compute_reward(
     )
     energy = compute_energy_reward(physical_action, cfg)
     safety = compute_safety_reward(positions, done, cfg)
+    terrain = compute_terrain_reward(terrain_features, cfg, positions)
     motion = compute_motion_reward(physical_action, cfg)
     consistency = compute_consistency_reward(physical_action, previous_physical_action, cfg)
     terminal = compute_terminal_reward(done, cfg)
@@ -130,6 +149,7 @@ def compute_reward(
         + weights.oracle * oracle
         + weights.energy * energy
         + weights.safety * safety
+        + weights.terrain * terrain
         + weights.motion * motion
         + weights.consistency * consistency
         + weights.terminal * terminal
@@ -140,6 +160,7 @@ def compute_reward(
             oracle=oracle,
             energy=energy,
             safety=safety,
+            terrain=terrain,
             motion=motion,
             consistency=consistency,
             terminal=terminal,

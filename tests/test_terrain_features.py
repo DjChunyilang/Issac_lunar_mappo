@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import torch
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+
+from _common import cfg_from_experiment
+from check_terrain_profile import sample_terrain_profile
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import make_debug_cfg
 from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
@@ -10,6 +17,7 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
     build_terrain_features,
     query_height,
 )
+from terrain_viz import height_grid_for_extent
 
 
 def _terrain_slice(cfg):
@@ -61,6 +69,68 @@ def test_procedural_terrain_features_are_finite_and_structured() -> None:
     assert torch.isfinite(global_state).all()
     assert not torch.allclose(local, torch.zeros_like(local))
     assert torch.all((local[..., 4] >= 0.0) & (local[..., 4] <= 1.0))
+
+
+def test_lunar_crater_proxy_has_depressed_bowl_and_raised_rim() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.terrain.type = "lunar_crater_proxy"
+    cfg.terrain.amplitude = 0.0
+    cfg.terrain.crater_count = 1
+    cfg.terrain.crater_min_radius = 1.0
+    cfg.terrain.crater_max_radius = 1.0
+    cfg.terrain.crater_depth_to_diameter = 0.08
+    cfg.terrain.crater_rim_height_to_diameter = 0.02
+    positions = torch.tensor([[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]])
+
+    local = build_terrain_features(positions, cfg.observation, cfg.terrain)
+
+    center_height = local[0, 0, 0]
+    rim_height = local[0, 1, 0]
+    outside_height = local[0, 2, 0]
+    assert torch.isfinite(local).all()
+    assert center_height < -0.10
+    assert rim_height > 0.0
+    assert abs(float(outside_height)) < 0.01
+    assert torch.all((local[..., 4] >= 0.0) & (local[..., 4] <= 1.0))
+
+
+def test_height_grid_for_extent_samples_nonflat_terrain() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.terrain.type = "lunar_crater_proxy"
+    cfg.terrain.amplitude = 0.04
+    cfg.terrain.crater_count = 1
+    cfg.terrain.crater_min_radius = 1.0
+    cfg.terrain.crater_max_radius = 1.0
+
+    height, extent, value_range = height_grid_for_extent(
+        cfg.terrain,
+        torch.tensor([-1.5, -1.5]).numpy(),
+        torch.tensor([1.5, 1.5]).numpy(),
+        resolution=32,
+    )
+
+    assert height.shape == (32, 32)
+    assert len(extent) == 4
+    assert value_range[1] > value_range[0]
+    assert abs(float(height.max() - height.min())) > 1.0e-3
+
+
+def test_exp009_strong_terrain_profile_meets_target_range_and_slows_more_than_exp008() -> None:
+    exp008 = sample_terrain_profile(
+        "configs/experiment/exp_008_terrain3d_weak_warmstart_select.yaml",
+        resolution=64,
+    )
+    exp009 = sample_terrain_profile(
+        "configs/experiment/exp_009_terrain3d_strong_weak_warmstart.yaml",
+        resolution=64,
+    )
+    cfg = cfg_from_experiment("configs/experiment/exp_009_terrain3d_strong_weak_warmstart.yaml")
+
+    assert cfg.terrain.dynamics_enabled is True
+    assert cfg.terrain.slope_speed_scale == 1.25
+    assert cfg.reward_weights.terrain == 0.45
+    assert 0.6 <= exp009["height_range"] <= 1.0
+    assert exp009["mean_terrain_speed_scale"] < exp008["mean_terrain_speed_scale"]
 
 
 def test_actor_and_critic_include_structured_terrain_without_shape_changes() -> None:

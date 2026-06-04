@@ -32,7 +32,11 @@ def evaluate_checkpoint(
     steps: int = 100,
     seed: int | None = None,
     output: str | Path | None = None,
+    run_dir: str | Path | None = None,
 ) -> dict:
+    if run_dir is not None and output is None:
+        output = Path(run_dir) / "metrics" / "final_eval_proxy.json"
+
     cfg = cfg_from_experiment(config)
     cfg.simulation.num_envs = num_envs
     if device is not None:
@@ -61,6 +65,15 @@ def evaluate_checkpoint(
     nearest_count = torch.tensor(0.0, device=env.device)
     near_violation_count = torch.tensor(0.0, device=env.device)
     global_min_nearest = torch.tensor(float("inf"), device=env.device)
+    terrain_height_sum = torch.tensor(0.0, device=env.device)
+    terrain_height_count = torch.tensor(0.0, device=env.device)
+    terrain_height_min = torch.tensor(float("inf"), device=env.device)
+    terrain_height_max = torch.tensor(float("-inf"), device=env.device)
+    terrain_roughness_sum = torch.tensor(0.0, device=env.device)
+    terrain_roughness_max = torch.tensor(0.0, device=env.device)
+    terrain_traversability_min = torch.tensor(float("inf"), device=env.device)
+    terrain_speed_scale_sum = torch.tensor(0.0, device=env.device)
+    terrain_speed_scale_count = torch.tensor(0.0, device=env.device)
 
     for step_id in range(steps):
         active_before = active.clone()
@@ -95,6 +108,29 @@ def evaluate_checkpoint(
             nearest_count = nearest_count + torch.tensor(float(active_nearest.numel()), device=env.device)
             near_violation_count = near_violation_count + (active_nearest < env.cfg.safety.near_distance).float().sum()
             global_min_nearest = torch.minimum(global_min_nearest, active_nearest.amin())
+        terrain_features = step_output.info.get("terrain_features")
+        if terrain_features is not None:
+            active_terrain = terrain_features[active_before].reshape(-1, terrain_features.shape[-1])
+            if active_terrain.numel() > 0:
+                heights = active_terrain[:, 0]
+                roughness = active_terrain[:, 3]
+                traversability = active_terrain[:, 4]
+                terrain_height_sum = terrain_height_sum + heights.sum()
+                terrain_height_count = terrain_height_count + torch.tensor(float(heights.numel()), device=env.device)
+                terrain_height_min = torch.minimum(terrain_height_min, heights.amin())
+                terrain_height_max = torch.maximum(terrain_height_max, heights.amax())
+                terrain_roughness_sum = terrain_roughness_sum + roughness.sum()
+                terrain_roughness_max = torch.maximum(terrain_roughness_max, roughness.amax())
+                terrain_traversability_min = torch.minimum(terrain_traversability_min, traversability.amin())
+        terrain_speed_scale = step_output.info.get("terrain_speed_scale")
+        if terrain_speed_scale is not None:
+            active_speed_scale = terrain_speed_scale[active_before].reshape(-1)
+            if active_speed_scale.numel() > 0:
+                terrain_speed_scale_sum = terrain_speed_scale_sum + active_speed_scale.sum()
+                terrain_speed_scale_count = terrain_speed_scale_count + torch.tensor(
+                    float(active_speed_scale.numel()),
+                    device=env.device,
+                )
         active = active & ~done.done
         if not active.any():
             break
@@ -106,6 +142,7 @@ def evaluate_checkpoint(
         "backend": backend,
         "config": str(config),
         "checkpoint": str(checkpoint),
+        "run_dir": str(run_dir) if run_dir is not None else None,
         "device": str(env.device),
         "num_envs": env.num_envs,
         "steps": steps,
@@ -129,6 +166,18 @@ def evaluate_checkpoint(
         if (first_collision_step > 0).any()
         else None,
         "collision_episode_ids": torch.nonzero(collision_seen, as_tuple=False).flatten().detach().cpu().tolist(),
+        "mean_terrain_height": float((terrain_height_sum / terrain_height_count.clamp_min(1.0)).detach().cpu()),
+        "terrain_height_range": float((terrain_height_max - terrain_height_min).detach().cpu())
+        if torch.isfinite(terrain_height_min) and torch.isfinite(terrain_height_max)
+        else 0.0,
+        "mean_roughness": float((terrain_roughness_sum / terrain_height_count.clamp_min(1.0)).detach().cpu()),
+        "max_roughness": float(terrain_roughness_max.detach().cpu()),
+        "min_traversability": float(terrain_traversability_min.detach().cpu())
+        if torch.isfinite(terrain_traversability_min)
+        else 1.0,
+        "mean_terrain_speed_scale": float(
+            (terrain_speed_scale_sum / terrain_speed_scale_count.clamp_min(1.0)).detach().cpu()
+        ),
     }
     output_path = _resolve_path(output)
     if output_path is not None:
@@ -147,6 +196,7 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--output", default=None)
+    parser.add_argument("--run-dir", default=None)
     args = parser.parse_args()
     result = evaluate_checkpoint(
         args.config,
@@ -156,6 +206,7 @@ def main() -> None:
         steps=args.steps,
         seed=args.seed,
         output=args.output,
+        run_dir=args.run_dir,
     )
     print(json.dumps(result, indent=2))
 

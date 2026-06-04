@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 from _common import ROOT, cfg_from_experiment
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore
+from terrain_viz import add_height_heatmap, height_grid_for_extent, save_height_map
 
 
 def _resolve_output_root(path: str | Path) -> Path:
@@ -119,6 +120,7 @@ def _save_trajectory_control_plot(
     linear: torch.Tensor,
     angular: torch.Tensor,
     path: Path,
+    terrain_cfg=None,
 ) -> None:
     pos = positions.detach().cpu().numpy()
     traj = trajectory_points.detach().cpu().numpy()
@@ -127,11 +129,17 @@ def _save_trajectory_control_plot(
 
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), constrained_layout=True)
     colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
+    all_xy = np.concatenate((pos[:, :2], traj.reshape(-1, traj.shape[-1])[:, :2]), axis=0)
+    xy_min = all_xy.min(axis=0) - 0.5
+    xy_max = all_xy.max(axis=0) + 0.5
+    height_grid, height_extent, height_range = height_grid_for_extent(terrain_cfg, xy_min, xy_max)
+    heatmap = add_height_heatmap(axes[0], height_grid, height_extent, height_range, alpha=0.62, contour=True)
+    fig.colorbar(heatmap, ax=axes[0], fraction=0.046, pad=0.04, label="height (m)")
     for agent_id in range(traj.shape[0]):
         axes[0].plot(traj[agent_id, :, 0], traj[agent_id, :, 1], marker="o", color=colors[agent_id])
         axes[0].scatter(pos[agent_id, 0], pos[agent_id, 1], color=colors[agent_id], s=50)
         axes[0].text(pos[agent_id, 0], pos[agent_id, 1], f"r{agent_id}", fontsize=9)
-    axes[0].set_title("Generated line trajectories")
+    axes[0].set_title("Generated line trajectories on height heatmap")
     axes[0].set_aspect("equal", adjustable="box")
     axes[0].set_xlabel("x")
     axes[0].set_ylabel("y")
@@ -156,14 +164,17 @@ def _figure_to_frame(fig) -> np.ndarray:
     return rgba[:, :, :3].copy()
 
 
-def _save_rollout_gif(position_history: list[np.ndarray], path: Path) -> None:
+def _save_rollout_gif(position_history: list[np.ndarray], path: Path, terrain_cfg=None) -> None:
     stacked = np.concatenate(position_history, axis=0)
     xy_min = stacked[:, :2].min(axis=0) - 0.5
     xy_max = stacked[:, :2].max(axis=0) + 0.5
+    height_grid, height_extent, height_range = height_grid_for_extent(terrain_cfg, xy_min, xy_max)
     frames = []
     colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
     for step_id, positions in enumerate(position_history):
-        fig, ax = plt.subplots(figsize=(5, 5), constrained_layout=True)
+        fig, ax = plt.subplots(figsize=(6.2, 5.2), constrained_layout=True)
+        heatmap = add_height_heatmap(ax, height_grid, height_extent, height_range, alpha=0.70, contour=True)
+        fig.colorbar(heatmap, ax=ax, fraction=0.046, pad=0.04, label="height (m)")
         for agent_id, color in enumerate(colors):
             trail = np.array([frame[agent_id, :2] for frame in position_history[: step_id + 1]])
             ax.plot(trail[:, 0], trail[:, 1], color=color, alpha=0.55)
@@ -171,7 +182,7 @@ def _save_rollout_gif(position_history: list[np.ndarray], path: Path) -> None:
             ax.text(positions[agent_id, 0], positions[agent_id, 1], f"r{agent_id}", fontsize=9)
         centroid = positions[:, :2].mean(axis=0)
         ax.scatter(centroid[0], centroid[1], color="black", marker="x", s=70)
-        ax.set_title(f"Proxy four-rover rollout step {step_id}")
+        ax.set_title(f"Proxy four-rover rollout step {step_id} with height heatmap")
         ax.set_xlim(xy_min[0], xy_max[0])
         ax.set_ylim(xy_min[1], xy_max[1])
         ax.set_aspect("equal", adjustable="box")
@@ -238,6 +249,7 @@ def run_validation(
     rollout_path = figure_dir / "proxy_rollout_curves.png"
     heatmap_path = figure_dir / "observation_space_heatmap.png"
     trajectory_path = figure_dir / "trajectory_control_validation.png"
+    terrain_height_path = figure_dir / "terrain_height_map.png"
     gif_path = video_dir / "proxy_rollout.gif"
     metrics_path = log_dir / "validation_metrics.json"
 
@@ -251,8 +263,16 @@ def run_validation(
         first_control[:, 0],
         first_control[:, 1],
         trajectory_path,
+        cfg.terrain,
     )
-    _save_rollout_gif(position_history, gif_path)
+    stacked_positions = np.concatenate(position_history, axis=0)
+    save_height_map(
+        cfg.terrain,
+        stacked_positions[:, :2].min(axis=0) - 0.5,
+        stacked_positions[:, :2].max(axis=0) + 0.5,
+        terrain_height_path,
+    )
+    _save_rollout_gif(position_history, gif_path, cfg.terrain)
 
     summary = {
         "status": "ok",
@@ -278,6 +298,7 @@ def run_validation(
             "rollout_curves": str(rollout_path),
             "observation_heatmap": str(heatmap_path),
             "trajectory_control": str(trajectory_path),
+            "terrain_height_map": str(terrain_height_path),
             "rollout_gif": str(gif_path),
         },
         "history": history,

@@ -67,6 +67,32 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     cfg.terrain.traversability_slope_scale = float(
         terrain.get("traversability_slope_scale", cfg.terrain.traversability_slope_scale)
     )
+    cfg.terrain.dynamics_enabled = bool(
+        terrain.get("dynamics_enabled", cfg.terrain.dynamics_enabled)
+    )
+    cfg.terrain.slope_speed_scale = float(
+        terrain.get("slope_speed_scale", cfg.terrain.slope_speed_scale)
+    )
+    cfg.terrain.min_speed_scale = float(
+        terrain.get("min_speed_scale", cfg.terrain.min_speed_scale)
+    )
+    cfg.terrain.crater_count = int(terrain.get("crater_count", cfg.terrain.crater_count))
+    cfg.terrain.crater_min_radius = float(
+        terrain.get("crater_min_radius", cfg.terrain.crater_min_radius)
+    )
+    cfg.terrain.crater_max_radius = float(
+        terrain.get("crater_max_radius", cfg.terrain.crater_max_radius)
+    )
+    cfg.terrain.crater_depth_to_diameter = float(
+        terrain.get("crater_depth_to_diameter", cfg.terrain.crater_depth_to_diameter)
+    )
+    cfg.terrain.crater_rim_height_to_diameter = float(
+        terrain.get("crater_rim_height_to_diameter", cfg.terrain.crater_rim_height_to_diameter)
+    )
+    cfg.terrain.crater_field_size = float(
+        terrain.get("crater_field_size", cfg.terrain.crater_field_size)
+    )
+    cfg.terrain.crater_seed = int(terrain.get("crater_seed", cfg.terrain.crater_seed))
     _apply_values(cfg.reward_weights, reward.get("weights", {}))
     _apply_values(cfg.reward_coefficients, reward.get("coefficients", {}))
     _apply_values(cfg.safety, safety)

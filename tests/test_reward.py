@@ -7,6 +7,7 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.metrics import compute_team_m
 from lunar_rover_tasks.tasks.multi_rover_gathering.reward import (
     compute_gather_reward,
     compute_oracle_reward,
+    compute_terrain_reward,
     compute_terminal_reward,
 )
 from lunar_rover_tasks.tasks.multi_rover_gathering.termination import DoneFlags
@@ -64,3 +65,32 @@ def test_terminal_reward_uses_configured_bonus_and_penalty() -> None:
     )
     reward = compute_terminal_reward(flags, cfg)
     assert torch.allclose(reward, torch.tensor([3.5, -4.5]))
+
+
+def test_default_terrain_reward_is_zero_even_with_rough_features() -> None:
+    cfg = MultiRoverGatheringEnvCfg()
+    positions = torch.zeros(1, 4, 3)
+    terrain_features = torch.tensor(
+        [[[0.0, 0.2, 0.1, 0.4, 0.6], [0.0, 0.1, 0.0, 0.2, 0.8], [0.0, 0.0, 0.1, 0.1, 0.9], [0.0, 0.2, 0.2, 0.5, 0.5]]]
+    )
+    reward = compute_terrain_reward(terrain_features, cfg, positions)
+    assert torch.allclose(reward, torch.zeros_like(reward))
+
+
+def test_positive_terrain_coefficients_penalize_rough_low_traversability_features() -> None:
+    cfg = MultiRoverGatheringEnvCfg()
+    cfg.reward_coefficients.slope_cost = 0.5
+    cfg.reward_coefficients.terrain_cost = 1.0
+    positions = torch.zeros(2, 4, 3)
+    flat_features = torch.tensor(
+        [[[0.0, 0.0, 0.0, 0.0, 1.0]] * 4],
+        dtype=torch.float32,
+    )
+    rough_features = torch.tensor(
+        [[[0.0, 0.2, 0.1, 0.4, 0.6]] * 4],
+        dtype=torch.float32,
+    )
+    terrain_features = torch.cat((flat_features, rough_features), dim=0)
+    reward = compute_terrain_reward(terrain_features, cfg, positions)
+    assert torch.allclose(reward[0], torch.tensor(0.0))
+    assert reward[1] < reward[0]

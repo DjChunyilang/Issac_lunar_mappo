@@ -6,6 +6,7 @@ outputs/logs/**
 outputs/videos/**
 outputs/figures/**
 outputs/tensorboard/**
+outputs/**
 runs/
 events.out.tfevents.*
 __pycache__/

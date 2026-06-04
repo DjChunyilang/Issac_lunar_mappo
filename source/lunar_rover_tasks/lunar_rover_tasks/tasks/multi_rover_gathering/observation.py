@@ -12,6 +12,15 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import Mult
 from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import build_terrain_features
 
 
+def _fit_terrain_dim(features: torch.Tensor, dim: int) -> torch.Tensor:
+    if features.shape[-1] == dim:
+        return features
+    if features.shape[-1] > dim:
+        return features[..., :dim]
+    pad = torch.zeros(*features.shape[:-1], dim - features.shape[-1], dtype=features.dtype, device=features.device)
+    return torch.cat((features, pad), dim=-1)
+
+
 def build_ego_features(
     positions: torch.Tensor,
     yaws: torch.Tensor,
@@ -64,6 +73,7 @@ def build_actor_observation(
     angular_velocities: torch.Tensor,
     communication_radius: float,
     cfg: MultiRoverGatheringEnvCfg,
+    terrain_features: torch.Tensor | None = None,
 ) -> torch.Tensor:
     ego = build_ego_features(positions, yaws, velocities_xy, angular_velocities)
     neighbor, _ = build_neighbor_features(
@@ -73,6 +83,10 @@ def build_actor_observation(
         communication_radius,
         cfg.observation,
     )
-    terrain = build_terrain_features(positions, cfg.observation, cfg.terrain)
+    terrain = (
+        _fit_terrain_dim(terrain_features, cfg.observation.terrain_dim)
+        if terrain_features is not None
+        else build_terrain_features(positions, cfg.observation, cfg.terrain)
+    )
     aggregation = build_aggregation_features(positions, velocities_xy, communication_radius)
     return torch.cat((ego, neighbor, terrain, aggregation), dim=-1)
