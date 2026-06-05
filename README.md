@@ -5,6 +5,20 @@ directory. The current implementation uses a clearly marked proxy rover model an
 vectorized planar dynamics core so the observation, action, reward, termination, and short
 training loop can be tested before a real rover USD/URDF articulation is available.
 
+## Documentation
+
+Start with:
+
+```text
+docs/README.md
+docs/current_status.md
+docs/experiments/README.md
+```
+
+Long historical progress logs are archived under `docs/archive/`. Generated training artifacts
+live under `outputs/` and are ignored by git; use the Markdown experiment notes and suite JSON
+summaries for long-term status.
+
 ## Environment
 
 The planned local environment is `.venv_isaaclab` with Python 3.12. The Isaac stack target is:

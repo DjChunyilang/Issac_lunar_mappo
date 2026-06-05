@@ -1,5 +1,7 @@
 # 项目进度说明与下一步规划（2026-05-26）
 
+> Archived progress log. For current status, read `docs/current_status.md` and `docs/experiments/README.md`.
+
 ## 当前阶段结论
 
 项目已经从“环境与接口搭建”推进到“简化 proxy 环境可训练、可评估、可展示”的阶段。

@@ -1,5 +1,7 @@
 # 构建进度记录（2026-05-19）
 
+> Archived build log. For current status, read `docs/current_status.md` and `docs/experiments/README.md`.
+
 ## 当前结论
 
 项目已经完成第一阶段最小闭环构建：基于代理 rover 状态模型，跑通了 4 车自组织集合任务的观测、critic state、`[rho, beta]` 动作解释、确定性轨迹生成、简化速度控制、几何聚集奖励、oracle reward、终止判据、单元测试、环境冒烟测试和 SKRL-MAPPO 短训练。

@@ -1,5 +1,7 @@
 # Progress Summary - 2026-06-05
 
+> Archived progress log. For current status, read `docs/current_status.md` and `docs/experiments/README.md`.
+
 ## exp_009 Strong Terrain 复验结果
 
 本阶段按“强地形版本”重新训练：地形高度范围目标提升到 `0.6-1.0 m`，并提高 crater 深度、正弦起伏、坡度减速和 terrain/slope reward 成本。

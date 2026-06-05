@@ -221,6 +221,6 @@ physx/videos/lunar_crater_render_rollout.gif
 - `configs/experiment/*.yaml`
 - training/evaluation/organization scripts
 - `docs/progress_summary_*.md`
-- `docs/output_management.md`
+- `docs/references/output_management.md`
 
 Do not commit generated checkpoints, TensorBoard events, PNGs, GIFs, or JSON metrics unless a specific report explicitly needs a curated artifact.
