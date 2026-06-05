@@ -1,24 +1,28 @@
 ---
 name: lunar-rover-project-management
-description: Use for this repository when organizing documentation, summarizing experiment status, interpreting proxy/PhysX training results, managing outputs, or deciding whether a run passed strict acceptance. Triggers on requests about project progress, experiment docs, training result summaries, output layout, run management, or agent-readable project context.
+description: 用于本仓库的文档整理、实验状态总结、proxy/PhysX 训练结果解读、outputs 管理、run 管理和 strict acceptance 判断。用户询问项目进度、实验文档、训练结果、输出目录、agent 阅读上下文或长期管理规则时触发。
 ---
 
-# Lunar Rover Project Management
+# 月球车项目管理
 
-## Read First
+## 先读什么
 
-When this skill triggers, read these project docs in order:
+触发本 skill 后，按顺序读取：
 
 1. `docs/current_status.md`
 2. `docs/experiments/README.md`
-3. The relevant `docs/experiments/exp_*.md`
-4. `docs/references/output_management.md` if paths or output layout matter
+3. 相关的 `docs/experiments/exp_*.md`
+4. 如果涉及路径或输出结构，读取 `docs/references/output_management.md`
 
-Use `docs/archive/` only for provenance. Do not treat archive logs as the current source of truth.
+`docs/archive/` 只用于追溯过程。不要把归档日志当成当前事实来源。
 
-## Strict Acceptance
+## 文档语言规则
 
-Do not infer success from GIFs, TensorBoard curves, or one favorable checkpoint. Strict proxy acceptance is:
+本项目 Markdown 文档默认使用中文。命令、路径、配置键、指标字段名、库名和算法缩写可以保留英文原文。新增或修改文档时，优先写中文；不要再新增英文主文档。
+
+## 严格验收
+
+不要根据 GIF、TensorBoard 曲线或单个看起来不错的 checkpoint 判断成功。严格 proxy 验收为：
 
 ```text
 dmax_reduction_ratio <= 0.2
@@ -27,35 +31,35 @@ collision_rate <= 0.02
 timeout_rate == 0
 ```
 
-Prefer independent `metrics/final_eval_proxy.json` and suite-level `_suite/metrics/strict_acceptance.json` over training-internal impressions.
+优先使用独立评估 `metrics/final_eval_proxy.json` 和 suite 级 `_suite/metrics/strict_acceptance.json`，不要只看训练过程中的印象。
 
-## Documentation Rules
+## 文档维护规则
 
-- Keep `docs/current_status.md` short and current.
-- Add one file per experiment under `docs/experiments/`.
-- Move long date-based progress logs to `docs/archive/`.
-- Add commands to `docs/runbooks/`, not to every experiment note.
-- Track configs, scripts, source, tests, and Markdown. Do not commit generated outputs.
+- `docs/current_status.md` 保持短小，只写当前事实。
+- 每个实验在 `docs/experiments/` 下维护独立文档。
+- 长日期流水账移动到 `docs/archive/`。
+- 命令写入 `docs/runbooks/`，不要散落在每个实验文档中。
+- 代码、配置、脚本、测试和 Markdown 需要跟踪；生成结果不要提交。
 
-## Output Rules
+## 输出规则
 
-Canonical generated results live under:
+标准生成结果目录：
 
 ```text
 outputs/runs/<experiment_id>/<run_id>/
 ```
 
-Suite-level results live under:
+Suite 级结果目录：
 
 ```text
 outputs/runs/<experiment_id>/_suite/
 ```
 
-`outputs/**` is ignored. If a result must be preserved in git, summarize it in Markdown and keep the raw artifact in `outputs/`.
+`outputs/**` 已被忽略。如果某个结果需要纳入 git，应在 Markdown 中总结，原始产物仍留在 `outputs/`。
 
-## Training Interpretation
+## 训练结果解读
 
-- exp008 is the current full 3-seed terrain-aware strict pass.
-- exp009 strong terrain is a diagnostic failure: seed23 passed, seed31 failed success/timeout, seed47 was not run.
-- Do not continue unbounded PPO just because one seed is close. Diagnose failure gates first.
+- exp008 是当前完整 3-seed terrain-aware strict pass。
+- exp009 strong terrain 是诊断失败：seed23 通过，seed31 未通过 success/timeout，seed47 未运行。
+- 不要因为某个 seed 接近通过就继续无界 PPO。先诊断失败 gate。
 

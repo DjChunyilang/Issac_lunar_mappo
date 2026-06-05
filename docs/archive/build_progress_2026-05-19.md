@@ -1,6 +1,6 @@
 # 构建进度记录（2026-05-19）
 
-> Archived build log. For current status, read `docs/current_status.md` and `docs/experiments/README.md`.
+> 归档构建日志。当前状态请阅读 `docs/current_status.md` 和 `docs/experiments/README.md`。
 
 ## 当前结论
 

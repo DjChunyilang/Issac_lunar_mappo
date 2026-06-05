@@ -1,27 +1,25 @@
-# Project Documentation
+# 项目文档入口
 
-Start here when reading or modifying this project.
+阅读或修改本项目时，从这里开始。
 
-## Agent Reading Order
+## 智能体阅读顺序
 
-1. Read [current_status.md](current_status.md) for the current result, recommended checkpoints, and active blockers.
-2. Read [experiments/README.md](experiments/README.md) before interpreting any training result.
-3. Read the specific experiment note under `docs/experiments/` before using a checkpoint.
-4. Read [architecture/proxy_training.md](architecture/proxy_training.md) before changing the proxy environment, reward, PPO loop, or terrain dynamics.
-5. Read [runbooks/train_proxy.md](runbooks/train_proxy.md), [runbooks/evaluate_proxy.md](runbooks/evaluate_proxy.md), or [runbooks/visualize_results.md](runbooks/visualize_results.md) for commands.
+1. 先读 [current_status.md](current_status.md)，了解当前结果、推荐 checkpoint 和主要阻塞。
+2. 再读 [experiments/README.md](experiments/README.md)，避免误解训练结果。
+3. 使用某个 checkpoint 前，读取 `docs/experiments/` 下对应实验文档。
+4. 修改 proxy 环境、reward、PPO loop 或地形动力学前，读取 [architecture/proxy_training.md](architecture/proxy_training.md)；如果该文件不存在，读取 [technical_design.md](technical_design.md) 和相关实验文档。
+5. 训练、评估、可视化命令分别查看 [runbooks/train_proxy.md](runbooks/train_proxy.md)、[runbooks/evaluate_proxy.md](runbooks/evaluate_proxy.md)、[runbooks/visualize_results.md](runbooks/visualize_results.md)。
 
-Do not infer success from a GIF or a single training checkpoint. Strict acceptance is defined by `_suite/metrics/strict_acceptance.json` and independent evaluation metrics.
+不要根据 GIF、单个 checkpoint 或 TensorBoard 曲线直接判断成功。严格验收以 `_suite/metrics/strict_acceptance.json` 和独立评估指标为准。
 
-## Current Documents
+## 当前主文档
 
-- [current_status.md](current_status.md): current project state and next work.
-- [roadmap.md](roadmap.md): near-term priorities.
-- [architecture/proxy_training.md](architecture/proxy_training.md): terrain-aware proxy training architecture.
-- [architecture/physx_validation.md](architecture/physx_validation.md): Isaac Sim / PhysX role.
-- [experiments/README.md](experiments/README.md): experiment index and pass/fail table.
-- [references/output_management.md](references/output_management.md): canonical output layout and naming rules.
+- [current_status.md](current_status.md)：当前项目状态和下一步工作。
+- [roadmap.md](roadmap.md)：近期优先级。
+- [experiments/README.md](experiments/README.md)：实验索引和通过/失败表。
+- [references/output_management.md](references/output_management.md)：输出目录规范和命名规则。
+- [runbooks/](runbooks/)：训练、评估、可视化和 PhysX 展示命令。
 
-## Historical Documents
+## 历史文档
 
-Long progress logs are archived under [archive/](archive/). They are useful for provenance, but not for current status.
-
+长篇进度日志已经归档到 [archive/](archive/)。归档文档只用于追溯过程，不作为当前 checkpoint、实验结论或下一步计划的唯一来源。

@@ -1,6 +1,6 @@
-# Proxy Training Runbook
+# Proxy 训练操作手册
 
-## Standard Command
+## 标准命令
 
 ```bash
 .venv_isaaclab/bin/python scripts/train_proxy_convergence.py \
@@ -10,9 +10,9 @@
   --device cuda
 ```
 
-Use CPU only for smoke tests or when CUDA is unavailable.
+CPU 只用于 smoke test，或 CUDA 不可用时的链路验证。
 
-## Smoke Test
+## 冒烟测试
 
 ```bash
 .venv_isaaclab/bin/python scripts/train_proxy_convergence.py \
@@ -26,9 +26,9 @@ Use CPU only for smoke tests or when CUDA is unavailable.
   --eval-steps 60
 ```
 
-## Continuation
+## 续训
 
-Use continuation only with an explicit run name and no warm-up:
+续训必须使用明确的 `run_name`，并关闭 warm-up：
 
 ```bash
 .venv_isaaclab/bin/python scripts/train_proxy_convergence.py \
@@ -45,10 +45,9 @@ Use continuation only with an explicit run name and no warm-up:
   --eval-steps 260
 ```
 
-## Rules
+## 规则
 
-- Always set `--run-name`.
-- Do not overwrite prior failed runs; failures are diagnostics.
-- Do not report success unless independent evaluation also passes strict gates.
-- For strong terrain, avoid changing terrain strength to make training pass unless the experiment explicitly says so.
-
+- 必须设置 `--run-name`。
+- 不覆盖已经失败的 run；失败结果是诊断资料。
+- 独立评估没有通过 strict gate 时，不报告成功。
+- 强地形实验中，除非实验目标明确要求，否则不要为了通过而降低地形强度。

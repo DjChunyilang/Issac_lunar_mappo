@@ -1,6 +1,6 @@
 # 项目进度说明与下一步规划（2026-05-26）
 
-> Archived progress log. For current status, read `docs/current_status.md` and `docs/experiments/README.md`.
+> 归档进度日志。当前状态请阅读 `docs/current_status.md` 和 `docs/experiments/README.md`。
 
 ## 当前阶段结论
 

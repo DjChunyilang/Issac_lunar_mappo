@@ -1,4 +1,4 @@
-# Visualization Runbook
+# 可视化操作手册
 
 ## TensorBoard
 
@@ -8,7 +8,7 @@
   --port 6007
 ```
 
-Priority scalar groups:
+优先查看的 scalar 分组：
 
 ```text
 00_overview/
@@ -17,21 +17,20 @@ Priority scalar groups:
 03_terrain/
 ```
 
-## Tags
+## 查看 Tags
 
 ```bash
 .venv_isaaclab/bin/python scripts/summarize_tensorboard_tags.py \
   --logdir outputs/runs/<experiment>
 ```
 
-## Height Maps and GIFs
+## 高度图和 GIF
 
-Expected per-run artifacts:
+每个 run 期望包含：
 
 ```text
 figures/terrain_height_map.png
 videos/proxy_eval_rollout.gif
 ```
 
-Height plots and GIFs should include a `height (m)` colorbar. If a GIF is hard to read, inspect `figures/terrain_height_map.png` first.
-
+高度图和 GIF 必须包含 `height (m)` colorbar。GIF 中地形不清楚时，先检查 `figures/terrain_height_map.png`。

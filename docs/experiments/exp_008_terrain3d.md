@@ -1,10 +1,10 @@
-# exp_008 Terrain3D
+# exp_008 三维地形
 
-## Purpose
+## 目的
 
-Upgrade the proxy environment from planar motion to terrain-aware 3D simplified dynamics and verify strict convergence on weak lunar crater terrain.
+将 proxy 环境从平面运动升级为 terrain-aware 3D 简化动力学，并在弱 lunar crater 地形上验证严格收敛。
 
-## Configuration
+## 配置
 
 ```text
 configs/experiment/exp_008_terrain3d_pure_rl.yaml
@@ -13,7 +13,7 @@ configs/experiment/exp_008_terrain3d_weak_warmstart_retry.yaml
 configs/experiment/exp_008_terrain3d_weak_warmstart_select.yaml
 ```
 
-Terrain sanity:
+地形 sanity：
 
 ```text
 height_range ~= 0.241 m
@@ -21,9 +21,9 @@ roughness_max ~= 0.360
 traversability_min ~= 0.549
 ```
 
-## Result
+## 结果
 
-Pure RL did not converge in the tested budgets. Weak warm-start + PPO passed strict acceptance for seeds `23, 31, 47`.
+Pure RL 在测试预算内没有收敛。弱 warm-start + PPO 在 seeds `23, 31, 47` 上通过严格验收。
 
 | seed | final run | dmax_ratio | success | collision | timeout |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -31,7 +31,7 @@ Pure RL did not converge in the tested budgets. Weak warm-start + PPO passed str
 | 31 | `weak_warmstart_completion_seed31_4m_evalseed0_cpu` | 0.1345 | 0.9961 | 0.0049 | 0.0000 |
 | 47 | `weak_warmstart_select_seed47_8m_lunar_crater_cpu` | 0.1560 | 1.0000 | 0.0000 | 0.0000 |
 
-Suite outputs:
+Suite 输出：
 
 ```text
 outputs/runs/exp_008_terrain3d/_suite/metrics/strict_acceptance.json
@@ -40,7 +40,6 @@ outputs/runs/exp_008_terrain3d/_suite/figures/comparison_curves.png
 outputs/runs/exp_008_terrain3d/_suite/checkpoints/
 ```
 
-## Notes
+## 说明
 
-This is the current best full 3-seed terrain-aware proxy result.
-
+这是当前最佳的完整 3-seed terrain-aware proxy 结果。

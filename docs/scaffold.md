@@ -1,8 +1,6 @@
-# Scaffold Mirror
+# 脚手架说明
 
-The code is organized according to `multi_rover_isaac_project_scaffold_v1_0.md`.
+代码组织遵循 `multi_rover_isaac_project_scaffold_v1_0.md`。
 
-The first-stage implementation keeps the physics adapter deliberately narrow so that the real
-rover USD/URDF and articulation control mode can be inserted later without rewriting the planning
-and reward modules.
+第一阶段实现刻意保持 physics adapter 边界较窄，这样后续可以在不重写 planning 和 reward 模块的前提下，插入真实 rover USD/URDF 和 articulation 控制模式。
 

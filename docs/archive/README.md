@@ -1,13 +1,13 @@
-# Archive
+# 归档文档
 
-This directory stores historical progress logs and build notes.
+本目录保存历史进度日志和构建记录。
 
-For current status, read:
+当前状态请阅读：
 
 ```text
 docs/current_status.md
 docs/experiments/README.md
 ```
 
-Archived files should not be treated as the source of truth for current checkpoints or active plans.
+归档文件只用于追溯过程，不作为当前 checkpoint、实验结论或主动计划的唯一依据。
 

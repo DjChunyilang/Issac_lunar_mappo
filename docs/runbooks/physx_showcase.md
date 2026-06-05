@@ -1,8 +1,8 @@
-# PhysX Showcase Runbook
+# PhysX 展示操作手册
 
-PhysX is a validation and showcase layer. It is not in the main training loop.
+PhysX 是验证和展示层，不进入主训练 loop。
 
-## Headless Evaluation
+## 无头评估
 
 ```bash
 .venv_isaaclab/bin/python scripts/evaluate_physx_four_jetbots.py \
@@ -14,7 +14,7 @@ PhysX is a validation and showcase layer. It is not in the main training loop.
   --run-dir outputs/runs/<experiment>/<run_id>
 ```
 
-## Rendered Capture
+## 渲染录制
 
 ```bash
 .venv_isaaclab/bin/python scripts/evaluate_physx_four_jetbots.py \
@@ -27,7 +27,7 @@ PhysX is a validation and showcase layer. It is not in the main training loop.
   --run-dir outputs/runs/<experiment>/<run_id>
 ```
 
-Default outputs:
+默认输出：
 
 ```text
 physx/metrics/lunar_crater_headless.json
@@ -35,4 +35,3 @@ physx/metrics/lunar_crater_render.json
 physx/figures/lunar_crater_render_scene.png
 physx/videos/lunar_crater_render_rollout.gif
 ```
-

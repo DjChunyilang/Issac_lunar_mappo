@@ -1,23 +1,23 @@
-# exp_007 Phase C
+# exp_007 阶段 C
 
-## Purpose
+## 目的
 
-Add lunar crater proxy terrain, PhysX lunar crater mesh, four Jetbot evaluation, and a weak warm-start checkpoint whose best checkpoint comes from PPO.
+加入 lunar crater proxy 地形、PhysX lunar crater mesh、四 Jetbot 评估，并得到一个 best checkpoint 来自 PPO 阶段的弱 warm-start 结果。
 
-## Configuration
+## 配置
 
 ```text
 configs/experiment/exp_007_phase_c_weak_warmstart.yaml
 configs/experiment/exp_007_phase_c_pure_rl.yaml
 ```
 
-Representative final checkpoint:
+代表性最终 checkpoint：
 
 ```text
 outputs/runs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/checkpoints/best.pt
 ```
 
-## Training Result
+## 训练结果
 
 ```text
 phase: ppo
@@ -28,7 +28,7 @@ collision_rate: 0.0000
 timeout_rate: 0.0000
 ```
 
-Independent proxy evaluation:
+独立 proxy 评估：
 
 ```text
 dmax_reduction_ratio: 0.1401
@@ -38,9 +38,9 @@ timeout_rate: 0.0000
 mean_done_step: 83.53
 ```
 
-## PhysX Result
+## PhysX 结果
 
-Four Jetbot lunar crater evaluation passed as a high-fidelity sanity check:
+四 Jetbot lunar crater 评估作为高保真 sanity check 通过：
 
 ```text
 success_rate: 1.0000
@@ -48,7 +48,6 @@ collision_rate: 0.0000
 mean_final_dmax: 0.7977
 ```
 
-## Notes
+## 说明
 
-PhysX is used for validation and showcase only. It is not in the main training loop.
-
+PhysX 只用于验证和展示，不进入主训练 loop。

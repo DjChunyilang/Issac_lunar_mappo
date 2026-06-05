@@ -1,10 +1,10 @@
-# Output Management
+# 输出管理
 
-Generated artifacts are managed with a run-oriented layout. The goal is to keep long experiments searchable without committing large generated files.
+生成产物采用 run-oriented 目录结构管理。目标是让长期实验可检索，同时避免提交大型生成文件。
 
-## Canonical Layout
+## 标准目录结构
 
-Use one directory per concrete run:
+每个具体 run 使用一个独立目录：
 
 ```text
 outputs/runs/<experiment_id>/<run_id>/
@@ -40,7 +40,7 @@ outputs/runs/<experiment_id>/<run_id>/
   run_manifest.json
 ```
 
-Experiment-level suite outputs use a reserved run:
+实验级 suite 输出使用保留 run 名 `_suite`：
 
 ```text
 outputs/runs/<experiment_id>/_suite/
@@ -54,45 +54,45 @@ outputs/runs/<experiment_id>/_suite/
   run_manifest.json
 ```
 
-A root index summarizes all manifests:
+根索引用于汇总所有 manifest：
 
 ```text
 outputs/runs/_index.json
 ```
 
-Legacy paths such as `outputs/logs/`, `outputs/checkpoints/`, `outputs/figures/`, and `outputs/videos/` are kept for historical compatibility. New work should prefer `outputs/runs/`.
+历史路径 `outputs/logs/`、`outputs/checkpoints/`、`outputs/figures/` 和 `outputs/videos/` 保留兼容。新工作优先使用 `outputs/runs/`。
 
-Current canonical terrain-aware convergence suite:
+当前标准 terrain-aware convergence suite：
 
 ```text
 outputs/runs/exp_008_terrain3d/_suite/
 ```
 
-The suite contains final strict proxy acceptance, comparison figures, and copied seed-specific best checkpoints.
+该 suite 包含最终严格 proxy 验收、对比图，以及复制出的各 seed best checkpoint。
 
-## Naming Rules
+## 命名规则
 
-- `experiment_id`: stable experiment family, lower snake case, normally `exp_###_<topic>`.
-  - Good: `exp_007_phase_c`, `exp_008_terrain3d`.
-  - Avoid changing this for every seed or minor retry.
-- `run_id`: concrete settings, lower snake case, no spaces.
-  - Recommended pattern: `<mode>_seed<seed>_<budget>_<terrain>_<short_tag>`.
-  - Examples: `weak_warmstart_seed23_6m_lunar_crater_bc50`, `pure_rl_seed31_2m_flat`, `smoke_seed23_8k_cpu`.
-- Checkpoints inside a run:
-  - `checkpoints/best.pt`: canonical checkpoint for the run.
-  - `checkpoints/ppo_update_XXX.pt`: optional update-specific checkpoint.
-- Metrics:
-  - `metrics/summary.json`: one-file summary for dashboards and quick inspection.
-  - `metrics/train_metrics.jsonl`: update-by-update training records.
-  - `metrics/eval_metrics.json`: deterministic evaluation records from training.
-  - `metrics/final_eval_proxy.json`: independent post-training proxy evaluation.
-- Visuals:
-  - Proxy figures/videos stay under `figures/` and `videos/`.
-  - Isaac Sim / PhysX artifacts stay under `physx/metrics|figures|videos`.
+- `experiment_id`：稳定的实验族，使用 lower snake case，通常为 `exp_###_<topic>`。
+  - 推荐：`exp_007_phase_c`、`exp_008_terrain3d`。
+  - 不要因为 seed 或小 retry 改变 `experiment_id`。
+- `run_id`：具体设置，使用 lower snake case，不含空格。
+  - 推荐模式：`<mode>_seed<seed>_<budget>_<terrain>_<short_tag>`。
+  - 示例：`weak_warmstart_seed23_6m_lunar_crater_bc50`、`pure_rl_seed31_2m_flat`、`smoke_seed23_8k_cpu`。
+- checkpoint：
+  - `checkpoints/best.pt`：该 run 的标准 checkpoint。
+  - `checkpoints/ppo_update_XXX.pt`：可选的 update checkpoint。
+- metrics：
+  - `metrics/summary.json`：dashboard 和快速检查用的一文件摘要。
+  - `metrics/train_metrics.jsonl`：逐 update 训练记录。
+  - `metrics/eval_metrics.json`：训练过程中的 deterministic eval 记录。
+  - `metrics/final_eval_proxy.json`：训练后的独立 proxy 评估。
+- visual：
+  - Proxy 图和视频放在 `figures/` 和 `videos/`。
+  - Isaac Sim / PhysX 产物放在 `physx/metrics|figures|videos`。
 
-## Organizing Existing Outputs
+## 整理已有 outputs
 
-Inspect the migration plan without writing files:
+只查看迁移计划，不写入文件：
 
 ```bash
 .venv_isaaclab/bin/python scripts/organize_outputs.py \
@@ -101,7 +101,7 @@ Inspect the migration plan without writing files:
   --dry-run
 ```
 
-Create canonical symlinks for all known legacy experiments:
+为所有已知历史实验创建标准 symlink：
 
 ```bash
 .venv_isaaclab/bin/python scripts/organize_outputs.py \
@@ -109,7 +109,7 @@ Create canonical symlinks for all known legacy experiments:
   --mode symlink
 ```
 
-Refresh a single experiment:
+刷新单个实验：
 
 ```bash
 .venv_isaaclab/bin/python scripts/organize_outputs.py \
@@ -117,7 +117,7 @@ Refresh a single experiment:
   --mode symlink
 ```
 
-Refresh the curated Phase C run, including PhysX showcase artifacts:
+刷新 Phase C run，并包含 PhysX 展示产物：
 
 ```bash
 .venv_isaaclab/bin/python scripts/organize_outputs.py \
@@ -126,11 +126,11 @@ Refresh the curated Phase C run, including PhysX showcase artifacts:
   --overwrite
 ```
 
-Use `--mode copy` only when the run directory must be self-contained and independent of legacy paths. Avoid `--overwrite` unless you are refreshing generated canonical links.
+只有当 run 目录必须完全自包含并脱离历史路径时，才使用 `--mode copy`。除非要刷新生成的标准链接，否则避免使用 `--overwrite`。
 
-## Future Training
+## 后续训练
 
-For new training configs, set:
+新训练配置中设置：
 
 ```yaml
 experiment:
@@ -138,7 +138,7 @@ experiment:
   output_layout: run
 ```
 
-Run with an explicit `run_id`:
+运行时显式指定 `run_id`：
 
 ```bash
 .venv_isaaclab/bin/python scripts/train_proxy_convergence.py \
@@ -148,9 +148,9 @@ Run with an explicit `run_id`:
   --device cuda
 ```
 
-The training script writes `config/experiment.yaml`, `metrics/summary.json`, `metrics/eval_metrics.json`, `run_manifest.json`, TensorBoard events, plots, GIFs, and `checkpoints/best.pt` directly under the run directory.
+训练脚本会直接在 run 目录下写入 `config/experiment.yaml`、`metrics/summary.json`、`metrics/eval_metrics.json`、`run_manifest.json`、TensorBoard events、图、GIF 和 `checkpoints/best.pt`。
 
-TensorBoard:
+TensorBoard：
 
 ```bash
 .venv_isaaclab/bin/tensorboard \
@@ -158,9 +158,9 @@ TensorBoard:
   --port 6007
 ```
 
-## Future Proxy Evaluation
+## 后续 Proxy 评估
 
-Use `--run-dir` so independent evaluation is stored with the run:
+使用 `--run-dir` 将独立评估结果写回同一 run：
 
 ```bash
 .venv_isaaclab/bin/python scripts/evaluate_proxy_policy.py \
@@ -172,15 +172,15 @@ Use `--run-dir` so independent evaluation is stored with the run:
   --run-dir outputs/runs/exp_008_terrain3d/weak_warmstart_seed23_6m_lunar_crater_bc20
 ```
 
-Default output with `--run-dir`:
+带 `--run-dir` 时默认输出：
 
 ```text
 outputs/runs/<experiment_id>/<run_id>/metrics/final_eval_proxy.json
 ```
 
-## Future PhysX Evaluation
+## 后续 PhysX 评估
 
-Use `--run-dir` so high-fidelity evaluation artifacts stay with the same run:
+使用 `--run-dir` 让高保真评估产物留在同一个 run：
 
 ```bash
 .venv_isaaclab/bin/python scripts/evaluate_physx_four_jetbots.py \
@@ -192,7 +192,7 @@ Use `--run-dir` so high-fidelity evaluation artifacts stay with the same run:
   --run-dir outputs/runs/exp_008_terrain3d/weak_warmstart_seed23_6m_lunar_crater_bc20
 ```
 
-Rendered capture:
+渲染录制：
 
 ```bash
 .venv_isaaclab/bin/python scripts/evaluate_physx_four_jetbots.py \
@@ -205,7 +205,7 @@ Rendered capture:
   --run-dir outputs/runs/exp_008_terrain3d/weak_warmstart_seed23_6m_lunar_crater_bc20
 ```
 
-Default PhysX paths with `--run-dir`:
+带 `--run-dir` 时默认 PhysX 路径：
 
 ```text
 physx/metrics/lunar_crater_headless.json
@@ -214,13 +214,13 @@ physx/figures/lunar_crater_render_scene.png
 physx/videos/lunar_crater_render_rollout.gif
 ```
 
-## Git Policy
+## Git 策略
 
-`outputs/**` is ignored. Keep results reproducible by tracking:
+`outputs/**` 已被忽略。为了保证结果可复现，需要跟踪：
 
 - `configs/experiment/*.yaml`
-- training/evaluation/organization scripts
-- `docs/progress_summary_*.md`
+- 训练、评估、整理脚本
+- 实验 Markdown 文档
 - `docs/references/output_management.md`
 
-Do not commit generated checkpoints, TensorBoard events, PNGs, GIFs, or JSON metrics unless a specific report explicitly needs a curated artifact.
+不要提交生成的 checkpoint、TensorBoard events、PNG、GIF 或 JSON metrics；除非某个报告明确需要少量 curated artifact。

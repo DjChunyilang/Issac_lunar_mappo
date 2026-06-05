@@ -1,22 +1,22 @@
-# Roadmap
+# 路线图
 
-## Immediate
+## 立即处理
 
-1. Keep exp008 as the current validated 3-seed terrain-aware proxy result.
-2. Treat exp009 as a strong-terrain diagnostic, not a strict success.
-3. Diagnose seed31 failure episodes from exp009.
-4. Prototype a success-region control/reward change before further long training.
+1. 将 exp008 保持为当前已验证的 3-seed terrain-aware proxy 结果。
+2. 将 exp009 视为强地形诊断实验，而不是严格成功结果。
+3. 诊断 exp009 seed31 失败 episode。
+4. 在继续长训练前，先原型化成功区附近的 control/reward 改动。
 
-## Near Term
+## 近期工作
 
-- Add explicit metrics for why success hold fails: `dmax_ok`, `dispersion_ok`, `speed_ok`, and hold count distribution.
-- Add focused rollout debug plots for failed episodes.
-- Compare reward/control variants with short seed31 runs before launching 10M+ budgets.
-- Keep PhysX as validation/showcase, not the main training loop.
+- 新增成功 hold 失败原因指标：`dmax_ok`、`dispersion_ok`、`speed_ok` 和 hold count 分布。
+- 为失败 episode 增加定点 rollout debug 图。
+- 长预算训练前，先用 seed31 短 run 对比 reward/control 变体。
+- PhysX 继续作为验证和展示层，不进入主训练 loop。
 
-## Longer Term
+## 中长期工作
 
-- Revisit the action representation if success-region stability remains brittle.
-- Add a stricter curriculum for terrain strength if direct strong-terrain training remains unstable.
-- Build a repeatable report generator that reads `_suite/metrics/*.json` and updates experiment docs.
+- 如果成功区稳定性仍然脆弱，重新审视动作表示。
+- 如果强地形直接训练仍不稳定，加入更严格的地形强度 curriculum。
+- 构建可重复的报告生成器，从 `_suite/metrics/*.json` 自动更新实验文档。
 

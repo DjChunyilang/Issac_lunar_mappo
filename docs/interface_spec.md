@@ -1,31 +1,26 @@
-# Interface Spec
+# 接口规范
 
-## Actor Observation
+## Actor 观测
 
-Shape: `(num_envs, 4, obs_dim)`.
+形状：`(num_envs, 4, obs_dim)`。
 
-The actor observation contains ego state, neighbor state sharing, flat-terrain handcrafted
-features, and local aggregation features. It does not contain `p*`, oracle distances, or oracle
-distance reductions.
+Actor observation 包含自车状态、邻居共享状态、地形手工特征和局部聚合特征。不包含 `p*`、oracle 距离或 oracle 距离缩减量。
 
-## Critic State
+## Critic 状态
 
-Shape: `(num_envs, state_dim)`.
+形状：`(num_envs, state_dim)`。
 
-The critic state contains all rover true states, team geometry, terrain summary, and training-only
-oracle features.
+Critic state 包含全部 rover 真值状态、队形几何信息、地形摘要和仅训练使用的 oracle 特征。
 
-## Action
+## 动作
 
-Shape: `(num_envs, 4, 2)`.
+形状：`(num_envs, 4, 2)`。
 
-The normalized action is mapped to:
+归一化 action 被映射为：
 
 - `rho in [0, rho_max]`
 - `beta in [-beta_max, beta_max]`
 
-## First-Stage Dynamics
+## 第一阶段动力学
 
-The current rover is a proxy unicycle state model. Replace it with a real Isaac Sim articulation
-only after the rover asset and control interface are defined.
-
+当前 rover 是 proxy unicycle 状态模型。只有在 rover 资产和控制接口明确后，才应替换为真实 Isaac Sim articulation。

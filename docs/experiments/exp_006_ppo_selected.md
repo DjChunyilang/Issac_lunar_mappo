@@ -1,16 +1,16 @@
-# exp_006 PPO-Selected Baseline
+# exp_006 PPO 阶段选择基线
 
-## Purpose
+## 目的
 
-Establish a flat/proxy strict baseline where the final best checkpoint must come from PPO, not from warm-up.
+建立平地 / proxy 严格基线，并要求最终 best checkpoint 必须来自 PPO 阶段，而不是 warm-up 阶段。
 
-## Configuration
+## 配置
 
 ```text
 configs/experiment/exp_006_ppo_selected_bc_ppo.yaml
 ```
 
-Key settings:
+关键参数：
 
 ```text
 num_envs: 1024
@@ -26,9 +26,9 @@ best_source: ppo
 required_best_phase: ppo
 ```
 
-## Result
+## 结果
 
-The BC+PPO group passed strict acceptance for seeds `23, 31, 47`. The best seed was seed 23 update 15:
+BC+PPO 组在 seeds `23, 31, 47` 上通过严格验收。最佳结果为 seed23 update 15：
 
 ```text
 dmax_reduction_ratio: 0.1438
@@ -37,7 +37,7 @@ collision_rate: 0.0
 timeout_rate: 0.0
 ```
 
-## Notes
+## 说明
 
-This result is a PPO-selected result after warm-start. It is not pure RL from scratch.
+这是 warm-start 后由 PPO 阶段选出的结果，不是 pure RL 从零训练结果。
 

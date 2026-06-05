@@ -1,6 +1,6 @@
-# Proxy Evaluation Runbook
+# Proxy 评估操作手册
 
-## Standard Independent Evaluation
+## 标准独立评估
 
 ```bash
 .venv_isaaclab/bin/python scripts/evaluate_proxy_policy.py \
@@ -14,7 +14,7 @@
   --output outputs/runs/<experiment>/<run_id>/metrics/final_eval_proxy.json
 ```
 
-## Strict Gates
+## 严格 Gate
 
 ```text
 dmax_reduction_ratio <= 0.2
@@ -23,9 +23,9 @@ collision_rate <= 0.02
 timeout_rate == 0
 ```
 
-Prefer independent `final_eval_proxy.json` over training-internal best metrics when writing final conclusions.
+写最终结论时，优先使用独立评估的 `final_eval_proxy.json`，不要只依赖训练内部 best metrics。
 
-## Terrain Metrics to Report
+## 必须报告的地形指标
 
 ```text
 terrain_height_range
@@ -34,4 +34,3 @@ max_roughness
 min_traversability
 mean_terrain_speed_scale
 ```
-

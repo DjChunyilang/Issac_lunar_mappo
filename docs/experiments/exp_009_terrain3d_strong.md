@@ -1,16 +1,16 @@
-# exp_009 Strong Terrain3D
+# exp_009 强三维地形
 
-## Purpose
+## 目的
 
-Increase terrain height range to `0.6-1.0 m` and test whether the weak warm-start + PPO workflow still passes strict acceptance.
+将地形高度范围提高到 `0.6-1.0 m`，测试弱 warm-start + PPO 流程是否仍能通过严格验收。
 
-## Configuration
+## 配置
 
 ```text
 configs/experiment/exp_009_terrain3d_strong_weak_warmstart.yaml
 ```
 
-Terrain profile:
+地形 profile：
 
 ```text
 height_range ~= 0.740 m
@@ -19,18 +19,18 @@ traversability_min ~= 0.096
 mean_terrain_speed_scale ~= 0.393
 ```
 
-## Result
+## 结果
 
-exp009 did not pass strict acceptance.
+exp009 未通过严格验收。
 
-| seed | selected run | dmax_ratio | success | collision | timeout | result |
+| seed | selected run | dmax_ratio | success | collision | timeout | 结果 |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| 23 | `weak_warmstart_seed23_timeout_retry6m_strong_lunar_crater_cpu_nenv1024_eval1024` | 0.1473 | 1.0000 | 0.0000 | 0.0000 | pass |
-| 31 | `weak_warmstart_seed31_retry20m_safe090_strong_lunar_crater_cuda_eval1024` | 0.1819 | 0.8740 | 0.0049 | 0.1250 | fail |
+| 23 | `weak_warmstart_seed23_timeout_retry6m_strong_lunar_crater_cpu_nenv1024_eval1024` | 0.1473 | 1.0000 | 0.0000 | 0.0000 | 通过 |
+| 31 | `weak_warmstart_seed31_retry20m_safe090_strong_lunar_crater_cuda_eval1024` | 0.1819 | 0.8740 | 0.0049 | 0.1250 | 未通过 |
 
-seed 47 was not run after seed31 failed, because 3-seed strict acceptance was already impossible.
+seed31 失败后没有继续运行 seed47，因为 3-seed strict acceptance 已经不可能成立。
 
-Suite outputs:
+Suite 输出：
 
 ```text
 outputs/runs/exp_009_terrain3d_strong/_suite/metrics/strict_acceptance.json
@@ -39,9 +39,9 @@ outputs/runs/exp_009_terrain3d_strong/_suite/figures/comparison_curves.png
 outputs/runs/exp_009_terrain3d_strong/_suite/figures/terrain_height_map.png
 ```
 
-## Failure Analysis
+## 失败分析
 
-seed31 meets the dmax and collision gates, but fails success and timeout:
+seed31 满足 dmax 和 collision gate，但未满足 success 和 timeout：
 
 ```text
 dmax_reduction_ratio: 0.1819
@@ -50,13 +50,12 @@ collision_rate: 0.0049
 timeout_rate: 0.1250
 ```
 
-Fixed retries did not solve it:
+固定 retry 未解决问题：
 
-1. 20M safety retry improved dmax and collision but not success/timeout.
-2. 6M completion retry reduced dmax but increased collision.
-3. 6M conservative retry did not pass strict and did not improve the selected result.
+1. 20M safety retry 改善了 dmax 和 collision，但没有解决 success/timeout。
+2. 6M completion retry 降低了 dmax，但提高了 collision。
+3. 6M conservative retry 没有通过 strict，也没有改善最终选中结果。
 
-## Next Step
+## 下一步
 
-Do not continue unbounded PPO on the same setup. Diagnose failed seed31 episodes and change task/control design before another long run.
-
+不要在同一设置上继续无界 PPO。下一轮长训练前，应先诊断 seed31 失败 episode，并修改任务或控制设计。
