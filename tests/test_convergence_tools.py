@@ -38,7 +38,11 @@ def test_cfg_from_experiment_parses_reward_control_and_success_thresholds(tmp_pa
                 "low_level_control": {"max_linear_speed": 0.7},
                 "reward": {
                     "weights": {"energy": 0.123},
-                    "coefficients": {"dmax_level": 0.25, "success_bonus": 12.0},
+                    "coefficients": {
+                        "dmax_level": 0.25,
+                        "success_hold_step": 1.75,
+                        "success_bonus": 12.0,
+                    },
                 },
                 "safety": {"near_distance": 0.95},
                 "terrain": {
@@ -64,6 +68,7 @@ def test_cfg_from_experiment_parses_reward_control_and_success_thresholds(tmp_pa
     assert cfg.low_level_control.max_linear_speed == 0.7
     assert cfg.reward_weights.energy == 0.123
     assert cfg.reward_coefficients.dmax_level == 0.25
+    assert cfg.reward_coefficients.success_hold_step == 1.75
     assert cfg.reward_coefficients.success_bonus == 12.0
     assert cfg.safety.near_distance == 0.95
     assert cfg.terrain.type == "lunar_crater_proxy"
@@ -136,6 +141,20 @@ def test_evaluate_proxy_policy_outputs_finite_ratio(tmp_path: Path) -> None:
     assert "min_nearest_distance" in result
     assert "near_violation_rate" in result
     assert "collision_episode_ids" in result
+    for key in (
+        "dmax_ok_rate",
+        "dispersion_ok_rate",
+        "speed_ok_rate",
+        "instant_success_rate",
+        "max_success_hold_count_mean",
+        "final_success_hold_count_mean",
+        "final_mean_speed",
+    ):
+        assert key in result
+        assert torch.isfinite(torch.tensor(result[key]))
+    assert "hold_count_histogram" in result
+    assert "timeout_episode_metrics" in result
+    assert result["timeout_episode_metrics"]["count"] >= 0
     for key in (
         "mean_terrain_height",
         "terrain_height_range",

@@ -1,0 +1,109 @@
+experiment:
+  name: exp_010_strong_success_diagnostics
+  seed: 31
+  num_envs: 2048
+  device: cuda
+  total_env_steps: 4000000
+  rollout_steps: 128
+  output_layout: run
+  eval_interval_updates: 1
+  eval_num_envs: 1024
+  eval_steps: 260
+  eval_seed_offset: 0
+
+logging:
+  tensorboard: true
+
+simulation:
+  episode_length_s: 52.0
+  physics_dt: 0.05
+  control_decimation: 4
+
+task:
+  n_agents: 4
+
+planner:
+  rho_max: 1.2
+  beta_max: 1.57079632679
+
+low_level_control:
+  max_linear_speed: 1.0
+  max_angular_speed: 2.5
+  k_linear: 1.6
+  k_angular: 3.0
+
+terrain:
+  type: lunar_crater_proxy
+  dynamics_enabled: true
+  amplitude: 0.16
+  wavelength: 2.8
+  roughness_scale: 1.0
+  traversability_slope_scale: 0.45
+  slope_speed_scale: 1.25
+  min_speed_scale: 0.25
+  crater_count: 7
+  crater_min_radius: 0.45
+  crater_max_radius: 1.25
+  crater_depth_to_diameter: 0.18
+  crater_rim_height_to_diameter: 0.025
+  crater_field_size: 9.0
+  crater_seed: 11
+
+reward:
+  weights:
+    gather: 1.0
+    oracle: 0.5
+    energy: 0.003
+    safety: 1.0
+    terrain: 0.45
+    motion: 0.005
+    consistency: 0.003
+    terminal: 1.0
+  coefficients:
+    dmax_progress: 3.8
+    dispersion_progress: 1.4
+    dmax_level: 0.05
+    dispersion_level: 0.006
+    oracle_mean_distance_progress: 2.4
+    path_length: 0.05
+    slope_cost: 0.55
+    terrain_cost: 0.55
+    turn_cost: 0.015
+    near_distance: 4.0
+    inter_agent_collision: 60.0
+    subgoal_turn: 0.015
+    subgoal_stagnation: 0.04
+    action_consistency: 0.006
+    success_hold_step: 1.5
+    success_bonus: 45.0
+    failure_penalty: 45.0
+
+success_thresholds:
+  dmax: 1.25
+  dispersion: 0.30
+  speed: 0.25
+  hold_steps: 8
+
+algorithm:
+  mode: weak_warmstart
+  best_source: ppo
+  required_best_phase: ppo
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.20
+  ppo_epochs: 4
+  mini_batches: 16
+  learning_rate: 0.00004
+  max_grad_norm: 0.5
+  value_loss_coef: 0.5
+  entropy_coef_start: 0.002
+  entropy_coef_end: 0.0002
+  reference_policy_coef_start: 0.0
+  reference_policy_coef_end: 0.0
+  scripted_teacher_coef_start: 0.0
+  scripted_teacher_coef_end: 0.0
+  bc_steps: 0
+  bc_batch_size: 8192
+  bc_learning_rate: 0.001
+  teacher_stop_radius: 0.45
+  teacher_slow_distance: 0.45

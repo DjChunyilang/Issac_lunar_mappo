@@ -106,6 +106,7 @@ class RewardCoefficientsCfg:
     subgoal_turn: float = 0.05
     subgoal_stagnation: float = 0.1
     action_consistency: float = 0.02
+    success_hold_step: float = 0.0
     success_bonus: float = 10.0
     failure_penalty: float = 10.0
 

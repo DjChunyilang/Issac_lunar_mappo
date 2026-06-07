@@ -4,7 +4,7 @@ import torch
 
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import SafetyCfg, SuccessThresholdsCfg
 from lunar_rover_tasks.tasks.multi_rover_gathering.metrics import compute_team_metrics
-from lunar_rover_tasks.tasks.multi_rover_gathering.termination import compute_done
+from lunar_rover_tasks.tasks.multi_rover_gathering.termination import compute_done, compute_success_gates
 
 
 def test_success_requires_hold_steps() -> None:
@@ -55,3 +55,39 @@ def test_collision_failure() -> None:
     assert bool(flags.collision.item())
     assert bool(flags.terminated.item())
 
+
+def test_success_gate_diagnostics_match_hold_logic() -> None:
+    positions = torch.tensor(
+        [
+            [[-0.2, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, -0.2, 0.0]],
+            [[-0.2, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, -0.2, 0.0]],
+            [[-2.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, -2.0, 0.0]],
+        ]
+    )
+    velocities = torch.tensor(
+        [
+            [[0.01, 0.0], [0.0, 0.01], [0.0, 0.0], [0.0, 0.0]],
+            [[0.20, 0.0], [0.0, 0.20], [0.0, 0.0], [0.0, 0.0]],
+            [[0.01, 0.0], [0.0, 0.01], [0.0, 0.0], [0.0, 0.0]],
+        ]
+    )
+    thresholds = SuccessThresholdsCfg(dmax=1.0, dispersion=1.0, speed=0.1, hold_steps=2)
+    metrics = compute_team_metrics(positions, velocities)
+
+    gates = compute_success_gates(metrics, velocities, thresholds)
+    assert gates.dmax_ok.tolist() == [True, True, False]
+    assert gates.dispersion_ok.tolist() == [True, True, False]
+    assert gates.speed_ok.tolist() == [True, False, True]
+    assert gates.instant_success.tolist() == [True, False, False]
+
+    _, hold = compute_done(
+        positions,
+        velocities,
+        metrics,
+        torch.ones(3, dtype=torch.long),
+        torch.zeros(3, dtype=torch.long),
+        100,
+        thresholds,
+        SafetyCfg(collision_distance=0.01),
+    )
+    assert hold.tolist() == [2, 0, 0]

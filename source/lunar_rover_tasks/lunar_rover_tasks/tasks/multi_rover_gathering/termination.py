@@ -25,6 +25,31 @@ class DoneFlags:
     done: torch.Tensor
 
 
+@dataclass(slots=True)
+class SuccessGateDiagnostics:
+    dmax_ok: torch.Tensor
+    dispersion_ok: torch.Tensor
+    speed_ok: torch.Tensor
+    instant_success: torch.Tensor
+
+
+def compute_success_gates(
+    metrics: TeamMetrics,
+    velocities_xy: torch.Tensor,
+    thresholds: SuccessThresholdsCfg,
+) -> SuccessGateDiagnostics:
+    dmax_ok = metrics.dmax <= thresholds.dmax
+    dispersion_ok = metrics.dispersion <= thresholds.dispersion
+    speed_ok = (torch.linalg.norm(velocities_xy, dim=-1) <= thresholds.speed).all(dim=-1)
+    instant_success = dmax_ok & dispersion_ok & speed_ok
+    return SuccessGateDiagnostics(
+        dmax_ok=dmax_ok,
+        dispersion_ok=dispersion_ok,
+        speed_ok=speed_ok,
+        instant_success=instant_success,
+    )
+
+
 def check_collision(positions: torch.Tensor, safety: SafetyCfg) -> torch.Tensor:
     pairwise = pairwise_distances_xy(positions)
     n_agents = positions.shape[1]
@@ -42,13 +67,8 @@ def update_success_hold_count(
     velocities_xy: torch.Tensor,
     thresholds: SuccessThresholdsCfg,
 ) -> torch.Tensor:
-    speed_ok = (torch.linalg.norm(velocities_xy, dim=-1) <= thresholds.speed).all(dim=-1)
-    instant_success = (
-        (metrics.dmax <= thresholds.dmax)
-        & (metrics.dispersion <= thresholds.dispersion)
-        & speed_ok
-    )
-    return torch.where(instant_success, hold_count + 1, torch.zeros_like(hold_count))
+    gates = compute_success_gates(metrics, velocities_xy, thresholds)
+    return torch.where(gates.instant_success, hold_count + 1, torch.zeros_like(hold_count))
 
 
 def compute_done(
@@ -81,4 +101,3 @@ def compute_done(
         ),
         next_hold,
     )
-

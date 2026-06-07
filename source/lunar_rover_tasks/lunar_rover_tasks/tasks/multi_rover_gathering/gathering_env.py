@@ -35,7 +35,11 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
     query_height,
     query_terrain_features,
 )
-from lunar_rover_tasks.tasks.multi_rover_gathering.termination import DoneFlags, compute_done
+from lunar_rover_tasks.tasks.multi_rover_gathering.termination import (
+    DoneFlags,
+    compute_done,
+    compute_success_gates,
+)
 from lunar_rover_tasks.tasks.multi_rover_gathering.trajectory_generator import (
     Trajectory,
     generate_trajectory,
@@ -199,6 +203,7 @@ class MultiRoverGatheringCore:
             self.cfg.success_thresholds,
             self.cfg.safety,
         )
+        success_gates = compute_success_gates(metrics, self.velocities_xy, self.cfg.success_thresholds)
         terms, mean_oracle = compute_reward(
             self.positions,
             self.oracle_point,
@@ -208,6 +213,7 @@ class MultiRoverGatheringCore:
             decoded.physical,
             self.previous_physical_action,
             done,
+            self.success_hold_count,
             self.last_terrain_features,
             self.cfg,
         )
@@ -219,6 +225,7 @@ class MultiRoverGatheringCore:
         terrain_features = self.last_terrain_features.clone()
         terrain_speed_scale = self.last_terrain_speed_scale.clone()
         height_delta = self.last_height_delta.clone()
+        success_hold_count = self.success_hold_count.clone()
 
         if done.done.any():
             env_ids = torch.nonzero(done.done, as_tuple=False).flatten()
@@ -235,6 +242,8 @@ class MultiRoverGatheringCore:
             truncated=done.truncated,
             info={
                 "done": done,
+                "success_gates": success_gates,
+                "success_hold_count": success_hold_count,
                 "reward_terms": terms,
                 "metrics": metrics,
                 "trajectory": trajectory,

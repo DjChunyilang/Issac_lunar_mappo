@@ -24,6 +24,7 @@ class RewardTerms:
     terrain: torch.Tensor
     motion: torch.Tensor
     consistency: torch.Tensor
+    success_hold: torch.Tensor
     terminal: torch.Tensor
     total: torch.Tensor
 
@@ -109,6 +110,17 @@ def compute_consistency_reward(
     return -cfg.reward_coefficients.action_consistency * delta.square().sum(dim=-1).mean(dim=-1)
 
 
+def compute_success_hold_reward(
+    success_hold_count: torch.Tensor,
+    cfg: MultiRoverGatheringEnvCfg,
+) -> torch.Tensor:
+    coeff = cfg.reward_coefficients.success_hold_step
+    if coeff == 0.0:
+        return torch.zeros_like(success_hold_count, dtype=torch.float32)
+    hold_ratio = success_hold_count.float() / float(max(cfg.success_thresholds.hold_steps, 1))
+    return coeff * hold_ratio.clamp(max=1.0)
+
+
 def compute_terminal_reward(done: DoneFlags, cfg: MultiRoverGatheringEnvCfg) -> torch.Tensor:
     coeff = cfg.reward_coefficients
     reward = torch.zeros_like(done.success, dtype=torch.float32)
@@ -127,6 +139,7 @@ def compute_reward(
     physical_action: torch.Tensor,
     previous_physical_action: torch.Tensor,
     done: DoneFlags,
+    success_hold_count: torch.Tensor,
     terrain_features: torch.Tensor | None,
     cfg: MultiRoverGatheringEnvCfg,
 ) -> tuple[RewardTerms, torch.Tensor]:
@@ -143,6 +156,7 @@ def compute_reward(
     terrain = compute_terrain_reward(terrain_features, cfg, positions)
     motion = compute_motion_reward(physical_action, cfg)
     consistency = compute_consistency_reward(physical_action, previous_physical_action, cfg)
+    success_hold = compute_success_hold_reward(success_hold_count, cfg)
     terminal = compute_terminal_reward(done, cfg)
     total = (
         weights.gather * gather
@@ -152,6 +166,7 @@ def compute_reward(
         + weights.terrain * terrain
         + weights.motion * motion
         + weights.consistency * consistency
+        + success_hold
         + weights.terminal * terminal
     )
     return (
@@ -163,6 +178,7 @@ def compute_reward(
             terrain=terrain,
             motion=motion,
             consistency=consistency,
+            success_hold=success_hold,
             terminal=terminal,
             total=total,
         ),

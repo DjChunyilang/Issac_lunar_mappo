@@ -58,4 +58,6 @@ timeout_rate: 0.1250
 
 ## 下一步
 
-不要在同一设置上继续无界 PPO。下一轮长训练前，应先诊断 seed31 失败 episode，并修改任务或控制设计。
+不要在同一设置上继续无界 PPO。该诊断线近期暂缓，当前项目重心转为 Isaac Sim / Isaac Lab / SKRL / 本地任务包的环境搭建与工程闭环验收。
+
+后续恢复 strong terrain 研究时，再基于 seed31 失败结果重新设计动作表示、控制接口或 terrain curriculum。

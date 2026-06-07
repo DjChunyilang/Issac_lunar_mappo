@@ -31,6 +31,7 @@ def main() -> None:
         "safety": float(terms.safety.mean().detach().cpu()),
         "motion": float(terms.motion.mean().detach().cpu()),
         "consistency": float(terms.consistency.mean().detach().cpu()),
+        "success_hold": float(terms.success_hold.mean().detach().cpu()),
         "terminal": float(terms.terminal.mean().detach().cpu()),
         "total": float(terms.total.mean().detach().cpu()),
     }
@@ -39,4 +40,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -53,6 +53,10 @@ def evaluate_checkpoint(
     initial_dispersion = env.metrics.dispersion.detach().clone()
     final_dmax = initial_dmax.clone()
     final_dispersion = initial_dispersion.clone()
+    final_mean_speed = env.metrics.mean_speed.detach().clone()
+    final_success_hold_count = env.success_hold_count.detach().clone()
+    max_success_hold_count = env.success_hold_count.detach().clone()
+    final_terrain_speed_scale = torch.ones(env.num_envs, device=env.device)
     active = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
     success_seen = torch.zeros_like(active)
     collision_seen = torch.zeros_like(active)
@@ -74,6 +78,11 @@ def evaluate_checkpoint(
     terrain_traversability_min = torch.tensor(float("inf"), device=env.device)
     terrain_speed_scale_sum = torch.tensor(0.0, device=env.device)
     terrain_speed_scale_count = torch.tensor(0.0, device=env.device)
+    dmax_ok_sum = torch.tensor(0.0, device=env.device)
+    dispersion_ok_sum = torch.tensor(0.0, device=env.device)
+    speed_ok_sum = torch.tensor(0.0, device=env.device)
+    instant_success_sum = torch.tensor(0.0, device=env.device)
+    gate_sample_count = torch.tensor(0.0, device=env.device)
 
     for step_id in range(steps):
         active_before = active.clone()
@@ -86,9 +95,23 @@ def evaluate_checkpoint(
 
         final_dmax = torch.where(active_before, metrics.dmax, final_dmax)
         final_dispersion = torch.where(active_before, metrics.dispersion, final_dispersion)
+        final_mean_speed = torch.where(active_before, metrics.mean_speed, final_mean_speed)
+        success_hold_count = step_output.info["success_hold_count"]
+        final_success_hold_count = torch.where(active_before, success_hold_count, final_success_hold_count)
+        max_success_hold_count = torch.maximum(
+            max_success_hold_count,
+            torch.where(active_before, success_hold_count, torch.zeros_like(success_hold_count)),
+        )
         per_env_reward = step_output.rewards.mean(dim=-1)
         reward_sum = reward_sum + per_env_reward[active_before].sum()
         reward_count = reward_count + active_before.float().sum()
+        success_gates = step_output.info["success_gates"]
+        active_gate_count = active_before.float().sum()
+        gate_sample_count = gate_sample_count + active_gate_count
+        dmax_ok_sum = dmax_ok_sum + success_gates.dmax_ok[active_before].float().sum()
+        dispersion_ok_sum = dispersion_ok_sum + success_gates.dispersion_ok[active_before].float().sum()
+        speed_ok_sum = speed_ok_sum + success_gates.speed_ok[active_before].float().sum()
+        instant_success_sum = instant_success_sum + success_gates.instant_success[active_before].float().sum()
 
         first_done = done.done & active_before
         done_step = torch.where(first_done, torch.full_like(done_step, step_id + 1), done_step)
@@ -124,6 +147,12 @@ def evaluate_checkpoint(
                 terrain_traversability_min = torch.minimum(terrain_traversability_min, traversability.amin())
         terrain_speed_scale = step_output.info.get("terrain_speed_scale")
         if terrain_speed_scale is not None:
+            per_env_terrain_speed_scale = terrain_speed_scale.mean(dim=-1)
+            final_terrain_speed_scale = torch.where(
+                active_before,
+                per_env_terrain_speed_scale,
+                final_terrain_speed_scale,
+            )
             active_speed_scale = terrain_speed_scale[active_before].reshape(-1)
             if active_speed_scale.numel() > 0:
                 terrain_speed_scale_sum = terrain_speed_scale_sum + active_speed_scale.sum()
@@ -137,6 +166,24 @@ def evaluate_checkpoint(
 
     initial_dmax_mean = initial_dmax.mean()
     final_dmax_mean = final_dmax.mean()
+    timeout_count = int(timeout_seen.sum().detach().cpu())
+    timeout_episode_metrics = {
+        "count": timeout_count,
+        "final_dmax_mean": float(final_dmax[timeout_seen].mean().detach().cpu()) if timeout_seen.any() else None,
+        "final_dispersion_mean": float(final_dispersion[timeout_seen].mean().detach().cpu())
+        if timeout_seen.any()
+        else None,
+        "final_mean_speed_mean": float(final_mean_speed[timeout_seen].mean().detach().cpu())
+        if timeout_seen.any()
+        else None,
+        "mean_terrain_speed_scale": float(final_terrain_speed_scale[timeout_seen].mean().detach().cpu())
+        if timeout_seen.any()
+        else None,
+    }
+    hold_histogram = torch.bincount(
+        max_success_hold_count.clamp(max=env.cfg.success_thresholds.hold_steps).detach().cpu(),
+        minlength=env.cfg.success_thresholds.hold_steps + 1,
+    )
     result = {
         "status": "ok",
         "backend": backend,
@@ -151,6 +198,7 @@ def evaluate_checkpoint(
         "dmax_reduction_ratio": float((final_dmax_mean / initial_dmax_mean.clamp_min(1.0e-6)).detach().cpu()),
         "initial_dispersion": float(initial_dispersion.mean().detach().cpu()),
         "final_dispersion": float(final_dispersion.mean().detach().cpu()),
+        "final_mean_speed": float(final_mean_speed.mean().detach().cpu()),
         "mean_reward": float((reward_sum / reward_count.clamp_min(1.0)).detach().cpu()),
         "success_rate": float(success_seen.float().mean().detach().cpu()),
         "collision_rate": float(collision_seen.float().mean().detach().cpu()),
@@ -178,6 +226,16 @@ def evaluate_checkpoint(
         "mean_terrain_speed_scale": float(
             (terrain_speed_scale_sum / terrain_speed_scale_count.clamp_min(1.0)).detach().cpu()
         ),
+        "dmax_ok_rate": float((dmax_ok_sum / gate_sample_count.clamp_min(1.0)).detach().cpu()),
+        "dispersion_ok_rate": float((dispersion_ok_sum / gate_sample_count.clamp_min(1.0)).detach().cpu()),
+        "speed_ok_rate": float((speed_ok_sum / gate_sample_count.clamp_min(1.0)).detach().cpu()),
+        "instant_success_rate": float((instant_success_sum / gate_sample_count.clamp_min(1.0)).detach().cpu()),
+        "max_success_hold_count_mean": float(max_success_hold_count.float().mean().detach().cpu()),
+        "final_success_hold_count_mean": float(final_success_hold_count.float().mean().detach().cpu()),
+        "hold_count_histogram": {
+            str(index): int(count.item()) for index, count in enumerate(hold_histogram)
+        },
+        "timeout_episode_metrics": timeout_episode_metrics,
     }
     output_path = _resolve_path(output)
     if output_path is not None:
