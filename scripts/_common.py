@@ -22,27 +22,64 @@ def load_yaml(path: str | Path) -> dict:
         return yaml.safe_load(stream) or {}
 
 
-def _apply_values(target, values: dict) -> None:
+def _require_mapping(section: str, values) -> dict:
+    if values is None:
+        return {}
+    if not isinstance(values, dict):
+        raise ValueError(f"Config section '{section}' must be a mapping.")
+    return values
+
+
+def _apply_values(target, values: dict, section: str) -> None:
+    values = _require_mapping(section, values)
+    unknown = sorted(key for key in values if not hasattr(target, key))
+    if unknown:
+        unknown_keys = ", ".join(f"{section}.{key}" for key in unknown)
+        raise ValueError(f"Unsupported config key(s): {unknown_keys}.")
     for key, value in values.items():
-        if hasattr(target, key):
-            current = getattr(target, key)
-            setattr(target, key, type(current)(value))
+        current = getattr(target, key)
+        setattr(target, key, type(current)(value))
+
+
+def _validate_reward_section(reward: dict) -> None:
+    supported = {"weights", "coefficients"}
+    unknown = sorted(key for key in reward if key not in supported)
+    if not unknown:
+        return
+    if "oracle_weight" in unknown:
+        raise ValueError(
+            "Unsupported config key 'reward.oracle_weight'; use "
+            "'reward.weights.oracle' so oracle ablations are wired into cfg.reward_weights."
+        )
+    unknown_keys = ", ".join(f"reward.{key}" for key in unknown)
+    raise ValueError(
+        f"Unsupported config key(s): {unknown_keys}. Supported reward keys are "
+        "'reward.weights' and 'reward.coefficients'."
+    )
 
 
 def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     data = load_yaml(path)
+    data = _require_mapping(str(path), data)
+    if "experiment" not in data:
+        raise ValueError(
+            f"{path} is not an experiment config. cfg_from_experiment reads one "
+            "experiment YAML and does not merge configs/agent, configs/env, "
+            "configs/task, or configs/reward fragments."
+        )
     cfg = MultiRoverGatheringEnvCfg()
-    experiment = data.get("experiment", {})
-    simulation = data.get("simulation", {})
-    task = data.get("task", {})
-    planner = data.get("planner", {})
-    low_level_control = data.get("low_level_control", {})
-    terrain = data.get("terrain", {})
-    reward = data.get("reward", {})
-    safety = data.get("safety", {})
-    success_thresholds = data.get("success_thresholds", {})
-    algorithm = data.get("algorithm", {})
+    experiment = _require_mapping("experiment", data.get("experiment", {}))
+    simulation = _require_mapping("simulation", data.get("simulation", {}))
+    task = _require_mapping("task", data.get("task", {}))
+    planner = _require_mapping("planner", data.get("planner", {}))
+    low_level_control = _require_mapping("low_level_control", data.get("low_level_control", {}))
+    terrain = _require_mapping("terrain", data.get("terrain", {}))
+    reward = _require_mapping("reward", data.get("reward", {}))
+    safety = _require_mapping("safety", data.get("safety", {}))
+    success_thresholds = _require_mapping("success_thresholds", data.get("success_thresholds", {}))
+    algorithm = _require_mapping("algorithm", data.get("algorithm", {}))
     del algorithm
+    _validate_reward_section(reward)
 
     cfg.seed = int(experiment.get("seed", cfg.seed))
     cfg.simulation.num_envs = int(experiment.get("num_envs", cfg.simulation.num_envs))
@@ -57,7 +94,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     cfg.task.n_agents = int(task.get("n_agents", cfg.task.n_agents))
     cfg.planner.rho_max = float(planner.get("rho_max", cfg.planner.rho_max))
     cfg.planner.beta_max = float(planner.get("beta_max", cfg.planner.beta_max))
-    _apply_values(cfg.low_level_control, low_level_control)
+    _apply_values(cfg.low_level_control, low_level_control, "low_level_control")
     cfg.terrain.type = str(terrain.get("type", cfg.terrain.type))
     cfg.terrain.amplitude = float(terrain.get("amplitude", cfg.terrain.amplitude))
     cfg.terrain.wavelength = float(terrain.get("wavelength", cfg.terrain.wavelength))
@@ -93,10 +130,10 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
         terrain.get("crater_field_size", cfg.terrain.crater_field_size)
     )
     cfg.terrain.crater_seed = int(terrain.get("crater_seed", cfg.terrain.crater_seed))
-    _apply_values(cfg.reward_weights, reward.get("weights", {}))
-    _apply_values(cfg.reward_coefficients, reward.get("coefficients", {}))
-    _apply_values(cfg.safety, safety)
-    _apply_values(cfg.success_thresholds, success_thresholds)
+    _apply_values(cfg.reward_weights, reward.get("weights", {}), "reward.weights")
+    _apply_values(cfg.reward_coefficients, reward.get("coefficients", {}), "reward.coefficients")
+    _apply_values(cfg.safety, safety, "safety")
+    _apply_values(cfg.success_thresholds, success_thresholds, "success_thresholds")
     return cfg
 
 

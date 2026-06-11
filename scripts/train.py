@@ -214,7 +214,15 @@ def main() -> None:
     checkpoint_dir = ensure_output_dir(exp.get("checkpoint_dir", "outputs/checkpoints"))
     log_path = log_dir / "train_metrics.json"
     with log_path.open("w", encoding="utf-8") as stream:
-        json.dump({"skrl_version": skrl_version, "metrics": metrics}, stream, indent=2)
+        json.dump(
+            {
+                "metadata": {"training_semantics": "smoke_pg_baseline", "backend": "smoke"},
+                "skrl_version": skrl_version,
+                "metrics": metrics,
+            },
+            stream,
+            indent=2,
+        )
 
     checkpoint_path = checkpoint_dir / f"{exp.get('name', 'exp_001_minimal_proxy')}.pt"
     torch.save(
@@ -223,6 +231,7 @@ def main() -> None:
             "critic": critic.state_dict(),
             "cfg": raw_cfg,
             "skrl_version": skrl_version,
+            "metadata": {"training_semantics": "smoke_pg_baseline", "backend": "smoke"},
         },
         checkpoint_path,
     )
@@ -230,6 +239,7 @@ def main() -> None:
         yaml.safe_dump(
             {
                 "status": "ok",
+                "training_semantics": "smoke_pg_baseline",
                 "skrl_version": skrl_version,
                 "updates": updates,
                 "last_metrics": metrics[-1],

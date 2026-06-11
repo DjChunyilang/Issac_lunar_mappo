@@ -35,6 +35,10 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 from _common import ROOT, cfg_from_experiment, ensure_output_dir, load_yaml
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore
+from lunar_rover_tasks.tasks.multi_rover_gathering.oracle import (
+    compute_geometric_median,
+    compute_mean_oracle_distance,
+)
 from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import query_terrain_features
 from terrain_viz import add_height_heatmap, height_grid_for_extent, save_height_map
 from train import Actor, Critic
@@ -125,6 +129,10 @@ def _save_checkpoint(
             "critic": critic.state_dict(),
             "cfg": raw_cfg,
             "metrics": metrics,
+            "metadata": {
+                "training_semantics": "proxy_convergence",
+                "backend": "proxy_convergence",
+            },
         },
         path,
     )
@@ -316,7 +324,10 @@ def _randomize_bc_state(env: MultiRoverGatheringCore) -> None:
     env.previous_physical_action.zero_()
     env.step_count.zero_()
     env.success_hold_count.zero_()
-    env.oracle_point = env.positions.mean(dim=1)
+    env.oracle_point.copy_(compute_geometric_median(env.positions))
+    env.prev_mean_oracle_distance.copy_(
+        compute_mean_oracle_distance(env.positions, env.oracle_point)
+    )
 
 
 def run_behavior_cloning(

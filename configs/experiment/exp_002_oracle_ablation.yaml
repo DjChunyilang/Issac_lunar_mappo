@@ -7,5 +7,5 @@ experiment:
   rollout_steps: 32
 
 reward:
-  oracle_weight: 0.0
-
+  weights:
+    oracle: 0.0

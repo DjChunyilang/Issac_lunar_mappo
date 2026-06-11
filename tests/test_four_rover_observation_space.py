@@ -4,6 +4,7 @@ import torch
 
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import make_debug_cfg
+from lunar_rover_tasks.tasks.multi_rover_gathering.oracle import compute_geometric_median
 
 
 def test_four_rover_observation_layout_and_oracle_boundary() -> None:
@@ -18,7 +19,7 @@ def test_four_rover_observation_layout_and_oracle_boundary() -> None:
     env.yaws.zero_()
     env.velocities_xy.zero_()
     env.angular_velocities.zero_()
-    env.oracle_point.zero_()
+    env.oracle_point.copy_(compute_geometric_median(env.positions))
 
     actor_obs, critic_state = env.get_observations()
 
@@ -48,4 +49,3 @@ def test_four_rover_observation_layout_and_oracle_boundary() -> None:
 
     assert torch.allclose(changed_actor, baseline_actor)
     assert not torch.allclose(changed_critic, baseline_critic)
-

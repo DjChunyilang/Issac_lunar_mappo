@@ -62,10 +62,9 @@ def run_cuda_short_training(
         return _cuda_unavailable_result(config, device, timesteps, output_root)
 
     from skrl.envs.wrappers.torch import wrap_env
-    from skrl.memories.torch import RandomMemory
     from skrl.multi_agents.torch.mappo import MAPPO
     from skrl.trainers.torch import SequentialTrainer
-    from train_skrl_mappo import SKRLPolicy, SKRLValue
+    from train_skrl_mappo import parse_bool_config, build_skrl_mappo_memories, build_skrl_mappo_models
 
     raw_cfg = load_yaml(config)
     exp = raw_cfg.get("experiment", {})
@@ -77,28 +76,17 @@ def run_cuda_short_training(
     wrapped_env = wrap_env(env, wrapper="isaaclab-multi-agent", verbose=False)
     possible_agents = env.possible_agents
     empty_kwargs = {uid: {} for uid in possible_agents}
+    shared_actor = parse_bool_config(algo.get("shared_actor"), default=True)
+    centralized_critic = parse_bool_config(algo.get("centralized_critic"), default=True)
+    shared_value = parse_bool_config(algo.get("shared_value"), default=True)
 
-    models = {}
-    memories = {}
-    for agent_id in possible_agents:
-        models[agent_id] = {
-            "policy": SKRLPolicy(
-                env.observation_spaces[agent_id],
-                env.action_spaces[agent_id],
-                env.device,
-            ),
-            "value": SKRLValue(
-                env.observation_spaces[agent_id],
-                env.state_space,
-                env.action_spaces[agent_id],
-                env.device,
-            ),
-        }
-        memories[agent_id] = RandomMemory(
-            memory_size=int(exp.get("rollout_steps", 32)),
-            num_envs=env.num_envs,
-            device=env.device,
-        )
+    models = build_skrl_mappo_models(
+        env,
+        shared_actor=shared_actor,
+        centralized_critic=centralized_critic,
+        shared_value=shared_value,
+    )
+    memories = build_skrl_mappo_memories(env, rollout_steps=int(exp.get("rollout_steps", 32)))
 
     agent = MAPPO(
         possible_agents=possible_agents,
@@ -166,6 +154,10 @@ def run_cuda_short_training(
         "timesteps": timesteps,
         "env_steps": env_steps,
         "agent_steps": agent_steps,
+        "training_semantics": "skrl_mappo_smoke",
+        "shared_actor": shared_actor,
+        "centralized_critic": centralized_critic,
+        "shared_value": shared_value,
         "wall_time_s": wall_time_s,
         "env_steps_per_s": env_steps / wall_time_s,
         "agent_steps_per_s": agent_steps / wall_time_s,
@@ -189,4 +181,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

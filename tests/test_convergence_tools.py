@@ -16,12 +16,17 @@ from evaluate_physx_four_jetbots import phase_c_acceptance  # noqa: E402
 from evaluate_proxy_policy import evaluate_checkpoint  # noqa: E402
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore  # noqa: E402
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import make_debug_cfg  # noqa: E402
+from lunar_rover_tasks.tasks.multi_rover_gathering.oracle import (  # noqa: E402
+    compute_geometric_median,
+    compute_mean_oracle_distance,
+)
 from run_proxy_convergence_suite import build_strict_acceptance  # noqa: E402
 from train import Actor, Critic  # noqa: E402
 from train_proxy_convergence import (  # noqa: E402
     Rollout,
     _checkpoint_candidate_allowed,
     _is_better_checkpoint_candidate,
+    _randomize_bc_state,
     ppo_update,
     run_behavior_cloning,
     scripted_gather_action,
@@ -114,6 +119,20 @@ def test_safety_aware_teacher_reduces_rho_near_centroid() -> None:
     direct_rho = 0.5 * (direct[..., 0] + 1.0) * cfg.planner.rho_max
     safe_rho = 0.5 * (safe[..., 0] + 1.0) * cfg.planner.rho_max
     assert safe_rho.max() < direct_rho.max()
+
+
+def test_bc_randomized_state_uses_geometric_median_oracle() -> None:
+    cfg = make_debug_cfg(num_envs=4, device="cpu")
+    env = MultiRoverGatheringCore(cfg)
+
+    _randomize_bc_state(env)
+
+    expected_oracle = compute_geometric_median(env.positions)
+    expected_prev_distance = compute_mean_oracle_distance(env.positions, expected_oracle)
+    mean_point = env.positions.mean(dim=1)
+    assert torch.allclose(env.oracle_point, expected_oracle)
+    assert torch.allclose(env.prev_mean_oracle_distance, expected_prev_distance)
+    assert not torch.allclose(expected_oracle, mean_point, atol=1.0e-4)
 
 
 def test_evaluate_proxy_policy_outputs_finite_ratio(tmp_path: Path) -> None:

@@ -5,7 +5,10 @@ import torch
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import make_debug_cfg
 from lunar_rover_tasks.tasks.multi_rover_gathering.metrics import compute_team_metrics
-from lunar_rover_tasks.tasks.multi_rover_gathering.oracle import compute_mean_oracle_distance
+from lunar_rover_tasks.tasks.multi_rover_gathering.oracle import (
+    compute_geometric_median,
+    compute_mean_oracle_distance,
+)
 from lunar_rover_tasks.tasks.multi_rover_gathering.simple_controller import ControlCommand
 from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import query_height, query_terrain_features
 
@@ -22,7 +25,7 @@ def _set_square_state(env: MultiRoverGatheringCore) -> None:
     env.previous_physical_action.zero_()
     env.step_count.zero_()
     env.success_hold_count.zero_()
-    env.oracle_point.zero_()
+    env.oracle_point.copy_(compute_geometric_median(env.positions))
     env.metrics = compute_team_metrics(env.positions, env.velocities_xy)
     env.prev_metrics = env.metrics
     env.prev_mean_oracle_distance = compute_mean_oracle_distance(
