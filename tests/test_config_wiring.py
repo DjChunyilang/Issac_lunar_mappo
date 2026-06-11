@@ -38,3 +38,73 @@ def test_legacy_oracle_weight_key_fails_fast(tmp_path: Path) -> None:
 def test_split_reward_config_is_not_treated_as_experiment() -> None:
     with pytest.raises(ValueError, match="does not merge"):
         cfg_from_experiment(ROOT / "configs/reward/reward_ablation_no_oracle.yaml")
+
+
+def test_legacy_obstacle_collision_coefficient_fails_fast(tmp_path: Path) -> None:
+    config_path = tmp_path / "experiment.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "experiment": {"name": "legacy_obstacle_collision"},
+                "reward": {"coefficients": {"obstacle_collision": 8.0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"reward\.coefficients\.obstacle_collision"):
+        cfg_from_experiment(config_path)
+
+
+def test_obstacle_collision_key_is_removed_from_source_and_configs() -> None:
+    key = "obstacle_" + "collision"
+    checked_roots = [ROOT / "source", ROOT / "scripts", ROOT / "configs"]
+    text_suffixes = {".py", ".yaml", ".yml", ".toml", ".md", ".txt"}
+    offenders = [
+        path.relative_to(ROOT)
+        for root in checked_roots
+        for path in root.rglob("*")
+        if path.is_file()
+        and path.suffix in text_suffixes
+        and key in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
+
+
+def test_observation_communication_radius_is_wired(tmp_path: Path) -> None:
+    config_path = tmp_path / "experiment.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "experiment": {"name": "communication_radius"},
+                "observation": {"communication_radius": 2.5},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = cfg_from_experiment(config_path)
+    assert cfg.observation.communication_radius == 2.5
+
+
+def test_observation_dimension_keys_are_not_opened(tmp_path: Path) -> None:
+    config_path = tmp_path / "experiment.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "experiment": {"name": "bad_observation_dim"},
+                "observation": {"max_neighbors": 8},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"observation\.max_neighbors"):
+        cfg_from_experiment(config_path)
+
+
+@pytest.mark.parametrize("config_path", sorted((ROOT / "configs/experiment").glob("*.yaml")))
+def test_all_experiment_configs_parse(config_path: Path) -> None:
+    cfg = cfg_from_experiment(config_path)
+    assert cfg.task.n_agents == 4
+    assert cfg.observation.communication_radius > 0.0

@@ -28,6 +28,8 @@ def build_ego_features(
     angular_velocities: torch.Tensor,
 ) -> torch.Tensor:
     z = positions[..., 2:3]
+    speed_xy = torch.linalg.norm(velocities_xy, dim=-1, keepdim=True)
+    abs_angular_velocity = angular_velocities.abs().unsqueeze(-1)
     return torch.cat(
         (
             positions[..., :2],
@@ -36,8 +38,8 @@ def build_ego_features(
             torch.sin(yaws).unsqueeze(-1),
             velocities_xy,
             angular_velocities.unsqueeze(-1),
-            torch.zeros_like(z),
-            torch.zeros_like(z),
+            speed_xy,
+            abs_angular_velocity,
         ),
         dim=-1,
     )

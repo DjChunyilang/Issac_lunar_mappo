@@ -100,7 +100,6 @@ class RewardCoefficientsCfg:
     slope_cost: float = 0.0
     turn_cost: float = 0.05
     terrain_cost: float = 0.0
-    obstacle_collision: float = 8.0
     inter_agent_collision: float = 8.0
     near_distance: float = 0.5
     subgoal_turn: float = 0.05
@@ -128,6 +127,8 @@ class SafetyCfg:
 
 @dataclass(slots=True)
 class ObservationCfg:
+    communication_radius: float = 6.0
+    schema_version: str = "ego_v2_speed_angular"
     max_neighbors: int = 3
     ego_dim: int = 10
     neighbor_dim: int = 7

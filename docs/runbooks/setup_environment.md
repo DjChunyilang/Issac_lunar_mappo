@@ -59,6 +59,24 @@ bash scripts/install_stack.sh
 source/lunar_rover_tasks/lunar_rover_tasks/__init__.py
 ```
 
+## Unit Contract / CI 验收
+
+本仓库的 CPU unit contract 必须在 Python 3.12 下通过。CI 使用 `actions/setup-python@v5` 的 Python 3.12，并安装 `skrl==2.1.0` 和 editable 本地任务包：
+
+```bash
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install pytest skrl==2.1.0 -e source/lunar_rover_tasks
+python -m pytest -q -ra
+```
+
+本地等价命令：
+
+```bash
+.venv_isaaclab/bin/python -m pytest -q -ra
+```
+
+`-ra` 用于显示 skip reason。`tests/test_skrl_import.py` 是非 skip 测试；如果 SKRL 未安装或无法导入，unit contract 必须失败，不能依赖 `pytest.importorskip("skrl")` 造成假绿。
+
 ## Proxy Core 验收
 
 第一阶段验证脚本用于检查 proxy core、观测、critic state、reward、终止、轨迹、控制和可视化产物：
@@ -93,7 +111,8 @@ source/lunar_rover_tasks/lunar_rover_tasks/__init__.py
 
 - 命令退出码为 0。
 - 能创建 SKRL MAPPO trainer 并完成短训练。
-- 能保存 smoke checkpoint。
+- 能保存 smoke checkpoint，checkpoint 名由 `experiment.checkpoint_name` 或 `experiment.name` 安全推导，统一 `.pt` 后缀。
+- checkpoint metadata 包含 `training_semantics`、`experiment_name`、`algorithm_mode`、`observation_schema_version`、`shared_actor`、`centralized_critic` 和 `shared_value`。
 - 不把该 checkpoint 记录为正式实验通过结果。
 
 如果要排查本地 trainer，可运行：

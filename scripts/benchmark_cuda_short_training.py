@@ -11,6 +11,7 @@ from pathlib import Path
 import torch
 
 from _common import ROOT, cfg_from_experiment, load_yaml
+from _skrl_metadata import resolve_training_semantics
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringSKRLEnv
 
 
@@ -69,6 +70,7 @@ def run_cuda_short_training(
     raw_cfg = load_yaml(config)
     exp = raw_cfg.get("experiment", {})
     algo = raw_cfg.get("algorithm", {})
+    training_semantics = resolve_training_semantics(raw_cfg)
     cfg = cfg_from_experiment(config)
     cfg.simulation.device = device
 
@@ -154,7 +156,7 @@ def run_cuda_short_training(
         "timesteps": timesteps,
         "env_steps": env_steps,
         "agent_steps": agent_steps,
-        "training_semantics": "skrl_mappo_smoke",
+        "training_semantics": training_semantics,
         "shared_actor": shared_actor,
         "centralized_critic": centralized_critic,
         "shared_value": shared_value,

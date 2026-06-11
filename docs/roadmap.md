@@ -5,11 +5,13 @@
 1. 将 exp008 保持为当前已验证的 3-seed terrain-aware proxy 结果。
 2. 将 exp009 视为强地形诊断实验，而不是严格成功结果。
 3. 暂停 exp009/exp010 后续强地形失败诊断和 long-budget PPO。
-4. 按 [architecture/overall_plan_v3.md](architecture/overall_plan_v3.md) 将 proxy 降级为接口验证层，优先回到 Isaac Lab + SKRL-MAPPO 主线。
+4. 保持 Python 3.12 + SKRL unit contract 为每次提交的最低门槛，防止配置、observation schema、SKRL metadata 回归。
+5. 按 [architecture/overall_plan_v3.md](architecture/overall_plan_v3.md) 将 proxy 降级为接口验证层，优先回到 Isaac Lab + SKRL-MAPPO 主线。
 
 ## 近期工作
 
-- 固化 `.venv_isaaclab` 安装检查，覆盖 Python、CUDA/NVIDIA driver、Isaac Sim 6.0、Isaac Lab v3.0.0-beta、SKRL 和 `source/lunar_rover_tasks` editable install。
+- 维护 `.venv_isaaclab` 安装检查，覆盖 Python 3.12、CUDA/NVIDIA driver、Isaac Sim 6.0、Isaac Lab v3.0.0-beta、SKRL 和 `source/lunar_rover_tasks` editable install。
+- 保持 GitHub Actions `unit-contracts` 与本地 `.venv_isaaclab/bin/python -m pytest -q -ra` 一致；SKRL import 必须非 skip。
 - 跑通 `scripts/validate_first_stage.py` 的短验证，确认 proxy core、观测、奖励、轨迹、图和 GIF 链路可重复。
 - 跑通 `scripts/train.py --backend skrl` 的短 MAPPO smoke，验收 SKRL wrapper、multi-agent action/observation 和 centralized critic state。
 - 跑通 `scripts/debug_env.py`、`scripts/debug_observation.py`、`scripts/debug_reward.py` 作为基础回归。

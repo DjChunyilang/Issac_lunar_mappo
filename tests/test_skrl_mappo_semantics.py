@@ -15,8 +15,14 @@ if str(SCRIPTS) not in sys.path:
 
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringSKRLEnv  # noqa: E402
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import make_debug_cfg  # noqa: E402
+from _common import load_yaml  # noqa: E402
+from _skrl_metadata import (  # noqa: E402
+    DEFAULT_TRAINING_SEMANTICS,
+    resolve_checkpoint_name,
+    resolve_training_semantics,
+    sanitize_checkpoint_name,
+)
 from train_skrl_mappo import (  # noqa: E402
-    TRAINING_SEMANTICS,
     build_skrl_mappo_memories,
     build_skrl_mappo_models,
     skrl_mappo_checkpoint_payload,
@@ -152,11 +158,52 @@ def test_skrl_checkpoint_metadata_marks_smoke_semantics() -> None:
         centralized_critic=True,
         shared_value=True,
         timesteps=4,
+        observation_schema_version=env.cfg.observation.schema_version,
     )
 
-    assert payload["metadata"]["training_semantics"] == TRAINING_SEMANTICS
+    assert payload["metadata"]["training_semantics"] == DEFAULT_TRAINING_SEMANTICS
+    assert payload["metadata"]["experiment_name"] == "metadata_test"
+    assert payload["metadata"]["algorithm_mode"] is None
+    assert payload["metadata"]["observation_schema_version"] == "ego_v2_speed_angular"
     assert payload["metadata"]["shared_actor"] is True
     assert payload["metadata"]["centralized_critic"] is True
     for agent_id in env.possible_agents:
         assert "policy" in payload[agent_id]
         assert "value" in payload[agent_id]
+
+
+def test_skrl_metadata_resolves_semantics_without_training_imports() -> None:
+    minimal = load_yaml(ROOT / "configs/experiment/exp_001_minimal.yaml")
+    pure_rl = load_yaml(ROOT / "configs/experiment/exp_006_ppo_selected_pure_rl.yaml")
+    explicit = {"algorithm": {"training_semantics": "Research Smoke"}}
+
+    assert resolve_training_semantics(minimal) == "skrl_mappo_smoke"
+    assert resolve_training_semantics(pure_rl) == "skrl_mappo_pure_rl"
+    assert resolve_training_semantics(explicit) == "research_smoke"
+
+
+def test_skrl_checkpoint_name_is_sanitized_and_uses_pt_suffix() -> None:
+    assert sanitize_checkpoint_name("run 01") == "run_01.pt"
+    assert sanitize_checkpoint_name("already.pt") == "already.pt"
+    assert resolve_checkpoint_name(
+        {"experiment": {"name": "exp 01"}},
+        ROOT / "configs/experiment/exp_001_minimal.yaml",
+    ) == "exp_01_skrl_mappo.pt"
+    assert resolve_checkpoint_name(
+        {"experiment": {"checkpoint_name": "custom-name"}},
+        ROOT / "configs/experiment/exp_001_minimal.yaml",
+    ) == "custom-name.pt"
+
+    for bad_name in ("../escape.pt", "nested/file.pt", r"nested\\file.pt", "/tmp/file.pt"):
+        with pytest.raises(ValueError):
+            sanitize_checkpoint_name(bad_name)
+
+
+def test_skrl_spaces_and_policy_input_track_actor_observation_schema() -> None:
+    env = _make_env()
+    models = build_skrl_mappo_models(env, shared_actor=True, centralized_critic=True)
+    policy = models[env.possible_agents[0]]["policy"]
+
+    assert env.cfg.observation.schema_version == "ego_v2_speed_angular"
+    assert env.observation_spaces[env.possible_agents[0]].shape == (env.cfg.actor_obs_dim,)
+    assert policy.net[0].in_features == env.cfg.actor_obs_dim

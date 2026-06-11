@@ -11,6 +11,11 @@ import torch.nn as nn
 import yaml
 
 from _common import cfg_from_experiment, ensure_output_dir, load_yaml
+from _skrl_metadata import (
+    DEFAULT_TRAINING_SEMANTICS,
+    resolve_checkpoint_name,
+    resolve_training_semantics,
+)
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringSKRLEnv
 
 from skrl.envs.wrappers.torch import wrap_env
@@ -20,7 +25,7 @@ from skrl.multi_agents.torch.mappo import MAPPO
 from skrl.trainers.torch import SequentialTrainer
 
 
-TRAINING_SEMANTICS = "skrl_mappo_smoke"
+TRAINING_SEMANTICS = DEFAULT_TRAINING_SEMANTICS
 
 
 class SKRLPolicy(GaussianMixin, Model):
@@ -172,6 +177,8 @@ def skrl_mappo_checkpoint_payload(
     centralized_critic: bool,
     shared_value: bool,
     timesteps: int,
+    training_semantics: str = DEFAULT_TRAINING_SEMANTICS,
+    observation_schema_version: str | None = None,
 ) -> dict:
     payload = {
         agent_id: {
@@ -180,9 +187,14 @@ def skrl_mappo_checkpoint_payload(
         }
         for agent_id in possible_agents
     }
+    experiment = raw_cfg.get("experiment", {}) if isinstance(raw_cfg.get("experiment", {}), dict) else {}
+    algorithm = raw_cfg.get("algorithm", {}) if isinstance(raw_cfg.get("algorithm", {}), dict) else {}
     payload["metadata"] = {
-        "training_semantics": TRAINING_SEMANTICS,
+        "training_semantics": training_semantics,
         "backend": "skrl.mappo",
+        "experiment_name": experiment.get("name"),
+        "algorithm_mode": algorithm.get("mode"),
+        "observation_schema_version": observation_schema_version,
         "shared_actor": shared_actor,
         "centralized_critic": centralized_critic,
         "shared_value": shared_value,
@@ -212,6 +224,7 @@ def main() -> None:
     shared_actor = parse_bool_config(algo.get("shared_actor"), default=True)
     centralized_critic = parse_bool_config(algo.get("centralized_critic"), default=True)
     shared_value = parse_bool_config(algo.get("shared_value"), default=True)
+    training_semantics = resolve_training_semantics(raw_cfg)
 
     models = build_skrl_mappo_models(
         env,
@@ -258,12 +271,14 @@ def main() -> None:
     trainer.train()
 
     checkpoint_dir = ensure_output_dir(exp.get("checkpoint_dir", "outputs/checkpoints"))
-    checkpoint_path = checkpoint_dir / "exp_001_minimal_skrl_mappo.pt"
+    checkpoint_path = checkpoint_dir / resolve_checkpoint_name(raw_cfg, args.config)
     torch.save(
         skrl_mappo_checkpoint_payload(
             models,
             possible_agents,
             raw_cfg=raw_cfg,
+            training_semantics=training_semantics,
+            observation_schema_version=cfg.observation.schema_version,
             shared_actor=shared_actor,
             centralized_critic=centralized_critic,
             shared_value=shared_value,
@@ -276,7 +291,7 @@ def main() -> None:
             {
                 "status": "ok",
                 "backend": "skrl.mappo",
-                "training_semantics": TRAINING_SEMANTICS,
+                "training_semantics": training_semantics,
                 "shared_actor": shared_actor,
                 "centralized_critic": centralized_critic,
                 "shared_value": shared_value,

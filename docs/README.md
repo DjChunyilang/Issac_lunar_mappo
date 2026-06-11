@@ -20,9 +20,20 @@
 - [architecture/overall_plan_v3.md](architecture/overall_plan_v3.md)：代码审查后的新版整体规划和偏差 review。
 - [roadmap.md](roadmap.md)：近期优先级。
 - [experiments/README.md](experiments/README.md)：实验索引和通过/失败表。
+- [interface_spec.md](interface_spec.md)：actor observation、critic state、action 和当前 observation schema。
 - [references/output_management.md](references/output_management.md)：输出目录规范和命名规则。
 - [runbooks/setup_environment.md](runbooks/setup_environment.md)：Isaac Sim / Isaac Lab / SKRL / 本地任务包安装和验收。
 - [runbooks/](runbooks/)：训练、评估、可视化和 PhysX 展示命令。
+
+## 工程验收入口
+
+当前 CPU unit contract 以 GitHub Actions 和本地同一命令为准：
+
+```bash
+.venv_isaaclab/bin/python -m pytest -q -ra
+```
+
+CI 明确使用 Python 3.12，并安装 `skrl==2.1.0`。`tests/test_skrl_import.py` 是非 skip 的 SKRL 导入验收，防止 SKRL 相关测试被 skip 后误判为绿灯。
 
 ## 历史文档
 

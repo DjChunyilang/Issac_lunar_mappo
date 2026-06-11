@@ -15,10 +15,8 @@ reward:
     slope_cost: 0.0
     turn_cost: 0.05
     terrain_cost: 0.0
-    obstacle_collision: 8.0
     inter_agent_collision: 8.0
     near_distance: 0.5
     subgoal_turn: 0.05
     subgoal_stagnation: 0.1
     action_consistency: 0.02
-

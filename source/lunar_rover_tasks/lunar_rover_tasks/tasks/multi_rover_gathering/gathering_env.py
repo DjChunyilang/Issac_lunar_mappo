@@ -95,7 +95,7 @@ class MultiRoverGatheringCore:
 
     @property
     def communication_radius(self) -> float:
-        return 6.0
+        return float(self.cfg.observation.communication_radius)
 
     @property
     def max_episode_steps(self) -> int:

@@ -6,7 +6,15 @@
 - 训练结果主线：PyTorch terrain-aware proxy 环境的 `exp008` 仍作为当前已验证 baseline。
 - 渲染和高保真 sanity check：Isaac Sim / PhysX Jetbot 评估需要整理成可重复 runbook。
 - 视觉观测不进入 policy input；地形以低维结构化特征进入策略。
+- CPU unit contract 已接入 CI：Python 3.12、`skrl==2.1.0`、全量 `pytest -q -ra`，并包含非 skip 的 SKRL import 测试。
 - 生成结果写入 `outputs/runs/`，并由 git 忽略。
+
+## 当前接口状态
+
+- `reward.coefficients.obstacle_collision` 已从 base reward 配置和 dataclass 移除；当前没有 obstacle collision 输入，因此不保留未消费配置项。
+- `observation.communication_radius` 是本轮唯一开放的 observation 配置项；`max_neighbors`、`ego_dim`、`neighbor_dim` 等维度相关字段仍由代码固定。
+- actor observation schema 为 `ego_v2_speed_angular`。ego 末尾两个历史零占位通道已替换为 `speed_xy` 和 `abs_angular_velocity`，tensor shape 不变，但 checkpoint 输入语义已经改变。
+- SKRL checkpoint metadata 会记录 `training_semantics`、`experiment_name`、`algorithm_mode`、`observation_schema_version`、`shared_actor`、`centralized_critic` 和 `shared_value`。
 
 ## 已验证结果
 
@@ -68,10 +76,10 @@ seed31 hold reward 6M continuation:
 
 ## 下一步
 
-近期优先处理环境搭建与工程闭环，不以 reward 收敛为验收目标：
+近期优先从已补齐的工程闭环继续推进到物理/训练主线，不以单次 reward 曲线作为成功证据：
 
-1. 按 [architecture/overall_plan_v3.md](architecture/overall_plan_v3.md) 和 [runbooks/setup_environment.md](runbooks/setup_environment.md) 固化 `.venv_isaaclab`、Isaac Sim、Isaac Lab、SKRL 和本地任务包安装检查。
-2. 跑通 `scripts/validate_first_stage.py` 的 CPU 短验证，确认 proxy core、观测、奖励、轨迹和图像产物链路可用。
+1. 维持 `.venv_isaaclab/bin/python -m pytest -q -ra` 和 GitHub Actions unit contract 为每次代码修改的最低门槛。
+2. 按 [runbooks/setup_environment.md](runbooks/setup_environment.md) 跑通 `scripts/validate_first_stage.py` 的 CPU 短验证，确认 proxy core、观测、奖励、轨迹和图像产物链路可用。
 3. 跑通 `scripts/train.py --backend skrl` 的短 MAPPO smoke，确认 SKRL wrapper 和 centralized critic state 接口可用。
 4. 跑通 `scripts/debug_env.py`、`scripts/debug_observation.py` 和 `scripts/debug_reward.py`，作为基础回归检查。
 5. 跑通 `scripts/evaluate_physx_four_jetbots.py` 的 headless/render sanity 路径，并把结果写入标准 run 目录。

@@ -58,6 +58,21 @@ def _validate_reward_section(reward: dict) -> None:
     )
 
 
+def _apply_observation_values(cfg: MultiRoverGatheringEnvCfg, values: dict) -> None:
+    values = _require_mapping("observation", values)
+    supported = {"communication_radius"}
+    unknown = sorted(key for key in values if key not in supported)
+    if unknown:
+        unknown_keys = ", ".join(f"observation.{key}" for key in unknown)
+        raise ValueError(
+            f"Unsupported config key(s): {unknown_keys}. This loader only supports "
+            "'observation.communication_radius'; observation dimensions and schema "
+            "version are fixed by code."
+        )
+    if "communication_radius" in values:
+        cfg.observation.communication_radius = float(values["communication_radius"])
+
+
 def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     data = load_yaml(path)
     data = _require_mapping(str(path), data)
@@ -75,6 +90,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     low_level_control = _require_mapping("low_level_control", data.get("low_level_control", {}))
     terrain = _require_mapping("terrain", data.get("terrain", {}))
     reward = _require_mapping("reward", data.get("reward", {}))
+    observation = _require_mapping("observation", data.get("observation", {}))
     safety = _require_mapping("safety", data.get("safety", {}))
     success_thresholds = _require_mapping("success_thresholds", data.get("success_thresholds", {}))
     algorithm = _require_mapping("algorithm", data.get("algorithm", {}))
@@ -132,6 +148,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     cfg.terrain.crater_seed = int(terrain.get("crater_seed", cfg.terrain.crater_seed))
     _apply_values(cfg.reward_weights, reward.get("weights", {}), "reward.weights")
     _apply_values(cfg.reward_coefficients, reward.get("coefficients", {}), "reward.coefficients")
+    _apply_observation_values(cfg, observation)
     _apply_values(cfg.safety, safety, "safety")
     _apply_values(cfg.success_thresholds, success_thresholds, "success_thresholds")
     return cfg
