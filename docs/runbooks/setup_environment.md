@@ -65,7 +65,9 @@ source/lunar_rover_tasks/lunar_rover_tasks/__init__.py
 
 ```bash
 python -m pip install --upgrade pip setuptools wheel
-python -m pip install pytest skrl==2.1.0 -e source/lunar_rover_tasks
+python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.10.0+cpu
+python -m pip install pytest==9.0.3 skrl==2.1.0 gymnasium==1.2.1 numpy==2.3.1 pyyaml==6.0.3 matplotlib==3.10.8 imageio==2.37.2
+python -m pip install --no-deps -e source/lunar_rover_tasks
 python -m pytest -q -ra
 ```
 

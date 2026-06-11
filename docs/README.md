@@ -27,13 +27,13 @@
 
 ## 工程验收入口
 
-当前 CPU unit contract 以 GitHub Actions 和本地同一命令为准：
+当前 CPU unit contract 以 GitHub Actions 和本地同一测试命令为准：
 
 ```bash
 .venv_isaaclab/bin/python -m pytest -q -ra
 ```
 
-CI 明确使用 Python 3.12，并安装 `skrl==2.1.0`。`tests/test_skrl_import.py` 是非 skip 的 SKRL 导入验收，防止 SKRL 相关测试被 skip 后误判为绿灯。
+CI 明确使用 Python 3.12，并固定 CPU 依赖组合：`torch==2.10.0+cpu`、`skrl==2.1.0`、`gymnasium==1.2.1`、`numpy==2.3.1`、`pyyaml==6.0.3`、`matplotlib==3.10.8`、`imageio==2.37.2`、`pytest==9.0.3`。`tests/test_skrl_import.py` 是非 skip 的 SKRL 导入验收，防止 SKRL 相关测试被 skip 后误判为绿灯。
 
 ## 历史文档
 
