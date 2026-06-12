@@ -1,0 +1,34 @@
+experiment:
+  name: exp012_action_scale_warmup_probe
+  seed: 7
+  num_envs: 32
+  device: cuda
+  total_steps: 500000
+  rollout_steps: 32
+  log_dir: outputs/logs/exp012_action_scale_warmup_probe
+  checkpoint_dir: outputs/checkpoints
+  checkpoint_name: exp012_action_scale_warmup_probe.pt
+  run_dir: outputs/runs
+  save_checkpoint: true
+  require_skrl_import: true
+
+simulation:
+  episode_length_s: 20.0
+  physics_dt: 0.05
+  control_decimation: 4
+
+task:
+  n_agents: 4
+
+planner:
+  rho_max: 0.8
+  beta_max: 1.0471975512
+
+algorithm:
+  mode: pure_rl
+  training_semantics: exp012_action_scale_warmup_probe
+  shared_actor: true
+  centralized_critic: true
+  shared_value: true
+  gamma: 0.99
+  learning_rate: 0.0005

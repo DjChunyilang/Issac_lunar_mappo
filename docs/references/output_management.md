@@ -62,6 +62,17 @@ outputs/runs/_index.json
 
 历史路径 `outputs/logs/`、`outputs/checkpoints/`、`outputs/figures/` 和 `outputs/videos/` 保留兼容。新工作优先使用 `outputs/runs/`。
 
+当前 SKRL-MAPPO CUDA 诊断脚本仍处于过渡阶段：
+
+```text
+outputs/runs/<experiment_id>/metrics.jsonl
+outputs/runs/<experiment_id>/diagnosis_<label>_<timesteps>.json
+outputs/runs/<experiment_id>/suite_logs/
+outputs/runs/cuda_training_validation_summary.json
+```
+
+这些文件是 ignored 的工程诊断产物，不是 strict acceptance。长期结论写入 `docs/experiments/*.md`；后续正式 M3 训练应继续迁移到 `outputs/runs/<experiment_id>/<run_id>/metrics/` 和 `_suite/metrics/`。
+
 当前标准 terrain-aware convergence suite：
 
 ```text

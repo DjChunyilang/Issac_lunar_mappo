@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -23,10 +24,14 @@ from _skrl_metadata import (  # noqa: E402
     sanitize_checkpoint_name,
 )
 from train_skrl_mappo import (  # noqa: E402
+    _action_telemetry,
+    _reward_breakdown,
+    append_metrics_jsonl,
     build_skrl_mappo_memories,
     build_skrl_mappo_models,
     skrl_mappo_checkpoint_payload,
 )
+from diagnose_cuda_training_signal import diagnose  # noqa: E402
 
 
 def _make_env() -> MultiRoverGatheringSKRLEnv:
@@ -207,3 +212,152 @@ def test_skrl_spaces_and_policy_input_track_actor_observation_schema() -> None:
     assert env.cfg.observation.schema_version == "ego_v2_speed_angular"
     assert env.observation_spaces[env.possible_agents[0]].shape == (env.cfg.actor_obs_dim,)
     assert policy.net[0].in_features == env.cfg.actor_obs_dim
+
+
+def test_skrl_telemetry_jsonl_is_written(tmp_path: Path) -> None:
+    metrics = {
+        "timesteps": 32,
+        "wall_time_s": 1.25,
+        "device": "cuda",
+        "cuda_available": True,
+        "mean_reward": None,
+        "episode_length": None,
+        "mean_pairwise_distance": None,
+        "mean_oracle_distance": None,
+        "success_rate": None,
+        "nan_flag": False,
+        "checkpoint_path": str(tmp_path / "checkpoint.pt"),
+        "training_semantics": "skrl_mappo_pure_rl",
+        "observation_schema_version": "ego_v2_speed_angular",
+    }
+
+    metrics_path = append_metrics_jsonl(tmp_path, metrics)
+
+    assert metrics_path.exists()
+    lines = metrics_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    parsed = json.loads(lines[0])
+    for key in (
+        "device",
+        "training_semantics",
+        "observation_schema_version",
+        "nan_flag",
+        "checkpoint_path",
+    ):
+        assert key in parsed
+    assert parsed["nan_flag"] is False
+
+
+def test_skrl_action_telemetry_reports_normalized_and_physical_scale() -> None:
+    env = _make_env()
+    action = torch.tensor(
+        [
+            [[-1.0, -1.0], [1.0, 1.0], [0.0, 0.0], [0.5, -0.5]],
+            [[-0.25, 0.25], [0.75, -0.75], [0.95, 0.95], [-0.95, -0.95]],
+        ],
+        dtype=torch.float32,
+    )
+
+    telemetry = _action_telemetry(action, env.cfg)
+
+    assert telemetry["physical_rho_min"] == pytest.approx(0.0)
+    assert telemetry["physical_rho_max"] == pytest.approx(env.cfg.planner.rho_max)
+    assert telemetry["physical_beta_max"] == pytest.approx(env.cfg.planner.beta_max)
+    assert telemetry["physical_beta_min"] == pytest.approx(-env.cfg.planner.beta_max)
+    assert telemetry["action_forward_high_saturation_fraction"] > 0.0
+    assert telemetry["action_turn_abs_saturation_fraction"] > 0.0
+    assert telemetry["physical_rho_max_config"] == pytest.approx(env.cfg.planner.rho_max)
+
+
+def test_skrl_reward_breakdown_reports_weighted_contributions() -> None:
+    env = _make_env()
+    action = torch.zeros(env.num_envs, env.cfg.task.n_agents, env.cfg.planner.action_dim)
+    output = env.core.step(action)
+
+    breakdown = _reward_breakdown(output.info, env.cfg)
+
+    for component in (
+        "gather",
+        "oracle",
+        "energy",
+        "safety",
+        "terrain",
+        "motion",
+        "consistency",
+        "success_hold",
+        "terminal",
+    ):
+        assert f"reward_raw_{component}" in breakdown
+        assert f"reward_weight_{component}" in breakdown
+        assert f"reward_contribution_{component}" in breakdown
+        assert f"reward_abs_share_{component}" in breakdown
+    assert breakdown["cohesion_pairwise_reward"] is None
+    assert breakdown["reward_weighted_total"] == pytest.approx(breakdown["reward_contribution_sum"])
+
+
+def test_cuda_training_diagnosis_summarizes_action_and_reward_components(tmp_path: Path) -> None:
+    metrics_path = tmp_path / "metrics.jsonl"
+    rows = [
+        {
+            "run_id": "diagnostic",
+            "mean_pairwise_distance": 5.0,
+            "mean_oracle_distance": 4.0,
+            "success_rate": 0.0,
+            "mean_reward": -0.1,
+            "action_saturation_fraction": 0.05,
+            "action_near_zero_fraction": 0.01,
+            "action_forward_high_saturation_fraction": 0.0,
+            "action_forward_low_saturation_fraction": 0.0,
+            "action_turn_abs_saturation_fraction": 0.0,
+            "physical_rho_high_fraction": 0.0,
+            "physical_rho_low_fraction": 0.0,
+            "physical_beta_abs_high_fraction": 0.0,
+            "reward_contribution_gather": 0.1,
+            "reward_abs_share_gather": 0.4,
+            "reward_raw_gather": 0.1,
+        },
+        {
+            "run_id": "diagnostic",
+            "mean_pairwise_distance": 4.8,
+            "mean_oracle_distance": 3.8,
+            "success_rate": 0.0,
+            "mean_reward": 0.2,
+            "action_saturation_fraction": 0.35,
+            "action_near_zero_fraction": 0.02,
+            "action_forward_high_saturation_fraction": 0.30,
+            "action_forward_low_saturation_fraction": 0.0,
+            "action_turn_abs_saturation_fraction": 0.25,
+            "physical_rho_high_fraction": 0.30,
+            "physical_rho_low_fraction": 0.0,
+            "physical_beta_abs_high_fraction": 0.25,
+            "reward_contribution_gather": 0.3,
+            "reward_abs_share_gather": 0.5,
+            "reward_raw_gather": 0.3,
+            "reward_weighted_total": 0.2,
+            "reward_contribution_sum": 0.2,
+            "reward_positive_contribution_sum": 0.3,
+            "reward_negative_contribution_sum": -0.1,
+            "reward_abs_contribution_sum": 0.4,
+            "reward_dominant_positive_component": "gather",
+            "reward_dominant_negative_component": "motion",
+            "success_done": 0,
+            "timeout_done": 2,
+            "collision_done": 0,
+            "safety_done": 0,
+            "other_done": 0,
+        },
+    ]
+    metrics_path.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+
+    summary = diagnose(metrics_path)
+
+    assert summary["action_scale_summary"]["flags"] == [
+        "normalized_action_saturation",
+        "forward_high_saturation",
+        "turn_saturation",
+        "physical_rho_high_saturation",
+        "physical_beta_saturation",
+    ]
+    assert summary["reward_component_summary"]["dominant_positive_component"] == "gather"
+    assert summary["reward_component_trends"]["gather"]["contribution"]["last"] == pytest.approx(0.3)
+    assert "action_scale_ablation" in summary["next_experiment_focus"]
