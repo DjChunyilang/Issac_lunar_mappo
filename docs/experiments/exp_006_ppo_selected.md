@@ -40,4 +40,4 @@ timeout_rate: 0.0
 ## 说明
 
 这是 warm-start 后由 PPO 阶段选出的结果，不是 pure RL 从零训练结果。
-
+该实验是 proxy strict baseline，不是 Isaac / PhysX 物理训练结果；如需进入高保真闭环评估，应先用 `scripts/run_checkpoint_evaluation.py` 为候选 checkpoint 生成 `metrics/checkpoint_status.json`。

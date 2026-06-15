@@ -14,6 +14,25 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRov
 from play import _load_policy_players
 
 
+STRICT_PROXY_THRESHOLDS = {
+    "dmax_reduction_ratio": 0.2,
+    "success_rate": 0.9,
+    "collision_rate": 0.02,
+    "timeout_rate": 0.0,
+}
+
+
+def proxy_acceptance(metrics: dict, thresholds: dict | None = None) -> dict:
+    thresholds = thresholds or STRICT_PROXY_THRESHOLDS
+    checks = {
+        "dmax_reduction_ratio": metrics["dmax_reduction_ratio"] <= thresholds["dmax_reduction_ratio"],
+        "success_rate": metrics["success_rate"] >= thresholds["success_rate"],
+        "collision_rate": metrics["collision_rate"] <= thresholds["collision_rate"],
+        "timeout_rate": metrics["timeout_rate"] <= thresholds["timeout_rate"],
+    }
+    return {"passed": all(checks.values()), "checks": checks, "thresholds": thresholds}
+
+
 def _resolve_path(path: str | Path | None) -> Path | None:
     if path is None:
         return None

@@ -144,7 +144,7 @@ python -m pytest -q -ra
 
 ## PhysX Sanity
 
-PhysX / Isaac Sim 目前作为验证和展示层，不进入主训练 loop。headless sanity 示例：
+PhysX / Isaac Sim 目前作为 checkpoint 级高保真闭环评估和展示层，不进入主训练 loop。headless sanity 示例：
 
 ```bash
 .venv_isaaclab/bin/python scripts/evaluate_physx_four_jetbots.py \

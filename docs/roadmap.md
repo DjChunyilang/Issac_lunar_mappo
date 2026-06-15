@@ -2,24 +2,23 @@
 
 ## 立即处理
 
-1. 将 exp008 保持为当前已验证的 3-seed terrain-aware proxy 结果。
-2. 将 exp009 视为强地形诊断实验，而不是严格成功结果。
-3. 暂停 exp009/exp010 后续强地形失败诊断和 long-budget PPO。
-4. 保持 Python 3.12 + SKRL unit contract 为每次提交的最低门槛，防止配置、observation schema、SKRL metadata 回归。
-5. 按 [architecture/overall_plan_v3.md](architecture/overall_plan_v3.md) 将 proxy 降级为接口验证层，优先回到 Isaac Lab + SKRL-MAPPO 主线。
+1. 将 `multi_rover_design_revision_proxy_train_isaac_eval.md` 固定为当前主路线来源。
+2. 保持 exp008 为当前已验证的 3-seed terrain-aware proxy baseline。
+3. 暂停默认追加 exp009/exp010 strong terrain retry、exp012/exp013 action-scale long run；新增 proxy run 必须服务 checkpoint 评估、接口回归或明确假设验证。
+4. 对候选 checkpoint 统一运行 `scripts/run_checkpoint_evaluation.py`，生成 `metrics/final_eval_proxy.json` 和 `metrics/checkpoint_status.json`。
+5. 文档中严格区分三类结果：proxy training、proxy strict evaluation、Isaac/PhysX high-fidelity closed-loop evaluation。
 
 ## 近期工作
 
-- 维护 `.venv_isaaclab` 安装检查，覆盖 Python 3.12、CUDA/NVIDIA driver、Isaac Sim 6.0、Isaac Lab v3.0.0-beta、SKRL 和 `source/lunar_rover_tasks` editable install。
-- 保持 GitHub Actions `unit-contracts` 与本地 `.venv_isaaclab/bin/python -m pytest -q -ra` 一致；SKRL import 必须非 skip。
-- 跑通 `scripts/validate_first_stage.py` 的短验证，确认 proxy core、观测、奖励、轨迹、图和 GIF 链路可重复。
-- 跑通 `scripts/train.py --backend skrl` 的短 MAPPO smoke，验收 SKRL wrapper、multi-agent action/observation 和 centralized critic state。
-- 跑通 `scripts/debug_env.py`、`scripts/debug_observation.py`、`scripts/debug_reward.py` 作为基础回归。
-- 跑通 `scripts/evaluate_physx_four_jetbots.py` 的 headless/render sanity 路径，PhysX 继续作为验证和展示层，不进入主训练 loop。
-- 新 smoke 输出逐步迁到 `outputs/runs/`；旧 `outputs/logs` / `outputs/checkpoints` 仅保留兼容历史脚本。
+- D0 回归底线：保持 `.venv_isaaclab/bin/python -m pytest -q -ra` 可通过；SKRL import 测试不能 skip。
+- D1 评估编排：让 exp008 / exp013 等配置携带 `evaluation:` block，统一 proxy eval 与 PhysX eval 的触发规则。
+- D2 Checkpoint 状态：每个候选 run 都记录 `candidate`、`proxy_passed`、`physx_evaluated`、`physx_passed` 或 `final_selected`。
+- D3 PhysX/Jetbot 评估：把 Jetbot 继续作为 high-fidelity validation placeholder，扩大 episode 数和地形覆盖，记录 failure cases、tilt、dmax、dispersion 和 throughput。
+- D4 报告口径：更新根目录 V1.0 / V2.0 的历史提示，并新增 V3.0 补充说明，避免把旧文档误读为当前训练事实。
 
 ## 中长期工作
 
-- 在 Isaac Lab 物理闭环稳定后，再恢复强地形动作表示或 terrain curriculum 研究。
-- 将真实 rover articulation asset/control 接口接入 Isaac Lab 任务，替换当前 proxy unicycle 执行层。
-- 构建可重复的报告生成器，从 `_suite/metrics/*.json` 自动更新实验文档。
+- 用更接近月球车的 USD/URDF 或轮式底盘参数替换 Jetbot placeholder。
+- 增加低重力、摩擦、轮地接触、坡面稳定性和倾覆风险的高保真评估配置。
+- 如果 high-fidelity eval 暴露系统性迁移失败，再引入 Isaac-based fine-tuning、domain randomization 或更高保真的 proxy dynamics。
+- 构建报告生成器，从 `strict_acceptance.json`、`final_eval_proxy.json`、`checkpoint_status.json` 和 PhysX metrics 自动更新实验文档。

@@ -10,8 +10,6 @@ RUN_ROOT="$ROOT/outputs/runs/$EXPERIMENT_ID"
 SUITE_DIR="$RUN_ROOT/_suite"
 SUITE_LOG_DIR="$SUITE_DIR/logs"
 
-EVAL_NUM_ENVS="${EVAL_NUM_ENVS:-256}"
-EVAL_STEPS="${EVAL_STEPS:-160}"
 RENDER_PROXY_GIF="${RENDER_PROXY_GIF:-1}"
 RENDER_STEPS="${RENDER_STEPS:-120}"
 RUN_CONSERVATIVE_LONG="${RUN_CONSERVATIVE_LONG:-0}"
@@ -139,9 +137,11 @@ paths = {
     "summary": str(run_dir / "metrics" / "summary.json"),
     "diagnosis": str(run_dir / "metrics" / "diagnosis.json"),
     "final_eval_proxy": str(run_dir / "metrics" / "final_eval_proxy.json"),
+    "checkpoint_status": str(run_dir / "metrics" / "checkpoint_status.json"),
     "proxy_gif": str(run_dir / "videos" / "proxy_eval_rollout.gif"),
     "proxy_gif_metrics": str(run_dir / "metrics" / "proxy_rollout_render.json"),
     "train_log": train_log,
+    "checkpoint_evaluation_stdout": str(run_dir / "metrics" / "checkpoint_evaluation_stdout.json"),
 }
 manifest = {
     "experiment_id": "exp013_action_scale_ablation",
@@ -153,6 +153,7 @@ manifest = {
     "commands": {
         "train": f".venv_isaaclab/bin/python scripts/train_skrl_mappo.py --config {config} --device cuda --timesteps {steps}",
         "diagnose": f".venv_isaaclab/bin/python scripts/diagnose_cuda_training_signal.py --metrics {paths['train_metrics']}",
+        "checkpoint_evaluation": f".venv_isaaclab/bin/python scripts/run_checkpoint_evaluation.py --config {config} --checkpoint {paths['checkpoint']} --device cuda --run-dir {run_dir}",
         "render_proxy": f".venv_isaaclab/bin/python scripts/render_skrl_proxy_rollout.py --config {config} --checkpoint {paths['checkpoint']} --device cpu --steps 120 --run-dir {run_dir}",
         "render_physx": f".venv_isaaclab/bin/python scripts/evaluate_physx_four_jetbots.py --config {config} --checkpoint {paths['checkpoint']} --terrain flat --episodes 1 --steps 80 --render --run-dir {run_dir}",
     },
@@ -213,14 +214,12 @@ run_training_case() {
     "$run_dir/metrics/summary.json" \
     "$managed_run_id"
 
-  "$PY" scripts/evaluate_proxy_policy.py \
+  "$PY" scripts/run_checkpoint_evaluation.py \
     --config "$config" \
     --checkpoint "$run_dir/checkpoints/best.pt" \
     --device cuda \
-    --num-envs "$EVAL_NUM_ENVS" \
-    --steps "$EVAL_STEPS" \
     --run-dir "$run_dir" \
-    > "$run_dir/metrics/final_eval_proxy_stdout.json"
+    > "$run_dir/metrics/checkpoint_evaluation_stdout.json"
 
   if [[ "$RENDER_PROXY_GIF" != "0" ]]; then
     "$PY" scripts/render_skrl_proxy_rollout.py \
@@ -259,9 +258,11 @@ for manifest_path in sorted(run_root.glob("*/run_manifest.json")):
     run_dir = manifest_path.parent
     summary_path = run_dir / "metrics" / "summary.json"
     final_eval_path = run_dir / "metrics" / "final_eval_proxy.json"
+    status_path = run_dir / "metrics" / "checkpoint_status.json"
     render_path = run_dir / "metrics" / "proxy_rollout_render.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else {}
     final_eval = json.loads(final_eval_path.read_text(encoding="utf-8")) if final_eval_path.exists() else {}
+    checkpoint_status = json.loads(status_path.read_text(encoding="utf-8")) if status_path.exists() else {}
     render = json.loads(render_path.read_text(encoding="utf-8")) if render_path.exists() else {}
     action_summary = summary.get("action_scale_summary") or {}
     items.append(
@@ -281,6 +282,9 @@ for manifest_path in sorted(run_root.glob("*/run_manifest.json")):
             "action_saturation_fraction": action_summary.get("action_saturation_fraction"),
             "final_eval_success_rate": final_eval.get("success_rate"),
             "final_eval_mean_reward": final_eval.get("mean_reward"),
+            "checkpoint_state": checkpoint_status.get("state"),
+            "proxy_gate": (checkpoint_status.get("proxy_eval") or {}).get("gate"),
+            "high_fidelity_skip_reason": (checkpoint_status.get("high_fidelity_eval") or {}).get("skip_reason"),
         }
     )
 suite_summary = {

@@ -10,6 +10,22 @@ experiment:
   eval_num_envs: 512
   eval_steps: 220
 
+evaluation:
+  proxy_eval:
+    enabled: true
+    num_envs: 1024
+    steps: 220
+    seed_offset: 1000
+  high_fidelity_eval:
+    enabled: true
+    backend: physx_jetbot
+    trigger: proxy_passed
+    terrain: lunar_crater
+    episodes: 3
+    steps: 100
+    sim_steps_per_control: 8
+    render: false
+
 logging:
   tensorboard: true
 

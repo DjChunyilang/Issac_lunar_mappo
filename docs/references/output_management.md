@@ -19,6 +19,7 @@ outputs/runs/<experiment_id>/<run_id>/
     eval_metrics.json
     final_eval_proxy.json
     strict_acceptance.json
+    checkpoint_status.json
   figures/
     convergence_curves.png
     safety_diagnostics.png
@@ -97,9 +98,24 @@ outputs/runs/exp_008_terrain3d/_suite/
   - `metrics/train_metrics.jsonl`：逐 update 训练记录。
   - `metrics/eval_metrics.json`：训练过程中的 deterministic eval 记录。
   - `metrics/final_eval_proxy.json`：训练后的独立 proxy 评估。
+  - `metrics/checkpoint_status.json`：统一 checkpoint 评估状态，连接 proxy gate 与 high-fidelity eval。
 - visual：
   - Proxy 图和视频放在 `figures/` 和 `videos/`。
   - Isaac Sim / PhysX 产物放在 `physx/metrics|figures|videos`。
+
+## Checkpoint 状态
+
+`metrics/checkpoint_status.json` 的 `state` 只能使用：
+
+```text
+candidate
+proxy_passed
+physx_evaluated
+physx_passed
+final_selected
+```
+
+`candidate` 表示尚未通过 proxy strict gate；`proxy_passed` 表示 proxy gate 通过但 high-fidelity eval 尚未通过或未触发；`physx_evaluated` 表示已跑高保真评估但未通过 gate；`physx_passed` 表示 high-fidelity gate 通过；`final_selected` 只能用于明确选定的最终 checkpoint。
 
 ## 整理已有 outputs
 
@@ -171,7 +187,26 @@ TensorBoard：
 
 ## 后续 Proxy 评估
 
-使用 `--run-dir` 将独立评估结果写回同一 run：
+优先使用统一 checkpoint 评估入口：
+
+```bash
+.venv_isaaclab/bin/python scripts/run_checkpoint_evaluation.py \
+  --config configs/experiment/exp_008_terrain3d_weak_warmstart.yaml \
+  --checkpoint outputs/runs/exp_008_terrain3d/weak_warmstart_seed23_6m_lunar_crater_bc20/checkpoints/best.pt \
+  --device cuda \
+  --run-dir outputs/runs/exp_008_terrain3d/weak_warmstart_seed23_6m_lunar_crater_bc20 \
+  --skip-physx
+```
+
+该命令会写入：
+
+```text
+metrics/final_eval_proxy.json
+metrics/checkpoint_status.json
+run_manifest.json
+```
+
+如需只运行底层 proxy eval，可使用 `--run-dir` 将独立评估结果写回同一 run：
 
 ```bash
 .venv_isaaclab/bin/python scripts/evaluate_proxy_policy.py \
@@ -191,7 +226,7 @@ outputs/runs/<experiment_id>/<run_id>/metrics/final_eval_proxy.json
 
 ## 后续 PhysX 评估
 
-使用 `--run-dir` 让高保真评估产物留在同一个 run：
+优先让 `scripts/run_checkpoint_evaluation.py` 根据 `evaluation.high_fidelity_eval.trigger` 自动触发。需要手动运行底层 PhysX 评估时，使用 `--run-dir` 让高保真评估产物留在同一个 run：
 
 ```bash
 .venv_isaaclab/bin/python scripts/evaluate_physx_four_jetbots.py \

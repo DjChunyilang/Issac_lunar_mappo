@@ -42,4 +42,4 @@ outputs/runs/exp_008_terrain3d/_suite/checkpoints/
 
 ## 说明
 
-这是当前最佳的完整 3-seed terrain-aware proxy 结果。
+这是当前最佳的完整 3-seed terrain-aware proxy 结果，不是 Isaac / PhysX 物理训练结果。候选 checkpoint 后续应通过 `scripts/run_checkpoint_evaluation.py` 补齐 `metrics/checkpoint_status.json`，再报告是否通过高保真闭环评估。

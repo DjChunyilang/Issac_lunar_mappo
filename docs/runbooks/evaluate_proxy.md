@@ -1,6 +1,33 @@
 # Proxy 评估操作手册
 
-## 标准独立评估
+Proxy eval 是当前 checkpoint selection 的高频数值评估。它不启动 Isaac Sim / PhysX。
+
+## 推荐入口
+
+优先使用统一 checkpoint 评估脚本：
+
+```bash
+.venv_isaaclab/bin/python scripts/run_checkpoint_evaluation.py \
+  --config configs/experiment/<config>.yaml \
+  --checkpoint outputs/runs/<experiment>/<run_id>/checkpoints/best.pt \
+  --device cuda \
+  --run-dir outputs/runs/<experiment>/<run_id> \
+  --skip-physx
+```
+
+默认输出：
+
+```text
+metrics/final_eval_proxy.json
+metrics/checkpoint_status.json
+run_manifest.json
+```
+
+`--skip-physx` 只跳过高保真评估，不跳过 proxy gate。
+
+## 直接运行 proxy eval
+
+需要单独复评时仍可直接调用底层脚本：
 
 ```bash
 .venv_isaaclab/bin/python scripts/evaluate_proxy_policy.py \
@@ -8,10 +35,15 @@
   --checkpoint outputs/runs/<experiment>/<run_id>/checkpoints/best.pt \
   --device cuda \
   --num-envs 1024 \
-  --steps 260 \
+  --steps 220 \
   --seed <seed> \
-  --run-dir outputs/runs/<experiment>/<run_id> \
-  --output outputs/runs/<experiment>/<run_id>/metrics/final_eval_proxy.json
+  --run-dir outputs/runs/<experiment>/<run_id>
+```
+
+带 `--run-dir` 时默认写入：
+
+```text
+outputs/runs/<experiment>/<run_id>/metrics/final_eval_proxy.json
 ```
 
 ## 严格 Gate
@@ -23,7 +55,7 @@ collision_rate <= 0.02
 timeout_rate == 0
 ```
 
-写最终结论时，优先使用独立评估的 `final_eval_proxy.json`，不要只依赖训练内部 best metrics。
+写最终结论时，优先使用 `_suite/metrics/strict_acceptance.json`、独立 `final_eval_proxy.json` 和 `checkpoint_status.json`，不要只依赖训练内部 best metrics。
 
 ## 必须报告的地形指标
 

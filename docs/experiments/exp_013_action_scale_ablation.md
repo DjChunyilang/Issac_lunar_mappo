@@ -9,6 +9,7 @@
 ## 配置
 
 - suite 入口：`scripts/run_exp013_action_scale_ablation_suite.sh`
+- checkpoint 统一评估入口：`scripts/run_checkpoint_evaluation.py`
 - proxy GIF 渲染入口：`scripts/render_skrl_proxy_rollout.py`
 - suite 输出：`outputs/runs/exp013_action_scale_ablation/_suite/`
 - seed：`7`
@@ -42,7 +43,7 @@ collision_rate <= 0.02
 timeout_rate == 0
 ```
 
-exp013 没有生成 `_suite/metrics/strict_acceptance.json`，因此本实验只能作为诊断结果。严格结论以 `suite_summary.json`、各 run 的 `final_eval_proxy.json` 和 `summary.json` 为准。
+exp013 没有生成 `_suite/metrics/strict_acceptance.json`，因此本实验只能作为诊断结果。严格结论以 `suite_summary.json`、各 run 的 `final_eval_proxy.json`、`summary.json` 和 `checkpoint_status.json` 为准。
 
 ## 结果表
 
@@ -64,6 +65,12 @@ suite 汇总：
 
 ```text
 outputs/runs/exp013_action_scale_ablation/_suite/metrics/suite_summary.json
+```
+
+每个 run 的统一 checkpoint 状态：
+
+```text
+outputs/runs/exp013_action_scale_ablation/<run_id>/metrics/checkpoint_status.json
 ```
 
 teacher reachability sanity：

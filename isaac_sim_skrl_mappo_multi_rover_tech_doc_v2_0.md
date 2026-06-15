@@ -1,6 +1,8 @@
 # 多月球车自组织集合局部参考轨迹规划技术文档
 ## 基于 Isaac Sim / Isaac Lab 与 SKRL-MAPPO 的实现方案（V2.0）
 
+> 当前实现口径请先阅读 `multi_rover_proxy_train_isaac_eval_supplement_v3_0.md`、`docs/current_status.md` 和 `docs/architecture/overall_plan_v3.md`。本文保留为 V2.0 原始技术设计依据；其中把 Isaac Sim / Isaac Lab 写作主要训练平台的段落，应按当前“proxy 训练 + Isaac/PhysX 高保真闭环评估”路线修订理解。
+
 ---
 
 ## 1. 文档范围

@@ -238,6 +238,31 @@ def phase_c_acceptance(
     }
 
 
+def physx_acceptance(
+    metrics: dict,
+    *,
+    min_success_rate: float = 0.9,
+    max_collision_rate: float = 0.02,
+) -> dict:
+    return phase_c_acceptance(
+        float(metrics.get("success_rate", 0.0)),
+        float(metrics.get("collision_rate", 1.0)),
+        min_success_rate=min_success_rate,
+        max_collision_rate=max_collision_rate,
+    )
+
+
+def physx_diagnostics(metrics: dict) -> dict:
+    return {
+        "success_rate": metrics.get("success_rate"),
+        "collision_rate": metrics.get("collision_rate"),
+        "mean_final_dmax": metrics.get("mean_final_dmax"),
+        "mean_final_dispersion": metrics.get("mean_final_dispersion"),
+        "mean_max_tilt_deg": metrics.get("mean_max_tilt_deg"),
+        "mean_physics_updates_per_s": metrics.get("mean_physics_updates_per_s"),
+    }
+
+
 def _run_episode(
     app,
     args: argparse.Namespace,

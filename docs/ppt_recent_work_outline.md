@@ -12,7 +12,7 @@
 
 **副标题**
 
-Proxy 训练基线、三维地形扩展、强地形诊断与 Isaac Lab 工程回归路线
+Proxy 训练基线、三维地形扩展、强地形诊断与 Isaac/PhysX 闭环评估路线
 
 **图片**
 
@@ -24,7 +24,7 @@ Proxy 训练基线、三维地形扩展、强地形诊断与 Isaac Lab 工程回
 - 任务：多 rover 在未知初始分布下自主集合。
 - 方法：低维局部子目标动作 + 去中心化 actor + centralized critic。
 - 当前成果：弱 lunar crater 3D proxy 上完成 3-seed strict baseline。
-- 当前方向：从 proxy 结果回归 Isaac Sim / Isaac Lab + SKRL-MAPPO 工程闭环。
+- 当前方向：以 proxy 作为主训练环境，用 Isaac Sim / PhysX 做 checkpoint 级高保真闭环评估。
 
 ## 第 2 页：研究问题与任务定义
 
@@ -56,7 +56,7 @@ Proxy 训练基线、三维地形扩展、强地形诊断与 Isaac Lab 工程回
 
 **标题**
 
-从快速 proxy 验证到 Isaac Lab 物理闭环
+Proxy 训练到 Isaac/PhysX 闭环评估
 
 **图片**
 
@@ -66,7 +66,7 @@ Proxy 训练基线、三维地形扩展、强地形诊断与 Isaac Lab 工程回
   - `[rho, beta] local goal`
   - `trajectory generator`
   - `velocity tracking controller`
-  - `proxy dynamics / Isaac Lab PhysX`
+  - `proxy dynamics / PhysX closed-loop eval`
   - `metrics + outputs/runs`
 
 **页面文字**
@@ -75,7 +75,7 @@ Proxy 训练基线、三维地形扩展、强地形诊断与 Isaac Lab 工程回
 - Critic：训练期使用全局状态、队形几何、地形摘要和 oracle 辅助信息。
 - 动作：策略输出归一化 `[rho, beta]`，映射为车体系局部子目标。
 - 控制：局部子目标 -> 确定性轨迹 -> 速度跟踪命令。
-- 工程路线：proxy 用于快速训练和接口验证，最终回到 Isaac Lab + SKRL-MAPPO。
+- 工程路线：proxy 用于高吞吐训练和 checkpoint selection，Isaac/PhysX 用于低频高保真闭环评估。
 
 **参考文档**
 
@@ -266,33 +266,33 @@ hold reward 6M continuation：
 
 这一页要主动说明边界，避免导师误解“已经完成 Isaac Lab 物理训练”。
 
-## 第 11 页：当前差距与 V3 归正路线
+## 第 11 页：当前边界与 V3 评估路线
 
 **标题**
 
-从 proxy baseline 回到 Isaac Lab + SKRL-MAPPO
+从 proxy baseline 到 Isaac/PhysX checkpoint 评估
 
 **图片**
 
 - 建议画三层路线图：
-  - 接口稳定层：observation/state/action/reward/outputs
-  - Isaac Lab 物理环境层：rover articulation、terrain、collision、contact
-  - SKRL-MAPPO 正式训练层：runner、memory、centralized critic、final eval
+  - Proxy 训练层：observation/state/action/reward/outputs
+  - Checkpoint 状态层：proxy gate、checkpoint_status、manifest
+  - PhysX 评估层：Jetbot placeholder、terrain、collision、tilt、throughput
 
 **页面文字**
 
-当前差距：
+当前边界：
 
 - 已验证结果来自 proxy PPO + BC warm-start，不是正式 Isaac Lab 物理训练。
-- SKRL-MAPPO 当前主要是 smoke 路径，还不是主训练结果来源。
-- PhysX 使用 Jetbot 展示，尚未替换为 lunar rover articulation。
+- SKRL-MAPPO 当前接在 proxy wrapper 上，不能因 `isaaclab-multi-agent` wrapper 名称误判为 PhysX 训练。
+- PhysX 使用 Jetbot placeholder，尚未替换为 lunar rover articulation。
 
-下一步归正：
+下一步：
 
-- 固化 `.venv_isaaclab`、Isaac Sim、Isaac Lab、SKRL 和本地任务包安装。
-- 跑通 proxy validation、SKRL MAPPO smoke 和 PhysX headless/render sanity。
-- 新建 Isaac Lab 多 rover task skeleton。
-- 设计 rover asset 与 control adapter。
+- 对候选 checkpoint 统一生成 `metrics/checkpoint_status.json`。
+- 扩大 PhysX headless/render closed-loop evaluation 的 episode 数和地形覆盖。
+- 记录失败类型、tilt、dmax、dispersion 和 physics throughput。
+- 若高保真评估暴露系统性迁移失败，再考虑更真实 rover asset、domain randomization 或 Isaac-based fine-tuning。
 
 ## 第 12 页：总结与下一步计划
 
@@ -317,9 +317,9 @@ hold reward 6M continuation：
 下一步：
 
 - 不继续无界堆 strong terrain PPO。
-- 优先完成 Isaac Sim / Isaac Lab / SKRL 工程闭环验收。
-- 将 SKRL-MAPPO 从 smoke 升级为正式训练入口。
-- 在真实 Isaac/PhysX 环境稳定后，再恢复 weak/strong terrain 训练实验。
+- 优先为候选 checkpoint 生成 `checkpoint_status.json`。
+- 将 PhysX / Jetbot 从展示 sanity 升级为可复查的 high-fidelity closed-loop evaluation。
+- 扩展多 episode、多地形和失败案例记录。
 
 ## 备选附录 A：实验结果总表
 
@@ -363,4 +363,3 @@ hold reward 6M continuation：
 2. **算法闭环图**：observation/state -> policy/value -> `[rho, beta]` -> trajectory -> controller -> environment -> metrics。
 3. **V3 路线图**：proxy baseline、Isaac Lab task、rover articulation、SKRL-MAPPO、PhysX validation。
 4. **实验演进时间线**：exp006 平地通过 -> exp008 弱三维地形通过 -> exp009/010 强地形诊断 -> 工程回归。
-

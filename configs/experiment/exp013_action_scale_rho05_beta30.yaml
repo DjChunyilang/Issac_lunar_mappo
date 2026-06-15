@@ -12,6 +12,22 @@ experiment:
   save_checkpoint: true
   require_skrl_import: true
 
+evaluation:
+  proxy_eval:
+    enabled: true
+    num_envs: 256
+    steps: 160
+    seed_offset: 1000
+  high_fidelity_eval:
+    enabled: true
+    backend: physx_jetbot
+    trigger: proxy_passed
+    terrain: flat
+    episodes: 3
+    steps: 100
+    sim_steps_per_control: 8
+    render: false
+
 simulation:
   episode_length_s: 20.0
   physics_dt: 0.05

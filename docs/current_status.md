@@ -2,41 +2,60 @@
 
 ## 当前主线
 
-- 近期工程主线：按 [architecture/overall_plan_v3.md](architecture/overall_plan_v3.md) 将项目拉回 `Isaac Sim / Isaac Lab + SKRL-MAPPO + rover articulation` 主线。
-- 训练结果主线：PyTorch terrain-aware proxy 环境的 `exp008` 仍作为当前已验证 baseline。
-- 渲染和高保真 sanity check：Isaac Sim / PhysX Jetbot 评估需要整理成可重复 runbook。
+- 当前主设计口径已切换为“高吞吐 proxy 训练 + Isaac Sim / Isaac Lab / PhysX 高保真闭环评估”。`multi_rover_design_revision_proxy_train_isaac_eval.md` 是本轮路线修订来源。
+- 训练主环境仍是 PyTorch / torch-vectorized proxy 环境，用于 MAPPO / PPO 采样、奖励调试、观测接口验证和大规模对照实验。
+- Isaac Sim / Isaac Lab / PhysX 不作为当前主训练 loop，而作为 checkpoint 级高保真闭环评估、迁移 sanity check、失效分析和可视化展示平台。
+- 当前 PhysX 层使用 Jetbot 作为轮式资产 placeholder。Jetbot 可以验证闭环控制与物理展示链路，但不能证明真实月球车越障、轮壤接触或低重力动力学已经完成。
 - 视觉观测不进入 policy input；地形以低维结构化特征进入策略。
-- CPU unit contract 已接入 CI：Python 3.12、`skrl==2.1.0`、全量 `pytest -q -ra`，并包含非 skip 的 SKRL import 测试。
 - 生成结果写入 `outputs/runs/`，并由 git 忽略。
 
 ## 当前接口状态
 
-- `reward.coefficients.obstacle_collision` 已从 base reward 配置和 dataclass 移除；当前没有 obstacle collision 输入，因此不保留未消费配置项。
-- `observation.communication_radius` 是本轮唯一开放的 observation 配置项；`max_neighbors`、`ego_dim`、`neighbor_dim` 等维度相关字段仍由代码固定。
-- actor observation schema 为 `ego_v2_speed_angular`。ego 末尾两个历史零占位通道已替换为 `speed_xy` 和 `abs_angular_velocity`，tensor shape 不变，但 checkpoint 输入语义已经改变。
-- SKRL checkpoint metadata 会记录 `training_semantics`、`experiment_name`、`algorithm_mode`、`observation_schema_version`、`shared_actor`、`centralized_critic`、`shared_value`、`device` 和 `checkpoint_path`。
-- `scripts/train_skrl_mappo.py` 已加入 CUDA 必需检查、NaN 检查、action scale、reward component、done reason、random baseline 和 post-training eval 遥测；输出用于诊断，不等同于 strict pass。
+- actor observation schema 为 `ego_v2_speed_angular`，包含 ego、neighbor、terrain、aggregation 特征，不包含 oracle 集合点。
+- centralized critic state 和 reward shaping 可以使用 oracle 信息；执行期 actor 不接收 `p*`、oracle 距离或 oracle 距离下降量。
+- 动作接口固定为低维 `[rho, beta]`，再经局部子目标、直线轨迹和简化速度控制器转换为运动命令。
+- 当前 proxy 动力学是 2D/2.5D kinematic unicycle 风格状态更新；没有质量、惯量、轮地接触、打滑、悬挂或 PhysX contact。
+- `scripts/train_skrl_mappo.py` 使用 SKRL MAPPO 训练 proxy wrapper；`isaaclab-multi-agent` wrapper 只是接口层，不代表训练 loop 运行在 Isaac Sim / PhysX。
 
-## 当前 SKRL/CUDA 诊断
+## Checkpoint 评估工作流
 
-- `scripts/run_cuda_training_validation.py` 使用 `configs/experiment/exp_cuda_contract.yaml` 跑 `32 / 512 / 5000` timesteps CUDA contract。最新本地机器可读摘要为 `outputs/runs/cuda_training_validation_summary.json`：三段均 `status: ok`、`nan_detected: false`，但 `success_rate_final: 0.0`，只证明工程链路可运行。
-- `exp012_action_scale_warmup_probe` 是 SKRL-MAPPO action-scale 诊断实验，不是当前主结果。20k 探针和 500k 长预算均已完成，未出现 NaN。
-- exp012 500k 的 `diagnosis_long_5h_500000.json` 显示 pairwise/oracle distance 明显改善，post-training eval success_rate 达到 `0.375`，但 final instant success_rate 仍为 `0.0`，timeout/collision/safety done 很高，动作饱和继续加重。
-- `exp013_action_scale_ablation` 已完成 `rho06_beta45` 和 `rho05_beta30` 消融，并迁移到标准 `outputs/runs/exp013_action_scale_ablation/<run_id>/` layout。核心测试为 `65 passed`，所有 run 无 NaN，但 final eval success_rate 均为 `0.0`。
-- exp013 最有学习信号的是 `rho06_beta45_seed7_probe_20000`：proxy GIF 中 pairwise 从 `5.8122` 降到 `3.7992`，oracle 从 `3.6066` 降到 `2.3733`，但仍 timeout。`rho06_beta45_seed7_long_120000` 未改善 success，动作饱和升至约 `0.508`。
-- teacher reachability sanity 显示当前 exp013 的 `rho=0.6, beta=pi/4, 100 steps` 配置对 scripted teacher 也几乎不可达：stop 0.45 时 success 为 `0.0`，stop 0.35 时 success 约 `0.0059`。同一小动作尺度恢复到 `220` steps 后 teacher success 为 `1.0`；100 steps 下恢复 full-scale `rho=1.2, beta=pi/2` 后 teacher success 为 `0.7188`。
-- 当前 SKRL 下一步不应继续盲目长训；焦点转为先构造 teacher-reachable 的 exp014，再做 `success_gate_reachability_diagnostic` 和动作饱和机制诊断。
+新增标准入口：
+
+```bash
+.venv_isaaclab/bin/python scripts/run_checkpoint_evaluation.py \
+  --config configs/experiment/<config>.yaml \
+  --checkpoint outputs/runs/<experiment>/<run_id>/checkpoints/best.pt \
+  --device cuda \
+  --run-dir outputs/runs/<experiment>/<run_id>
+```
+
+该入口会根据 experiment YAML 的 `evaluation:` 配置执行：
+
+1. proxy 独立评估，写入 `metrics/final_eval_proxy.json`；
+2. proxy strict gate 判定；
+3. 若配置允许且 proxy 通过，再低频触发 PhysX / Jetbot 高保真闭环评估；
+4. 写入 `metrics/checkpoint_status.json` 并更新 `run_manifest.json`。
+
+checkpoint 状态只使用：
+
+```text
+candidate
+proxy_passed
+physx_evaluated
+physx_passed
+final_selected
+```
 
 ## 已验证结果
 
-| 实验 | 地形 | 方法 | 严格状态 | 说明 |
+| 实验 | 地形 | 方法 | 严格状态 | 当前解释 |
 | --- | --- | --- | --- | --- |
-| exp006 | 平地 proxy | BC + PPO | 通过 | PPO 阶段选出的平地 baseline。 |
-| exp008 | 弱 lunar crater 3D proxy | 弱 warm-start + PPO | 3 seeds 通过 | 当前最完整的 3-seed terrain-aware proxy 结果。 |
-| exp009 | 强 lunar crater 3D proxy | 弱 warm-start + PPO | 未通过 | seed23 通过；seed31 未通过 success/timeout；seed47 未运行。 |
-| exp010 | 强 lunar crater 3D proxy | 成功 gate 诊断 + hold reward 短程修复 | 未通过 | seed31 success 可到 0.90，但 collision/timeout 仍失败；strong terrain 诊断线暂缓。 |
-| exp012 | proxy SKRL-MAPPO CUDA 诊断 | action scale warmup probe | 未通过 | 500k 长预算 distance 明显改善、eval success_rate 到 0.375，但 final success 为 0，timeout/collision/safety done 和动作饱和仍阻塞 strict。 |
-| exp013 | proxy SKRL-MAPPO CUDA 诊断 | action scale ablation + teacher reachability | 未通过 | 20k `rho06_beta45` 有最佳短探针信号，但 final eval success 为 0；teacher sanity 显示当前 100-step 小动作配置本身几乎不可达。 |
+| exp006 | 平地 proxy | BC + PPO | 通过 | 平地 proxy strict baseline，checkpoint 来自 PPO 阶段。 |
+| exp008 | 弱 lunar crater 3D proxy | 弱 warm-start + PPO | 3 seeds 通过 | 当前最完整的 terrain-aware proxy baseline。 |
+| exp009 | 强 lunar crater 3D proxy | 弱 warm-start + PPO | 未通过 | seed23 通过；seed31 失败；近期不继续堆 long-budget PPO。 |
+| exp010 | 强 lunar crater 3D proxy | hold reward / safety 诊断 | 未通过 | success 可改善，但 collision/timeout gate 仍失败。 |
+| exp012 | proxy SKRL-MAPPO CUDA 诊断 | action scale warmup probe | 未通过 | distance 有改善，但 strict gate 未通过。 |
+| exp013 | proxy SKRL-MAPPO CUDA 诊断 | action scale ablation + teacher reachability | 未通过 | 当前小动作 100-step 配置对 teacher 也几乎不可达。 |
 
 当前推荐的完整 suite checkpoint：
 
@@ -44,55 +63,16 @@
 outputs/runs/exp_008_terrain3d/_suite/checkpoints/
 ```
 
-当前强地形诊断 checkpoint 仅作为对照，不作为近期继续训练入口：
+## 结果解释边界
 
-```text
-outputs/runs/exp_009_terrain3d_strong/_suite/checkpoints/seed_23_best.pt
-outputs/runs/exp_009_terrain3d_strong/_suite/checkpoints/seed_31_best.pt
-```
-
-## 与总体规划的差距
-
-V2.0 总体规划目标是 `Isaac Sim / Isaac Lab + SKRL-MAPPO + 低维局部子目标动作 + 确定性轨迹生成器 + 简化速度跟踪控制器`。当前已经验证的是 proxy 训练和部分 PhysX 展示链路，还不是完整 Isaac Lab 物理训练闭环。
-
-详细偏差 review 和 V3 归正路线见 [architecture/overall_plan_v3.md](architecture/overall_plan_v3.md)。该文档明确：proxy 是临时工程绕路，后续目标应回到 Isaac Lab 物理环境和 SKRL-MAPPO 主训练。
-
-## 暂缓的训练诊断
-
-exp009 strong terrain 已证明 3D 地形动力学生效，高度范围约 `0.74 m`。但当前高层动作和 reward/control 设计不能在所有 seeds 上稳定清除严格 gate。
-
-seed31 失败模式：
-
-```text
-dmax_reduction_ratio: 0.1819  # 通过
-success_rate: 0.8740          # 未通过
-collision_rate: 0.0049        # 通过
-timeout_rate: 0.1250          # 未通过
-```
-
-exp010 诊断与短程修复补充：
-
-```text
-seed31 hold reward 6M continuation:
-  dmax_reduction_ratio: 0.1720  # 通过
-  success_rate: 0.9014          # 通过
-  collision_rate: 0.0273        # 未通过
-  timeout_rate: 0.0742          # 未通过
-  speed_ok_rate: 0.9997
-  timeout_final_dmax_mean: 3.6919
-  timeout_final_dispersion_mean: 4.3987
-```
-
-结论：失败不是 speed hold，且不是简单继续增加 PPO 步数能解决的趋势。timeout episode 末端仍远离 `dmax/dispersion` 成功区。
-
-当前先不继续 strong terrain 失败 episode 诊断，也不新增 long-budget PPO。后续恢复训练研究时，再基于这些结论设计动作表示或 curriculum 实验。
+- exp006 / exp008 是 proxy strict pass，不是 Isaac Lab 物理训练 pass。
+- PhysX / Jetbot 结果应写成“proxy checkpoint 在 PhysX 场景中的闭环评估结果”，不能写成“物理环境训练结果”。
+- 当前较好结果来自 weak warm-start + PPO，不能表述为 pure RL 从零严格收敛。
+- GIF、截图和 TensorBoard 曲线只能用于展示和诊断；严格结论以 `_suite/metrics/strict_acceptance.json`、`metrics/final_eval_proxy.json` 和 `metrics/checkpoint_status.json` 为准。
 
 ## 下一步
 
-近期优先从已补齐的工程闭环继续推进到物理/训练主线，不以单次 reward 曲线作为成功证据：
-
-1. 维持 `.venv_isaaclab/bin/python -m pytest -q -ra` 和 GitHub Actions unit contract 为每次代码修改的最低门槛。
-2. 按 [runbooks/setup_environment.md](runbooks/setup_environment.md) 跑通 `scripts/validate_first_stage.py` 的 CPU 短验证，确认 proxy core、观测、奖励、轨迹和图像产物链路可用。
-3. 按 [runbooks/train_skrl_mappo.md](runbooks/train_skrl_mappo.md) 复查 exp013 action-scale ablation 和 teacher reachability；下一步优先设计 teacher-reachable 的 exp014，而不是继续把当前 100-step 小动作配置的 PPO 预算拉长。
-4. 跑通 `scripts/debug_env.py`、`scripts/debug_observation.py` 和 `scripts/debug_reward.py`，作为基础回归检查。
-5. 跑通 `scripts/evaluate_physx_four_jetbots.py` 的 headless/render sanity 路径，并把结果写入标准 run 目录。
+1. 用 `scripts/run_checkpoint_evaluation.py` 复评当前候选 checkpoint，补齐 `checkpoint_status.json`。
+2. 维持 exp008 作为当前 proxy baseline，不继续默认追加 exp012/exp013 long-budget proxy PPO。
+3. 扩展 PhysX / Jetbot 高保真评估样本量，优先记录失败类型、tilt、dmax、dispersion 和 physics throughput。
+4. 后续若高保真评估发现系统性迁移失败，再考虑 Isaac-based fine-tuning、domain randomization、真实 rover asset 或更高保真动力学模型。

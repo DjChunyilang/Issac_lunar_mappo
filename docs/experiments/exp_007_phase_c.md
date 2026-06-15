@@ -40,7 +40,7 @@ mean_done_step: 83.53
 
 ## PhysX 结果
 
-四 Jetbot lunar crater 评估作为高保真 sanity check 通过：
+四 Jetbot lunar crater 评估作为高保真闭环 sanity check 通过：
 
 ```text
 success_rate: 1.0000
@@ -50,4 +50,4 @@ mean_final_dmax: 0.7977
 
 ## 说明
 
-PhysX 只用于验证和展示，不进入主训练 loop。
+PhysX 只用于 checkpoint 级高保真评估和展示，不进入主训练 loop。该结果应表述为“proxy checkpoint 在 PhysX / Jetbot 场景中的闭环评估结果”，不能表述为 Isaac Lab 物理训练结果。

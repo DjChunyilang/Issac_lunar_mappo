@@ -1,6 +1,6 @@
 # SKRL-MAPPO 训练诊断操作手册
 
-本 runbook 用于 SKRL-MAPPO CUDA contract、动作尺度诊断和短训练信号检查。这里的结果只证明工程链路或诊断方向，不作为 strict pass。
+本 runbook 用于 SKRL-MAPPO proxy CUDA contract、动作尺度诊断和短训练信号检查。这里的训练结果只证明 proxy 工程链路或诊断方向，不作为 Isaac / PhysX 物理训练结果。
 
 ## 前置检查
 
@@ -11,6 +11,7 @@
   tests/test_observation.py \
   tests/test_four_rover_observation_space.py \
   tests/test_convergence_tools.py \
+  tests/test_checkpoint_evaluation.py \
   tests/test_skrl_import.py \
   tests/test_skrl_mappo_semantics.py
 ```
@@ -79,7 +80,7 @@ configs/experiment/exp013_action_scale_rho06_beta45.yaml
 configs/experiment/exp013_action_scale_rho05_beta30.yaml
 ```
 
-默认运行 `rho06_beta45` 的 `32 / 20000 / 120000` timesteps，以及 `rho05_beta30` 的 `32 / 20000` timesteps。它会把每个 run 的配置快照、checkpoint、训练 JSONL、diagnosis、final proxy eval 和 proxy GIF 写入标准 run 目录。
+默认运行 `rho06_beta45` 的 `32 / 20000 / 120000` timesteps，以及 `rho05_beta30` 的 `32 / 20000` timesteps。它会把每个 run 的配置快照、checkpoint、训练 JSONL、diagnosis、final proxy eval、checkpoint status 和 proxy GIF 写入标准 run 目录。
 
 产物路径：
 
@@ -91,6 +92,7 @@ outputs/runs/exp013_action_scale_ablation/<run_id>/metrics/train_metrics.jsonl
 outputs/runs/exp013_action_scale_ablation/<run_id>/metrics/summary.json
 outputs/runs/exp013_action_scale_ablation/<run_id>/metrics/diagnosis.json
 outputs/runs/exp013_action_scale_ablation/<run_id>/metrics/final_eval_proxy.json
+outputs/runs/exp013_action_scale_ablation/<run_id>/metrics/checkpoint_status.json
 outputs/runs/exp013_action_scale_ablation/<run_id>/videos/proxy_eval_rollout.gif
 ```
 
@@ -127,6 +129,20 @@ outputs/runs/exp013_action_scale_ablation/_suite/metrics/teacher_reachability_su
 - done reason：success、timeout、collision、safety 和 other 计数。
 - random baseline 和 post-training deterministic eval。
 - checkpoint metadata，包括 observation schema 和 SKRL-MAPPO 语义字段。
+
+## Checkpoint 统一评估
+
+训练完成后运行：
+
+```bash
+.venv_isaaclab/bin/python scripts/run_checkpoint_evaluation.py \
+  --config configs/experiment/exp013_action_scale_rho06_beta45.yaml \
+  --checkpoint outputs/runs/exp013_action_scale_ablation/<run_id>/checkpoints/best.pt \
+  --device cuda \
+  --run-dir outputs/runs/exp013_action_scale_ablation/<run_id>
+```
+
+该命令根据配置中的 `evaluation:` block 先执行 proxy final eval，再写入 checkpoint 状态。若 proxy strict gate 未通过，PhysX 会被标记为 `proxy_not_passed` 并跳过；若通过，则按配置执行低频 high-fidelity closed-loop eval。
 
 ## 诊断 JSON
 

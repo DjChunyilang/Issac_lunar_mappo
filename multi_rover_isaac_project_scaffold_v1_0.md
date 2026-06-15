@@ -1,6 +1,8 @@
 # 多月球车自组织集合项目脚手架文档
 ## 基于 Isaac Sim / Isaac Lab 与 SKRL-MAPPO 的项目文件架构（V1.0）
 
+> 当前实现口径请先阅读 `multi_rover_proxy_train_isaac_eval_supplement_v3_0.md`、`docs/current_status.md` 和 `docs/architecture/overall_plan_v3.md`。本文保留为 V1.0 脚手架历史依据；其中把 Isaac Sim / Isaac Lab 写作主训练环境的表述，应按当前“proxy 训练 + Isaac/PhysX 高保真闭环评估”路线理解。
+
 ---
 
 ## 1. 文档目的
