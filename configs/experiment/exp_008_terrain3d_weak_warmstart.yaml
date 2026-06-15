@@ -18,9 +18,9 @@ evaluation:
     seed_offset: 1000
   high_fidelity_eval:
     enabled: true
-    backend: physx_jetbot
+    backend: physx_jackal
     trigger: proxy_passed
-    terrain: lunar_crater
+    terrain: strong_lunar_crater
     episodes: 3
     steps: 100
     sim_steps_per_control: 8

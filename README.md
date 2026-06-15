@@ -70,4 +70,4 @@ Gymnasium task 注册 ID：
 Isaac-MultiRover-Gathering-Direct-v0
 ```
 
-Actor observation 不包含 oracle 信息。oracle 集合点仅用于 centralized critic、reward shaping 和评价指标。PhysX / Jetbot 评估结果只能说明 proxy checkpoint 在当前高保真 placeholder 场景中的闭环表现，不能直接写成真实月球车物理训练结果。
+Actor observation 不包含 oracle 信息。oracle 集合点仅用于 centralized critic、reward shaping 和评价指标。PhysX / Jackal 评估结果只能说明 proxy checkpoint 在当前高保真 placeholder 场景中的闭环表现，不能直接写成真实月球车物理训练结果。

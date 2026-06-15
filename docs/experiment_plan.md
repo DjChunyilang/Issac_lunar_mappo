@@ -91,6 +91,6 @@ timeout_rate: 0.1250          # 未通过
 1. `.venv_isaaclab/bin/python -m pytest -q -ra`。
 2. `scripts/validate_first_stage.py --config configs/experiment/exp_001_minimal.yaml --device cpu --steps 32`。
 3. `scripts/run_checkpoint_evaluation.py` 在 mock 或真实 run 上生成 `checkpoint_status.json`。
-4. `scripts/evaluate_physx_four_jetbots.py` 的 headless/render sanity 路径可手动运行，并记录产物路径。
+4. `scripts/evaluate_physx_jackal_tracking.py` 的 headless/render sanity 路径可手动运行，并记录产物路径。
 
 如果新增工程 smoke run，应优先写入 `outputs/runs/<experiment>/<run_id>/` 并更新 runbook；不要把 partial train、GIF 或 TensorBoard 曲线写成 strict success。

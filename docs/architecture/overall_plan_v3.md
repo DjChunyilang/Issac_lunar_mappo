@@ -20,14 +20,14 @@ Proxy 环境是当前主训练环境，不是临时日志或单纯可视化工�
 
 ### Isaac / PhysX 高保真评估层
 
-Isaac Sim / Isaac Lab / PhysX 当前定位为 high-fidelity closed-loop policy evaluation：
+Isaac Sim / Isaac Lab / PhysX 当前定位为 high-fidelity closed-loop validation：
 
-- 加载 proxy 训练得到的 checkpoint；
-- 在 PhysX 轮式资产和地形中执行“观测 -> 动作 -> 物理推进 -> 再观测”的闭环 rollout；
-- 报告 success、collision、dmax、dispersion、tilt 和 physics throughput；
-- 记录失败案例，用于判断 proxy 策略是否存在系统性迁移问题。
+- 运行 Jackal 轮式资产在平地和 strong lunar crater mesh 中的轨迹跟踪；
+- 在 PhysX 中执行“参考轨迹 -> 控制命令 -> 物理推进 -> 误差再计算”的闭环 rollout；
+- 报告 `rmse_cross_track_m`、`max_cross_track_m`、`path_completion_ratio`、`max_tilt_deg` 和 tracking figures；
+- 记录失败案例，用于判断控制接口、地形 mesh 和后续 proxy policy 迁移风险。
 
-当前使用 Jetbot 作为轮式资产 placeholder。Jetbot 可以验证控制链路和闭环评估流程，但不能代表最终 lunar rover asset。
+当前使用 Jackal 作为轮式资产 placeholder。Jackal 可以验证控制链路和闭环评估流程，但不能代表最终 lunar rover asset。
 
 ### Checkpoint 流转
 
@@ -87,21 +87,22 @@ collision_rate <= 0.02
 timeout_rate == 0
 ```
 
-High-fidelity gate 当前使用：
+High-fidelity gate 当前使用 Jackal tracking 指标：
 
 ```text
-success_rate >= 0.9
-collision_rate <= 0.02
+flat: rmse_cross_track_m <= 0.20, max_cross_track_m <= 0.55, path_completion_ratio >= 0.90
+strong_lunar_crater: rmse_cross_track_m <= 0.50, max_cross_track_m <= 1.10, path_completion_ratio >= 0.75, max_tilt_deg <= 35
 ```
 
 PhysX 评估必须同时保留诊断指标：
 
 ```text
-mean_final_dmax
-mean_final_dispersion
-mean_max_tilt_deg
-mean_physics_updates_per_s
-episode_metrics
+rmse_cross_track_m
+max_cross_track_m
+path_completion_ratio
+max_tilt_deg
+timeseries.csv
+tracking.png
 ```
 
 GIF、截图和 TensorBoard 曲线不能作为 strict pass 证据。
@@ -112,7 +113,7 @@ GIF、截图和 TensorBoard 曲线不能作为 strict pass 证据。
 - `scripts/train_proxy_convergence.py` 产生 exp006-exp010 的主要 proxy suite 结果。
 - `scripts/train_skrl_mappo.py` 已接入 SKRL MAPPO proxy wrapper，用于 CUDA contract、action-scale 诊断和 exp012/exp013。
 - `scripts/evaluate_proxy_policy.py` 输出独立 `metrics/final_eval_proxy.json`。
-- `scripts/evaluate_physx_four_jetbots.py` 输出 PhysX / Jetbot headless 或 render 评估结果。
+- `scripts/evaluate_physx_jackal_tracking.py` 输出 PhysX / Jackal headless 或 render 评估结果。
 - `scripts/run_checkpoint_evaluation.py` 是新的 checkpoint 级统一评估入口。
 - `outputs/runs/` 是标准产物目录；`outputs/**` 默认不提交。
 
@@ -120,5 +121,5 @@ GIF、截图和 TensorBoard 曲线不能作为 strict pass 证据。
 
 1. 对 exp008 候选 checkpoint 运行统一 checkpoint evaluation，补齐 `checkpoint_status.json`。
 2. 保留 exp013 作为 SKRL-MAPPO action-scale 与 reachability 诊断，不把它写成成功结果。
-3. 扩大 PhysX / Jetbot 多 episode、多地形复评，记录失败类型与姿态稳定性。
+3. 扩大 PhysX / Jackal 平地和 strong lunar crater 跟踪复评，记录误差、完成率与姿态稳定性。
 4. 如果 PhysX 评估暴露系统性迁移失败，再考虑 domain randomization、Isaac-based fine-tuning 或真实 rover asset/control adapter。

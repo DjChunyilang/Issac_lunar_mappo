@@ -10,7 +10,7 @@
 ```text
 高吞吐 proxy 环境训练
 -> proxy strict evaluation
--> Isaac Sim / Isaac Lab / PhysX high-fidelity closed-loop policy evaluation
+-> Isaac Sim / Isaac Lab / PhysX high-fidelity Jackal tracking validation
 ```
 
 ## 2. 当前训练环境
@@ -28,17 +28,17 @@ Proxy 环境承担：
 
 ## 3. Isaac/PhysX 的当前定位
 
-Isaac Sim / Isaac Lab / PhysX 当前作为高保真闭环评估层，而不是主训练采样层。
+Isaac Sim / Isaac Lab / PhysX 当前作为高保真闭环验证层，而不是主训练采样层。
 
-闭环评估指策略在评估环境中连续执行：
+当前 Jackal tracking 闭环指参考轨迹在评估环境中连续执行：
 
 ```text
-观测 -> actor 动作 -> 控制适配 -> 物理推进 -> 新观测
+参考轨迹 -> 控制命令 -> PhysX 物理推进 -> 跟踪误差再计算
 ```
 
-该过程不同于离线轨迹回放，也不同于单步动作打分。它用于检查 proxy checkpoint 在物理仿真、轮式资产和崎岖地形扰动下是否仍能完成集合任务。
+该过程不同于离线轨迹回放，也不同于单步动作打分。它用于检查 Jackal 轮式资产、控制接口、强三维地形 mesh 和输出链路是否稳定，为后续 proxy checkpoint 迁移评估提供底层 sanity check。
 
-当前 PhysX 资产使用 Jetbot placeholder。Jetbot 可验证轮式控制链路和评估流程，但不能代表最终月球车资产，也不能证明真实月面轮壤动力学已经解决。
+当前 PhysX 资产使用 Clearpath Jackal。Jackal 可验证轮式控制链路和强地形跟踪流程，但不能代表最终月球车资产，也不能证明真实月面轮壤动力学已经解决。
 
 ## 4. Checkpoint 状态机
 
@@ -77,14 +77,14 @@ collision_rate <= 0.02
 timeout_rate == 0
 ```
 
-PhysX gate 当前使用：
+PhysX / Jackal tracking gate 当前使用：
 
 ```text
-success_rate >= 0.9
-collision_rate <= 0.02
+flat: rmse_cross_track_m <= 0.20, max_cross_track_m <= 0.55, path_completion_ratio >= 0.90
+strong_lunar_crater: rmse_cross_track_m <= 0.50, max_cross_track_m <= 1.10, path_completion_ratio >= 0.75, max_tilt_deg <= 35
 ```
 
-同时保留 `mean_final_dmax`、`mean_final_dispersion`、`mean_max_tilt_deg` 和 `mean_physics_updates_per_s` 作为诊断指标。
+同时保留 `timeseries.csv`、`tracking.png`、`max_tilt_deg` 和 `control_steps_per_s` 作为诊断指标。
 
 ## 5. 对 V1.0 / V2.0 的修订关系
 
@@ -97,14 +97,14 @@ V1.0 / V2.0 中关于目录、观测、critic、oracle 边界、`[rho, beta]` �
 Isaac Sim / Isaac Lab 是当前主要训练与仿真平台。
 
 当前口径：
-Proxy 是当前主要训练平台；Isaac Sim / Isaac Lab / PhysX 是 checkpoint 级高保真闭环评估平台。
+Proxy 是当前主要训练平台；Isaac Sim / Isaac Lab / PhysX 是 Jackal high-fidelity tracking validation 和 checkpoint 迁移 sanity check 平台。
 ```
 
 因此，现有实验结果应写为：
 
 ```text
 weak warm-start + PPO 在 proxy 环境中通过 strict gate；
-候选 checkpoint 可进一步进入 PhysX / Jetbot 高保真闭环评估。
+候选 checkpoint 可进一步进入 PhysX / Jackal 高保真迁移 sanity check；本轮重点先完成 Jackal 底层轨迹跟踪验证。
 ```
 
 不要写为：
@@ -117,13 +117,13 @@ MAPPO 已在 Isaac Sim / Isaac Lab 真实物理环境中完成训练收敛。
 
 - `exp006` 是平地 proxy strict baseline。
 - `exp008` 是当前最完整的 3-seed terrain-aware proxy baseline。
-- `exp007` 证明 checkpoint 可接入 PhysX / Jetbot 闭环评估，但不代表 Isaac 物理训练。
+- `exp007` 保留为历史 high-fidelity sanity 结果；当前活跃 PhysX 验证已切换为 Jackal tracking。
 - `exp012` / `exp013` 是 SKRL-MAPPO proxy 诊断，不是 strict pass。
 - 当前较好结果来自 weak warm-start + PPO，不能表述为 pure RL 从零严格收敛。
 
 ## 7. 后续工作
 
 1. 对当前候选 checkpoint 补齐 `checkpoint_status.json`。
-2. 扩大 PhysX / Jetbot 多 episode、多地形评估样本量。
-3. 记录 high-fidelity failure cases，包括集合失败、碰撞、越界、tilt、陷入坑洼、超时和控制跟踪失败。
+2. 扩大 PhysX / Jackal 平地与 strong lunar crater 跟踪样本量。
+3. 记录 high-fidelity failure cases，包括 tracking error、path completion、tilt、陷入坑洼和控制跟踪失败。
 4. 若高保真评估发现系统性迁移失败，再考虑 Isaac-based fine-tuning、domain randomization、真实 rover USD/URDF 或更高保真的动力学模型。

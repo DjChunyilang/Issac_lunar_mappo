@@ -144,14 +144,12 @@ python -m pytest -q -ra
 
 ## PhysX Sanity
 
-PhysX / Isaac Sim 目前作为 checkpoint 级高保真闭环评估和展示层，不进入主训练 loop。headless sanity 示例：
+PhysX / Isaac Sim 目前作为 Jackal high-fidelity tracking validation 和展示层，不进入主训练 loop。headless sanity 示例：
 
 ```bash
-.venv_isaaclab/bin/python scripts/evaluate_physx_four_jetbots.py \
-  --config configs/experiment/exp_008_terrain3d_weak_warmstart.yaml \
-  --checkpoint outputs/runs/exp_008_terrain3d/_suite/checkpoints/seed_23_best.pt \
-  --terrain lunar_crater \
-  --episodes 1 \
+.venv_isaaclab/bin/python scripts/evaluate_physx_jackal_tracking.py \
+  --terrain flat \
+  --profile straight \
   --steps 60 \
   --run-dir outputs/runs/env_smoke/physx_seed23_headless
 ```
@@ -159,11 +157,9 @@ PhysX / Isaac Sim 目前作为 checkpoint 级高保真闭环评估和展示层�
 渲染 sanity 示例：
 
 ```bash
-.venv_isaaclab/bin/python scripts/evaluate_physx_four_jetbots.py \
-  --config configs/experiment/exp_008_terrain3d_weak_warmstart.yaml \
-  --checkpoint outputs/runs/exp_008_terrain3d/_suite/checkpoints/seed_23_best.pt \
-  --terrain lunar_crater \
-  --episodes 1 \
+.venv_isaaclab/bin/python scripts/evaluate_physx_jackal_tracking.py \
+  --terrain strong_lunar_crater \
+  --profile straight \
   --steps 60 \
   --render \
   --run-dir outputs/runs/env_smoke/physx_seed23_render
@@ -172,7 +168,7 @@ PhysX / Isaac Sim 目前作为 checkpoint 级高保真闭环评估和展示层�
 成功标准：
 
 - headless/render 命令退出码为 0。
-- metrics、figures、videos 写入对应 `run-dir`。
+- metrics、CSV 和 tracking figures 写入对应 `run-dir`。
 - 结果只作为 sanity check，不作为 strict proxy 验收。
 
 ## 结果记录规则

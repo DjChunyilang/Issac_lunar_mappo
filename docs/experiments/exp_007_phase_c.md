@@ -2,7 +2,7 @@
 
 ## 目的
 
-加入 lunar crater proxy 地形、PhysX lunar crater mesh、四 Jetbot 评估，并得到一个 best checkpoint 来自 PPO 阶段的弱 warm-start 结果。
+加入 lunar crater proxy 地形、PhysX lunar crater mesh、历史高保真 sanity 评估，并得到一个 best checkpoint 来自 PPO 阶段的弱 warm-start 结果。
 
 ## 配置
 
@@ -40,7 +40,7 @@ mean_done_step: 83.53
 
 ## PhysX 结果
 
-四 Jetbot lunar crater 评估作为高保真闭环 sanity check 通过：
+历史 lunar crater 高保真 sanity check 通过：
 
 ```text
 success_rate: 1.0000
@@ -50,4 +50,4 @@ mean_final_dmax: 0.7977
 
 ## 说明
 
-PhysX 只用于 checkpoint 级高保真评估和展示，不进入主训练 loop。该结果应表述为“proxy checkpoint 在 PhysX / Jetbot 场景中的闭环评估结果”，不能表述为 Isaac Lab 物理训练结果。
+PhysX 只用于 checkpoint 级高保真评估和展示，不进入主训练 loop。该历史结果不能表述为 Isaac Lab 物理训练结果；当前活跃高保真验证入口已切换为 `scripts/evaluate_physx_jackal_tracking.py`。

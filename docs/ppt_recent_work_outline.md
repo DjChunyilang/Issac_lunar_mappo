@@ -16,7 +16,7 @@ Proxy 训练基线、三维地形扩展、强地形诊断与 Isaac/PhysX 闭环�
 
 **图片**
 
-- 首选：`outputs/figures/physx_four_jetbots/evaluation_exp007_lunar_crater_scene.png`
+- 首选：`outputs/figures/physx_jackal_tracking/evaluation_exp007_lunar_crater_scene.png`
 - 备选：`outputs/figures/isaac_render/proxy_rovers_scene.png`
 
 **页面文字**
@@ -252,13 +252,13 @@ hold reward 6M continuation：
 
 **图片**
 
-- 主图：`outputs/figures/physx_four_jetbots/evaluation_exp007_lunar_crater_scene.png`
-- 可用视频：`outputs/videos/physx_four_jetbots/evaluation_exp007_lunar_crater_rollout.gif`
+- 主图：`outputs/figures/physx_jackal_tracking/evaluation_exp007_lunar_crater_scene.png`
+- 可用视频：`outputs/videos/physx_jackal_tracking/evaluation_exp007_lunar_crater_rollout.gif`
 
 **页面文字**
 
-- 已有 Isaac Sim / PhysX Jetbot 展示路径，用于 sanity check 和可视化。
-- 当前 Jetbot 场景不是最终 lunar rover articulation。
+- 已有 Isaac Sim / PhysX Jackal 展示路径，用于 sanity check 和可视化。
+- 当前 Jackal 场景不是最终 lunar rover articulation。
 - PhysX 展示可以说明策略接口可接入渲染/物理展示链路。
 - 不能把 PhysX showcase 等同于 Isaac Lab 物理训练 strict pass。
 
@@ -277,7 +277,7 @@ hold reward 6M continuation：
 - 建议画三层路线图：
   - Proxy 训练层：observation/state/action/reward/outputs
   - Checkpoint 状态层：proxy gate、checkpoint_status、manifest
-  - PhysX 评估层：Jetbot placeholder、terrain、collision、tilt、throughput
+  - PhysX 评估层：Jackal placeholder、terrain、collision、tilt、throughput
 
 **页面文字**
 
@@ -285,7 +285,7 @@ hold reward 6M continuation：
 
 - 已验证结果来自 proxy PPO + BC warm-start，不是正式 Isaac Lab 物理训练。
 - SKRL-MAPPO 当前接在 proxy wrapper 上，不能因 `isaaclab-multi-agent` wrapper 名称误判为 PhysX 训练。
-- PhysX 使用 Jetbot placeholder，尚未替换为 lunar rover articulation。
+- PhysX 使用 Jackal placeholder，尚未替换为 lunar rover articulation。
 
 下一步：
 
@@ -318,7 +318,7 @@ hold reward 6M continuation：
 
 - 不继续无界堆 strong terrain PPO。
 - 优先为候选 checkpoint 生成 `checkpoint_status.json`。
-- 将 PhysX / Jetbot 从展示 sanity 升级为可复查的 high-fidelity closed-loop evaluation。
+- 将 PhysX / Jackal 从展示 sanity 升级为可复查的 high-fidelity closed-loop evaluation。
 - 扩展多 episode、多地形和失败案例记录。
 
 ## 备选附录 A：实验结果总表
@@ -350,8 +350,8 @@ hold reward 6M continuation：
 
 **展示素材**
 
-- `outputs/figures/physx_four_jetbots/evaluation_exp007_lunar_crater_scene.png`
-- `outputs/videos/physx_four_jetbots/evaluation_exp007_lunar_crater_rollout.gif`
+- `outputs/figures/physx_jackal_tracking/evaluation_exp007_lunar_crater_scene.png`
+- `outputs/videos/physx_jackal_tracking/evaluation_exp007_lunar_crater_rollout.gif`
 - `outputs/figures/isaac_render/proxy_rovers_scene.png`
 - `outputs/figures/first_stage_validation/trajectory_control_validation.png`
 - `outputs/figures/first_stage_validation/proxy_rollout_curves.png`

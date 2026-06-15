@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from _common import ROOT, load_yaml
-from evaluate_physx_four_jetbots import physx_acceptance, physx_diagnostics
+from evaluate_physx_jackal_tracking import physx_acceptance, physx_diagnostics
 from evaluate_proxy_policy import proxy_acceptance
 from evaluate_proxy_policy import evaluate_checkpoint as evaluate_proxy_checkpoint
 
@@ -26,7 +26,7 @@ CHECKPOINT_STATES = (
     "final_selected",
 )
 HIGH_FIDELITY_TRIGGERS = ("always", "proxy_passed", "manual")
-HIGH_FIDELITY_BACKENDS = ("physx_jetbot",)
+HIGH_FIDELITY_BACKENDS = ("physx_jackal",)
 
 
 @dataclass(slots=True)
@@ -40,9 +40,9 @@ class ProxyEvalCfg:
 @dataclass(slots=True)
 class HighFidelityEvalCfg:
     enabled: bool = True
-    backend: str = "physx_jetbot"
+    backend: str = "physx_jackal"
     trigger: str = "proxy_passed"
-    terrain: str = "lunar_crater"
+    terrain: str = "strong_lunar_crater"
     episodes: int = 3
     steps: int = 100
     sim_steps_per_control: int = 8
@@ -112,9 +112,9 @@ def parse_evaluation_config(raw_cfg: dict) -> EvaluationCfg:
     )
     high_cfg = HighFidelityEvalCfg(
         enabled=_bool(high_values.get("enabled", True)),
-        backend=str(high_values.get("backend", "physx_jetbot")),
+        backend=str(high_values.get("backend", "physx_jackal")),
         trigger=str(high_values.get("trigger", "proxy_passed")),
-        terrain=str(high_values.get("terrain", "lunar_crater")),
+        terrain=str(high_values.get("terrain", "strong_lunar_crater")),
         episodes=int(high_values.get("episodes", 3)),
         steps=int(high_values.get("steps", 100)),
         sim_steps_per_control=int(high_values.get("sim_steps_per_control", 8)),
@@ -154,7 +154,7 @@ def _experiment_seed(raw_cfg: dict) -> int:
 
 
 def _physx_output_path(run_dir: Path, high_cfg: HighFidelityEvalCfg) -> Path:
-    suffix = f"{high_cfg.terrain}_{'render' if high_cfg.render else 'headless'}"
+    suffix = f"{high_cfg.terrain}_tracking_summary"
     return run_dir / "physx" / "metrics" / f"{suffix}.json"
 
 
@@ -167,21 +167,23 @@ def run_physx_evaluation(
 ) -> dict:
     command = [
         sys.executable,
-        str(ROOT / "scripts" / "evaluate_physx_four_jetbots.py"),
+        str(ROOT / "scripts" / "evaluate_physx_jackal_tracking.py"),
         "--config",
         str(config),
         "--checkpoint",
         str(checkpoint),
         "--terrain",
         high_cfg.terrain,
-        "--episodes",
-        str(high_cfg.episodes),
+        "--profile",
+        "all",
         "--steps",
         str(high_cfg.steps),
         "--sim-steps-per-control",
         str(high_cfg.sim_steps_per_control),
         "--run-dir",
         str(run_dir),
+        "--output",
+        str(_physx_output_path(run_dir, high_cfg)),
     ]
     if high_cfg.render:
         command.append("--render")

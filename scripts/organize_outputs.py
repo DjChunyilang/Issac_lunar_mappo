@@ -49,10 +49,6 @@ EXP007_PHASE_C_ARTIFACTS = {
     "figures/safety_diagnostics.png": "outputs/logs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/safety_diagnostics.png",
     "videos/proxy_eval_rollout.gif": "outputs/logs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/eval_rollout.gif",
     "tensorboard": "outputs/logs/exp_007_phase_c/phase_c_weak50_lr3e3_teacher_2m/tensorboard",
-    "physx/metrics/lunar_crater_headless.json": "outputs/logs/physx_four_jetbots/evaluation_exp007_lunar_crater_headless.json",
-    "physx/metrics/lunar_crater_render.json": "outputs/logs/physx_four_jetbots/evaluation_exp007_lunar_crater_render.json",
-    "physx/figures/lunar_crater_scene.png": "outputs/figures/physx_four_jetbots/evaluation_exp007_lunar_crater_scene.png",
-    "physx/videos/lunar_crater_rollout.gif": "outputs/videos/physx_four_jetbots/evaluation_exp007_lunar_crater_rollout.gif",
 }
 
 

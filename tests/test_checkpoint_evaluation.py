@@ -56,7 +56,7 @@ def _physx_runner(metrics: dict):
     def runner(*, config, checkpoint, run_dir, high_cfg):
         result = {
             "status": "ok",
-            "artifact": str(Path(run_dir) / "physx" / "metrics" / f"{high_cfg.terrain}_headless.json"),
+            "artifact": str(Path(run_dir) / "physx" / "metrics" / f"{high_cfg.terrain}_tracking_summary.json"),
             **metrics,
         }
         path = Path(result["artifact"])
@@ -73,8 +73,9 @@ def test_evaluation_config_defaults() -> None:
     assert cfg.proxy_eval.enabled is True
     assert cfg.proxy_eval.num_envs == 1024
     assert cfg.proxy_eval.steps == 220
-    assert cfg.high_fidelity_eval.backend == "physx_jetbot"
+    assert cfg.high_fidelity_eval.backend == "physx_jackal"
     assert cfg.high_fidelity_eval.trigger == "proxy_passed"
+    assert cfg.high_fidelity_eval.terrain == "strong_lunar_crater"
 
 
 def test_evaluation_config_unknown_key_fails_fast() -> None:
@@ -105,7 +106,7 @@ def test_checkpoint_status_proxy_fail_skips_physx(tmp_path: Path) -> None:
                 "timeout_rate": 1.0,
             }
         ),
-        physx_runner=_physx_runner({"success_rate": 1.0, "collision_rate": 0.0}),
+        physx_runner=_physx_runner({"passed": True}),
     )
 
     assert status["state"] == "candidate"
@@ -136,12 +137,13 @@ def test_checkpoint_status_physx_pass_can_be_final_selected(tmp_path: Path) -> N
         ),
         physx_runner=_physx_runner(
             {
-                "success_rate": 0.95,
-                "collision_rate": 0.0,
-                "mean_final_dmax": 0.8,
-                "mean_final_dispersion": 0.1,
-                "mean_max_tilt_deg": 3.0,
-                "mean_physics_updates_per_s": 100.0,
+                "passed": True,
+                "aggregate": {
+                    "mean_rmse_cross_track_m": 0.12,
+                    "max_cross_track_m": 0.35,
+                    "min_path_completion_ratio": 0.93,
+                    "max_tilt_deg": 3.0,
+                },
             }
         ),
     )
@@ -149,7 +151,7 @@ def test_checkpoint_status_physx_pass_can_be_final_selected(tmp_path: Path) -> N
     assert status["state"] == "final_selected"
     assert status["proxy_eval"]["gate"]["passed"]
     assert status["high_fidelity_eval"]["gate"]["passed"]
-    assert status["high_fidelity_eval"]["diagnostics"]["mean_final_dmax"] == 0.8
+    assert status["high_fidelity_eval"]["diagnostics"]["mean_rmse_cross_track_m"] == 0.12
     manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["checkpoint_evaluation"]["state"] == "final_selected"
 
@@ -179,7 +181,7 @@ def test_checkpoint_status_manual_trigger_keeps_proxy_passed(tmp_path: Path) -> 
                 "timeout_rate": 0.0,
             }
         ),
-        physx_runner=_physx_runner({"success_rate": 1.0, "collision_rate": 0.0}),
+        physx_runner=_physx_runner({"passed": True}),
     )
 
     assert status["state"] == "proxy_passed"

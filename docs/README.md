@@ -13,7 +13,7 @@
 7. 训练、评估、可视化命令分别查看 [runbooks/train_proxy.md](runbooks/train_proxy.md)、[runbooks/train_skrl_mappo.md](runbooks/train_skrl_mappo.md)、[runbooks/evaluate_proxy.md](runbooks/evaluate_proxy.md)、[runbooks/physx_showcase.md](runbooks/physx_showcase.md) 和 [runbooks/visualize_results.md](runbooks/visualize_results.md)。
 8. 输出路径和 manifest 规范查看 [references/output_management.md](references/output_management.md)。
 
-不要根据 GIF、单个 checkpoint 或 TensorBoard 曲线直接判断成功。严格 proxy 结论以 `_suite/metrics/strict_acceptance.json`、独立 `metrics/final_eval_proxy.json` 和 `metrics/checkpoint_status.json` 为准。PhysX / Jetbot 结果是 high-fidelity closed-loop evaluation，不等于 Isaac 物理训练结果。
+不要根据 GIF、单个 checkpoint 或 TensorBoard 曲线直接判断成功。严格 proxy 结论以 `_suite/metrics/strict_acceptance.json`、独立 `metrics/final_eval_proxy.json` 和 `metrics/checkpoint_status.json` 为准。PhysX / Jackal 结果是 high-fidelity closed-loop evaluation，不等于 Isaac 物理训练结果。
 
 ## 当前主文档
 

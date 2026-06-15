@@ -224,40 +224,41 @@ run_manifest.json
 outputs/runs/<experiment_id>/<run_id>/metrics/final_eval_proxy.json
 ```
 
-## 后续 PhysX 评估
+## 后续 PhysX / Jackal 跟踪评估
 
-优先让 `scripts/run_checkpoint_evaluation.py` 根据 `evaluation.high_fidelity_eval.trigger` 自动触发。需要手动运行底层 PhysX 评估时，使用 `--run-dir` 让高保真评估产物留在同一个 run：
+优先让 `scripts/run_checkpoint_evaluation.py` 根据 `evaluation.high_fidelity_eval.trigger` 自动触发。需要手动运行底层 PhysX / Jackal tracking 时，使用 `--run-dir` 让高保真评估产物留在同一个 run：
 
 ```bash
-.venv_isaaclab/bin/python scripts/evaluate_physx_four_jetbots.py \
+.venv_isaaclab/bin/python scripts/evaluate_physx_jackal_tracking.py \
   --config configs/experiment/exp_008_terrain3d_weak_warmstart.yaml \
   --checkpoint outputs/runs/exp_008_terrain3d/weak_warmstart_seed23_6m_lunar_crater_bc20/checkpoints/best.pt \
-  --terrain lunar_crater \
-  --episodes 3 \
-  --steps 100 \
+  --terrain strong_lunar_crater \
+  --profile all \
+  --controller-json outputs/runs/physx_jackal_tracking/flat_tuned_final/physx/metrics/flat_tuning_grid.json \
+  --steps 660 \
+  --sim-steps-per-control 4 \
   --run-dir outputs/runs/exp_008_terrain3d/weak_warmstart_seed23_6m_lunar_crater_bc20
 ```
 
-渲染录制：
+平地调优：
 
 ```bash
-.venv_isaaclab/bin/python scripts/evaluate_physx_four_jetbots.py \
-  --config configs/experiment/exp_008_terrain3d_weak_warmstart.yaml \
-  --checkpoint outputs/runs/exp_008_terrain3d/weak_warmstart_seed23_6m_lunar_crater_bc20/checkpoints/best.pt \
-  --terrain lunar_crater \
-  --episodes 1 \
-  --steps 100 \
-  --render \
-  --run-dir outputs/runs/exp_008_terrain3d/weak_warmstart_seed23_6m_lunar_crater_bc20
+.venv_isaaclab/bin/python scripts/evaluate_physx_jackal_tracking.py \
+  --terrain flat \
+  --profile all \
+  --tune-flat \
+  --steps 660 \
+  --sim-steps-per-control 4 \
+  --run-dir outputs/runs/physx_jackal_tracking/flat_tuned_final
 ```
 
-带 `--run-dir` 时默认 PhysX 路径：
+带 `--run-dir` 时默认 PhysX / Jackal 路径：
 
 ```text
-physx/metrics/lunar_crater_headless.json
-physx/metrics/lunar_crater_render.json
-physx/figures/lunar_crater_render_scene.png
-physx/videos/lunar_crater_render_rollout.gif
+physx/metrics/tracking_summary.json
+physx/metrics/flat_tuning_grid.json
+physx/metrics/<terrain>_<profile>_timeseries.csv
+physx/figures/<terrain>_<profile>_tracking.png
 ```
 
 ## Git 策略

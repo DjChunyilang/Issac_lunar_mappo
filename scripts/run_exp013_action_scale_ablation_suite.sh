@@ -155,7 +155,7 @@ manifest = {
         "diagnose": f".venv_isaaclab/bin/python scripts/diagnose_cuda_training_signal.py --metrics {paths['train_metrics']}",
         "checkpoint_evaluation": f".venv_isaaclab/bin/python scripts/run_checkpoint_evaluation.py --config {config} --checkpoint {paths['checkpoint']} --device cuda --run-dir {run_dir}",
         "render_proxy": f".venv_isaaclab/bin/python scripts/render_skrl_proxy_rollout.py --config {config} --checkpoint {paths['checkpoint']} --device cpu --steps 120 --run-dir {run_dir}",
-        "render_physx": f".venv_isaaclab/bin/python scripts/evaluate_physx_four_jetbots.py --config {config} --checkpoint {paths['checkpoint']} --terrain flat --episodes 1 --steps 80 --render --run-dir {run_dir}",
+        "render_physx": f".venv_isaaclab/bin/python scripts/evaluate_physx_jackal_tracking.py --config {config} --checkpoint {paths['checkpoint']} --terrain flat --profile all --steps 80 --render --run-dir {run_dir}",
     },
 }
 run_dir.joinpath("run_manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")

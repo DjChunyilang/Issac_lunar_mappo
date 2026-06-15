@@ -12,8 +12,12 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from _common import cfg_from_experiment  # noqa: E402
-from evaluate_physx_four_jetbots import phase_c_acceptance  # noqa: E402
 from evaluate_proxy_policy import evaluate_checkpoint  # noqa: E402
+from physx_jackal_common import (  # noqa: E402
+    JackalSkidSteerController,
+    generate_reference_path,
+    tracking_acceptance,
+)
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore  # noqa: E402
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import make_debug_cfg  # noqa: E402
 from lunar_rover_tasks.tasks.multi_rover_gathering.oracle import (  # noqa: E402
@@ -231,14 +235,72 @@ def test_strict_acceptance_and_suite_summary() -> None:
     assert len(suite["seeds"]) == 2
 
 
-def test_phase_c_acceptance_uses_success_and_collision_rates() -> None:
-    passing = phase_c_acceptance(0.95, 0.01, min_success_rate=0.9, max_collision_rate=0.02)
-    low_success = phase_c_acceptance(0.85, 0.01, min_success_rate=0.9, max_collision_rate=0.02)
-    high_collision = phase_c_acceptance(0.95, 0.03, min_success_rate=0.9, max_collision_rate=0.02)
+def test_jackal_skid_steer_controller_maps_and_clips_wheels() -> None:
+    controller = JackalSkidSteerController(
+        wheel_radius=0.1,
+        track_width=0.4,
+        max_linear_speed=1.0,
+        max_angular_speed=2.0,
+        max_wheel_speed=8.0,
+    )
+
+    straight = controller.forward([0.5, 0.0])
+    turn = controller.forward([0.0, 1.0])
+    clipped = controller.forward([10.0, 10.0])
+
+    assert straight.tolist() == [5.0, 5.0, 5.0, 5.0]
+    assert turn[0] < 0.0
+    assert turn[1] > 0.0
+    assert turn[2] == turn[0]
+    assert turn[3] == turn[1]
+    assert float(abs(clipped).max()) <= 8.0
+
+
+def test_reference_paths_are_finite_and_monotonic() -> None:
+    for profile in ("straight", "circle", "sine"):
+        path = generate_reference_path(profile, samples=32)
+        assert path.points_xy.shape == (32, 2)
+        assert path.yaws.shape == (32,)
+        assert path.cumulative_s.shape == (32,)
+        assert torch.isfinite(torch.tensor(path.points_xy)).all()
+        assert torch.isfinite(torch.tensor(path.yaws)).all()
+        assert torch.isfinite(torch.tensor(path.cumulative_s)).all()
+        assert torch.all(torch.diff(torch.tensor(path.cumulative_s)) >= 0.0)
+        assert path.length_m > 0.0
+
+
+def test_tracking_acceptance_uses_error_completion_and_tilt() -> None:
+    passing = tracking_acceptance(
+        {
+            "rmse_cross_track_m": 0.12,
+            "max_cross_track_m": 0.4,
+            "path_completion_ratio": 0.92,
+            "max_tilt_deg": 3.0,
+        },
+        "flat",
+    )
+    high_error = tracking_acceptance(
+        {
+            "rmse_cross_track_m": 0.30,
+            "max_cross_track_m": 0.4,
+            "path_completion_ratio": 0.92,
+            "max_tilt_deg": 3.0,
+        },
+        "flat",
+    )
+    low_completion = tracking_acceptance(
+        {
+            "rmse_cross_track_m": 0.12,
+            "max_cross_track_m": 0.4,
+            "path_completion_ratio": 0.5,
+            "max_tilt_deg": 3.0,
+        },
+        "flat",
+    )
 
     assert passing["passed"]
-    assert not low_success["passed"]
-    assert not high_collision["passed"]
+    assert not high_error["passed"]
+    assert not low_completion["passed"]
 
 
 def test_required_ppo_checkpoint_filter_rejects_bc_candidates() -> None:

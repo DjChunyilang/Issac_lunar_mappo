@@ -20,7 +20,7 @@ evaluation:
     seed_offset: 1000
   high_fidelity_eval:
     enabled: true
-    backend: physx_jetbot
+    backend: physx_jackal
     trigger: proxy_passed
     terrain: flat
     episodes: 3
