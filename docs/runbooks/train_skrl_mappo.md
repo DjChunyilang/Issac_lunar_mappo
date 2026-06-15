@@ -55,7 +55,7 @@ outputs/checkpoints/exp_cuda_contract.pt
 bash scripts/run_exp012_action_scale_suite.sh
 ```
 
-该脚本使用 `configs/experiment/exp012_action_scale_warmup_probe.yaml`，先跑核心测试，再运行 `32`、`20000` 和 `500000` timesteps 三段 CUDA 探针。`500000` 是长预算，不应在未生成完整诊断 JSON 前写成实验结论。
+该脚本使用 `configs/experiment/exp012_action_scale_warmup_probe.yaml`，先跑核心测试，再运行 `32`、`20000` 和 `500000` timesteps 三段 CUDA 探针。`diagnosis_long_5h_500000.json` 可用于训练信号分析，但它不是 strict acceptance；不要只根据 reward 或 distance 曲线写成通过。
 
 产物路径：
 
@@ -64,6 +64,51 @@ outputs/runs/exp012_action_scale_warmup_probe/metrics.jsonl
 outputs/runs/exp012_action_scale_warmup_probe/diagnosis_<label>_<timesteps>.json
 outputs/runs/exp012_action_scale_warmup_probe/suite_logs/
 outputs/checkpoints/exp012_action_scale_warmup_probe_<label>_<timesteps>.pt
+```
+
+## exp013 Action-Scale Ablation Suite
+
+```bash
+bash scripts/run_exp013_action_scale_ablation_suite.sh
+```
+
+该脚本使用：
+
+```text
+configs/experiment/exp013_action_scale_rho06_beta45.yaml
+configs/experiment/exp013_action_scale_rho05_beta30.yaml
+```
+
+默认运行 `rho06_beta45` 的 `32 / 20000 / 120000` timesteps，以及 `rho05_beta30` 的 `32 / 20000` timesteps。它会把每个 run 的配置快照、checkpoint、训练 JSONL、diagnosis、final proxy eval 和 proxy GIF 写入标准 run 目录。
+
+产物路径：
+
+```text
+outputs/runs/exp013_action_scale_ablation/_suite/metrics/suite_summary.json
+outputs/runs/exp013_action_scale_ablation/<run_id>/config/experiment.yaml
+outputs/runs/exp013_action_scale_ablation/<run_id>/checkpoints/best.pt
+outputs/runs/exp013_action_scale_ablation/<run_id>/metrics/train_metrics.jsonl
+outputs/runs/exp013_action_scale_ablation/<run_id>/metrics/summary.json
+outputs/runs/exp013_action_scale_ablation/<run_id>/metrics/diagnosis.json
+outputs/runs/exp013_action_scale_ablation/<run_id>/metrics/final_eval_proxy.json
+outputs/runs/exp013_action_scale_ablation/<run_id>/videos/proxy_eval_rollout.gif
+```
+
+最新结论：`rho06_beta45_seed7_probe_20000` 是本轮最佳短探针，但 final eval success_rate 仍为 `0.0`；`rho06_beta45_seed7_long_120000` 没有带来 success 改善，动作饱和加重。因此不要继续直接拉长相同配置训练预算，下一步应做 success gate reachability 和动作饱和机制诊断。
+
+补充 teacher reachability sanity 的最新结论：
+
+```text
+outputs/runs/exp013_action_scale_ablation/_suite/metrics/teacher_reachability_summary.json
+```
+
+当前 `rho=0.6, beta=pi/4, 100 steps` 对 scripted teacher 也几乎不可达；恢复到 `220` steps 后 teacher success_rate 为 `1.0`。因此下一轮应先构造 teacher-reachable 配置，再继续 SKRL-MAPPO 训练诊断。
+
+查看 suite 汇总：
+
+```bash
+.venv_isaaclab/bin/python -m json.tool \
+  outputs/runs/exp013_action_scale_ablation/_suite/metrics/suite_summary.json
 ```
 
 ## 单次手动训练

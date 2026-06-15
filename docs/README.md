@@ -23,7 +23,7 @@
 - [interface_spec.md](interface_spec.md)：actor observation、critic state、action 和当前 observation schema。
 - [references/output_management.md](references/output_management.md)：输出目录规范和命名规则。
 - [runbooks/setup_environment.md](runbooks/setup_environment.md)：Isaac Sim / Isaac Lab / SKRL / 本地任务包安装和验收。
-- [runbooks/train_skrl_mappo.md](runbooks/train_skrl_mappo.md)：SKRL-MAPPO CUDA contract、遥测诊断和 exp012 action-scale 探针。
+- [runbooks/train_skrl_mappo.md](runbooks/train_skrl_mappo.md)：SKRL-MAPPO CUDA contract、遥测诊断、exp012 action-scale 探针和 exp013 action-scale 消融。
 - [runbooks/](runbooks/)：训练、评估、可视化和 PhysX 展示命令。
 
 ## 工程验收入口

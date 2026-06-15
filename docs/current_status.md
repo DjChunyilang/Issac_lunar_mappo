@@ -20,8 +20,12 @@
 ## 当前 SKRL/CUDA 诊断
 
 - `scripts/run_cuda_training_validation.py` 使用 `configs/experiment/exp_cuda_contract.yaml` 跑 `32 / 512 / 5000` timesteps CUDA contract。最新本地机器可读摘要为 `outputs/runs/cuda_training_validation_summary.json`：三段均 `status: ok`、`nan_detected: false`，但 `success_rate_final: 0.0`，只证明工程链路可运行。
-- `exp012_action_scale_warmup_probe` 是 SKRL-MAPPO action-scale 诊断实验，不是当前主结果。20k 探针的 `diagnosis_probe_20000.json` 显示 pairwise/oracle distance 有改善，但 success 仍为 `0.0`，且动作饱和明显。
-- exp012 下一步焦点是 `action_scale_ablation` 和 `success_gate_reachability_diagnostic`；500k 长预算只有在生成完整诊断 JSON 后再更新实验结论。
+- `exp012_action_scale_warmup_probe` 是 SKRL-MAPPO action-scale 诊断实验，不是当前主结果。20k 探针和 500k 长预算均已完成，未出现 NaN。
+- exp012 500k 的 `diagnosis_long_5h_500000.json` 显示 pairwise/oracle distance 明显改善，post-training eval success_rate 达到 `0.375`，但 final instant success_rate 仍为 `0.0`，timeout/collision/safety done 很高，动作饱和继续加重。
+- `exp013_action_scale_ablation` 已完成 `rho06_beta45` 和 `rho05_beta30` 消融，并迁移到标准 `outputs/runs/exp013_action_scale_ablation/<run_id>/` layout。核心测试为 `65 passed`，所有 run 无 NaN，但 final eval success_rate 均为 `0.0`。
+- exp013 最有学习信号的是 `rho06_beta45_seed7_probe_20000`：proxy GIF 中 pairwise 从 `5.8122` 降到 `3.7992`，oracle 从 `3.6066` 降到 `2.3733`，但仍 timeout。`rho06_beta45_seed7_long_120000` 未改善 success，动作饱和升至约 `0.508`。
+- teacher reachability sanity 显示当前 exp013 的 `rho=0.6, beta=pi/4, 100 steps` 配置对 scripted teacher 也几乎不可达：stop 0.45 时 success 为 `0.0`，stop 0.35 时 success 约 `0.0059`。同一小动作尺度恢复到 `220` steps 后 teacher success 为 `1.0`；100 steps 下恢复 full-scale `rho=1.2, beta=pi/2` 后 teacher success 为 `0.7188`。
+- 当前 SKRL 下一步不应继续盲目长训；焦点转为先构造 teacher-reachable 的 exp014，再做 `success_gate_reachability_diagnostic` 和动作饱和机制诊断。
 
 ## 已验证结果
 
@@ -31,7 +35,8 @@
 | exp008 | 弱 lunar crater 3D proxy | 弱 warm-start + PPO | 3 seeds 通过 | 当前最完整的 3-seed terrain-aware proxy 结果。 |
 | exp009 | 强 lunar crater 3D proxy | 弱 warm-start + PPO | 未通过 | seed23 通过；seed31 未通过 success/timeout；seed47 未运行。 |
 | exp010 | 强 lunar crater 3D proxy | 成功 gate 诊断 + hold reward 短程修复 | 未通过 | seed31 success 可到 0.90，但 collision/timeout 仍失败；strong terrain 诊断线暂缓。 |
-| exp012 | proxy SKRL-MAPPO CUDA 诊断 | action scale warmup probe | 未通过 | 20k 探针 distance 有改善但 success 为 0，动作饱和；不作为 strict 结果。 |
+| exp012 | proxy SKRL-MAPPO CUDA 诊断 | action scale warmup probe | 未通过 | 500k 长预算 distance 明显改善、eval success_rate 到 0.375，但 final success 为 0，timeout/collision/safety done 和动作饱和仍阻塞 strict。 |
+| exp013 | proxy SKRL-MAPPO CUDA 诊断 | action scale ablation + teacher reachability | 未通过 | 20k `rho06_beta45` 有最佳短探针信号，但 final eval success 为 0；teacher sanity 显示当前 100-step 小动作配置本身几乎不可达。 |
 
 当前推荐的完整 suite checkpoint：
 
@@ -88,6 +93,6 @@ seed31 hold reward 6M continuation:
 
 1. 维持 `.venv_isaaclab/bin/python -m pytest -q -ra` 和 GitHub Actions unit contract 为每次代码修改的最低门槛。
 2. 按 [runbooks/setup_environment.md](runbooks/setup_environment.md) 跑通 `scripts/validate_first_stage.py` 的 CPU 短验证，确认 proxy core、观测、奖励、轨迹和图像产物链路可用。
-3. 按 [runbooks/train_skrl_mappo.md](runbooks/train_skrl_mappo.md) 复跑 CUDA contract 和 exp012 action-scale 探针，优先做动作尺度消融而不是继续把单个 PPO 预算拉长。
+3. 按 [runbooks/train_skrl_mappo.md](runbooks/train_skrl_mappo.md) 复查 exp013 action-scale ablation 和 teacher reachability；下一步优先设计 teacher-reachable 的 exp014，而不是继续把当前 100-step 小动作配置的 PPO 预算拉长。
 4. 跑通 `scripts/debug_env.py`、`scripts/debug_observation.py` 和 `scripts/debug_reward.py`，作为基础回归检查。
 5. 跑通 `scripts/evaluate_physx_four_jetbots.py` 的 headless/render sanity 路径，并把结果写入标准 run 目录。

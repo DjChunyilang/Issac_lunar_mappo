@@ -16,6 +16,7 @@ timeout_rate == 0
 | exp008 | 弱 lunar crater 3D proxy | 弱 warm-start + PPO | 23, 31, 47 | 通过 | [exp_008_terrain3d.md](exp_008_terrain3d.md) |
 | exp009 | 强 lunar crater 3D proxy | 弱 warm-start + PPO | 23, 31；47 未运行 | 未通过 | [exp_009_terrain3d_strong.md](exp_009_terrain3d_strong.md) |
 | exp010 | 强 lunar crater 3D proxy | 成功 gate 诊断 + hold/safety 短程修复 | seed23 eval；seed31 continuation；seed47 未启动 | 未通过；近期暂缓 strong terrain 诊断 | [exp_010_strong_success_diagnostics.md](exp_010_strong_success_diagnostics.md) |
-| exp012 | proxy SKRL-MAPPO CUDA 诊断 | action scale warmup probe | seed7 | 未通过；20k 探针 distance 有改善但 success 为 0，动作饱和 | [exp_012_action_scale_warmup_probe.md](exp_012_action_scale_warmup_probe.md) |
+| exp012 | proxy SKRL-MAPPO CUDA 诊断 | action scale warmup probe | seed7 | 未通过；500k distance 明显改善，eval success_rate 0.375，但 final success 为 0 且动作饱和 | [exp_012_action_scale_warmup_probe.md](exp_012_action_scale_warmup_probe.md) |
+| exp013 | proxy SKRL-MAPPO CUDA 诊断 | action scale ablation + teacher reachability | seed7 | 未通过；20k probe 有收拢信号但 success 为 0，teacher 显示当前 100-step 小动作配置本身几乎不可达 | [exp_013_action_scale_ablation.md](exp_013_action_scale_ablation.md) |
 
 新增实验时，在这里加一行，并在本目录创建独立的 `exp_###_*.md` 文档。日期流水账放入 `docs/archive/`，不要继续堆到当前实验文档里。
