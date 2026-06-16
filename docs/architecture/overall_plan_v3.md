@@ -1,6 +1,6 @@
 # 多月球车自组织集合整体规划 V3
 
-本文档是当前工程推进的主规划。V1.0 脚手架文档和 V2.0 技术文档保留为历史设计依据；当前实现口径以根目录 `multi_rover_proxy_train_isaac_eval_supplement_v3_0.md` 和本文档为准。
+本文档是当前工程推进的主规划。旧 V1 / V2 / V3 原文压缩包已移出仓库，存放在仓库父目录 `../original_design_docs_v1_v2_v3_2026-06-16.zip`；长期技术路径管理见根目录 `多月球车自组织集合局部参考轨迹规划技术文档.md`；当前实现口径以 `docs/implementation_plan.md`、`docs/current_status.md` 和本文档为准。
 
 核心判断：当前项目采用“高吞吐 proxy 训练 + Isaac Sim / Isaac Lab / PhysX 高保真闭环评估”的分层路线。训练样本、奖励调试、checkpoint selection 的主体来自 proxy 环境；Isaac/PhysX 不进入每次 PPO/MAPPO 梯度更新，而用于低频 checkpoint 级闭环评估、失效分析和展示。
 
@@ -8,7 +8,7 @@
 
 ### Proxy 训练层
 
-Proxy 环境是当前主训练环境，不是临时日志或单纯可视化工具。它负责：
+Proxy 环境是当前训练主路径，不是临时日志或单纯可视化工具。它负责：
 
 - torch-vectorized 多环境采样；
 - actor observation、centralized critic state、reward、termination 和 metrics 的接口验证；
@@ -68,7 +68,7 @@ V2.0 原始文档把 Isaac Sim / Isaac Lab 描述为主要训练与仿真平台�
 
 | 维度 | V2.0 原始表述 | 当前 V3 口径 |
 | --- | --- | --- |
-| 主训练环境 | Isaac Lab / PhysX 多车物理训练 | 高吞吐 proxy 环境 |
+| 训练主路径 | Isaac Lab / PhysX 多车物理训练 | 高吞吐 proxy 环境 |
 | 高保真仿真 | 训练 loop 的物理推进层 | checkpoint 级闭环评估层 |
 | 动作接口 | `[rho, beta]` 低维局部子目标 | 保持不变 |
 | 轨迹与控制 | 子目标 -> 轨迹 -> 简化控制 | 保持上层接口；PhysX 侧做轮式资产适配 |

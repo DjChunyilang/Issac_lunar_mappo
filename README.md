@@ -17,12 +17,13 @@
 ```text
 docs/README.md
 docs/current_status.md
+docs/implementation_plan.md
+多月球车自组织集合局部参考轨迹规划技术文档.md
 docs/architecture/overall_plan_v3.md
-multi_rover_proxy_train_isaac_eval_supplement_v3_0.md
 docs/experiments/README.md
 ```
 
-长篇历史进度日志位于 `docs/archive/`。训练生成产物位于 `outputs/`，并由 git 忽略；长期状态以 Markdown 实验文档、suite JSON、`final_eval_proxy.json` 和 `checkpoint_status.json` 为准。
+长期技术路径管理读根目录 `多月球车自组织集合局部参考轨迹规划技术文档.md`，工程脚手架读 `docs/scaffold.md`，短版技术摘要和接口读 `docs/technical_design.md` 与 `docs/interface_spec.md`。旧 V1 / V2 / V3 原文压缩包已移出仓库，存放在仓库父目录 `../original_design_docs_v1_v2_v3_2026-06-16.zip`。训练生成产物位于 `outputs/`，并由 git 忽略；长期状态以 Markdown 实验文档、suite JSON、`final_eval_proxy.json` 和 `checkpoint_status.json` 为准。
 
 ## 环境
 
