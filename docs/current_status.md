@@ -6,12 +6,14 @@
 - 训练主环境仍是 PyTorch / torch-vectorized proxy 环境，用于 MAPPO / PPO 采样、奖励调试、观测接口验证和大规模对照实验。
 - Isaac Sim / Isaac Lab / PhysX 不作为当前主训练 loop，而作为 high-fidelity validation、迁移 sanity check、失效分析和可视化展示平台。
 - 当前 PhysX 层使用 Clearpath Jackal 作为活跃轮式资产，已替换旧占位资产。Jackal tracking 可验证轮式控制、强三维地形 mesh、姿态稳定性和输出链路，但不能证明真实月球车越障、轮壤接触或低重力动力学已经完成。
-- 视觉观测不进入 policy input；地形以低维结构化特征进入策略。
+- 视觉观测不进入 policy input；地形以车体系 `5×5×2` 局部结构化网格进入策略。
 - 生成结果写入 `outputs/runs/`，并由 git 忽略。
 
 ## 当前接口状态
 
-- actor observation schema 为 `ego_v2_speed_angular`，包含 ego、neighbor、terrain、aggregation 特征，不包含 oracle 集合点。
+- actor observation schema 为 `ego_v3_local_terrain_grid`，输入维度为 86，包含 ego、neighbor、50 维局部地形网格和 aggregation 特征，不包含 oracle 集合点。
+- 地形网格通道为相对高度和风险，覆盖前后 `[-0.4, 1.2] m`、横向 `[-0.8, 0.8] m`；critic 仍为 54 维，并使用 5 维网格摘要。
+- checkpoint 加载要求 schema、actor 输入维度和 critic 状态维度完全匹配；旧 `ego_v2_speed_angular` checkpoint 不自动迁移。
 - centralized critic state 和 reward shaping 可以使用 oracle 信息；执行期 actor 不接收 `p*`、oracle 距离或 oracle 距离下降量。
 - 动作接口固定为低维 `[rho, beta]`，再经局部子目标、直线轨迹和简化速度控制器转换为运动命令。
 - 当前 proxy 动力学是 2D/2.5D kinematic unicycle 风格状态更新；没有质量、惯量、轮地接触、打滑、悬挂或 PhysX contact。
@@ -56,16 +58,21 @@ final_selected
 | exp010 | 强 lunar crater 3D proxy | hold reward / safety 诊断 | 未通过 | success 可改善，但 collision/timeout gate 仍失败。 |
 | exp012 | proxy SKRL-MAPPO CUDA 诊断 | action scale warmup probe | 未通过 | distance 有改善，但 strict gate 未通过。 |
 | exp013 | proxy SKRL-MAPPO CUDA 诊断 | action scale ablation + teacher reachability | 未通过 | 当前小动作 100-step 配置对 teacher 也几乎不可达。 |
+| exp014 | 弱 lunar crater proxy | 5×5 局部地形网格 CUDA probe | 工程验证通过；未做 strict | 新观测和训练链路有效，不能表述为策略收敛。 |
 
-当前推荐的完整 suite checkpoint：
+历史完整 suite checkpoint：
 
 ```text
 outputs/runs/exp_008_terrain3d/_suite/checkpoints/
 ```
 
+这些 exp008 checkpoint 使用旧 observation schema，历史 strict 结论仍有效，但不能直接加载到当前 86 维 Actor。当前没有完成 strict 验收的新 schema checkpoint；exp014 checkpoint 仅用于工程探针。
+
 ## 结果解释边界
 
 - exp006 / exp008 是 proxy strict pass，不是 Isaac Lab 物理训练 pass。
+- exp006 / exp008 的 checkpoint 属于旧 observation schema；结果可作为历史 baseline，但不能与新 Actor 接口直接混用。
+- exp014 只通过有限值、参数更新、地形输入权重更新和动作非退化检查，不是 strict convergence pass。
 - PhysX / Jackal 结果应写成“Jackal 在 PhysX 场景中的轨迹跟踪验证结果”或“proxy checkpoint 的高保真迁移 sanity check”，不能写成“物理环境训练结果”。
 - 当前较好结果来自 weak warm-start + PPO，不能表述为 pure RL 从零严格收敛。
 - GIF、截图和 TensorBoard 曲线只能用于展示和诊断；严格结论以 `_suite/metrics/strict_acceptance.json`、`metrics/final_eval_proxy.json` 和 `metrics/checkpoint_status.json` 为准。
@@ -112,7 +119,7 @@ outputs/runs/physx_jackal_tracking/strong_lunar_crater_final_v2/
 
 ## 下一步
 
-1. 用 `scripts/run_checkpoint_evaluation.py` 复评当前候选 checkpoint，补齐 `checkpoint_status.json`。
-2. 维持 exp008 作为当前 proxy baseline，不继续默认追加 exp012/exp013 long-budget proxy PPO。
-3. 扩展 PhysX / Jackal 跟踪测试样本量，优先记录 tracking error、path completion、tilt 和控制吞吐。
+1. 以 exp014 schema 为基础设计正式 terrain-grid 对照实验，并运行多 seed strict suite。
+2. 保留 exp008 作为历史 proxy baseline，不把旧 checkpoint 自动迁移到新接口。
+3. 为 PhysX / Jackal 后续接入同布局 raycast / height scanner，保持 proxy 与高保真观测接口一致。
 4. 后续若高保真评估发现系统性迁移失败，再考虑 Isaac-based fine-tuning、domain randomization、真实 rover asset 或更高保真动力学模型。

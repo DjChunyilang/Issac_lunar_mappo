@@ -18,10 +18,13 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRov
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import make_debug_cfg  # noqa: E402
 from _common import load_yaml  # noqa: E402
 from _skrl_metadata import (  # noqa: E402
+    CheckpointCompatibilityError,
     DEFAULT_TRAINING_SEMANTICS,
+    observation_interface_metadata,
     resolve_checkpoint_name,
     resolve_training_semantics,
     sanitize_checkpoint_name,
+    validate_checkpoint_compatibility,
 )
 from train_skrl_mappo import (  # noqa: E402
     _action_telemetry,
@@ -164,12 +167,16 @@ def test_skrl_checkpoint_metadata_marks_smoke_semantics() -> None:
         shared_value=True,
         timesteps=4,
         observation_schema_version=env.cfg.observation.schema_version,
+        actor_obs_dim=env.cfg.actor_obs_dim,
+        critic_state_dim=env.cfg.critic_state_dim,
     )
 
     assert payload["metadata"]["training_semantics"] == DEFAULT_TRAINING_SEMANTICS
     assert payload["metadata"]["experiment_name"] == "metadata_test"
     assert payload["metadata"]["algorithm_mode"] is None
-    assert payload["metadata"]["observation_schema_version"] == "ego_v2_speed_angular"
+    assert payload["metadata"]["observation_schema_version"] == "ego_v3_local_terrain_grid"
+    assert payload["metadata"]["actor_obs_dim"] == 86
+    assert payload["metadata"]["critic_state_dim"] == 54
     assert payload["metadata"]["shared_actor"] is True
     assert payload["metadata"]["centralized_critic"] is True
     for agent_id in env.possible_agents:
@@ -209,7 +216,8 @@ def test_skrl_spaces_and_policy_input_track_actor_observation_schema() -> None:
     models = build_skrl_mappo_models(env, shared_actor=True, centralized_critic=True)
     policy = models[env.possible_agents[0]]["policy"]
 
-    assert env.cfg.observation.schema_version == "ego_v2_speed_angular"
+    assert env.cfg.observation.schema_version == "ego_v3_local_terrain_grid"
+    assert env.cfg.actor_obs_dim == 86
     assert env.observation_spaces[env.possible_agents[0]].shape == (env.cfg.actor_obs_dim,)
     assert policy.net[0].in_features == env.cfg.actor_obs_dim
 
@@ -228,7 +236,9 @@ def test_skrl_telemetry_jsonl_is_written(tmp_path: Path) -> None:
         "nan_flag": False,
         "checkpoint_path": str(tmp_path / "checkpoint.pt"),
         "training_semantics": "skrl_mappo_pure_rl",
-        "observation_schema_version": "ego_v2_speed_angular",
+        "observation_schema_version": "ego_v3_local_terrain_grid",
+        "actor_obs_dim": 86,
+        "critic_state_dim": 54,
     }
 
     metrics_path = append_metrics_jsonl(tmp_path, metrics)
@@ -241,11 +251,47 @@ def test_skrl_telemetry_jsonl_is_written(tmp_path: Path) -> None:
         "device",
         "training_semantics",
         "observation_schema_version",
+        "actor_obs_dim",
+        "critic_state_dim",
         "nan_flag",
         "checkpoint_path",
     ):
         assert key in parsed
     assert parsed["nan_flag"] is False
+
+
+def test_checkpoint_compatibility_requires_current_schema_and_dimensions() -> None:
+    env = _make_env()
+    current = {"metadata": observation_interface_metadata(env.cfg)}
+
+    metadata = validate_checkpoint_compatibility(current, env.cfg)
+
+    assert metadata["observation_schema_version"] == "ego_v3_local_terrain_grid"
+    assert metadata["actor_obs_dim"] == 86
+    assert metadata["critic_state_dim"] == 54
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {},
+        {
+            "observation_schema_version": "ego_v2_speed_angular",
+            "actor_obs_dim": 41,
+            "critic_state_dim": 54,
+        },
+        {
+            "observation_schema_version": "ego_v3_local_terrain_grid",
+            "actor_obs_dim": 41,
+            "critic_state_dim": 54,
+        },
+    ],
+)
+def test_old_missing_or_wrong_checkpoint_interface_is_rejected(metadata: dict) -> None:
+    env = _make_env()
+
+    with pytest.raises(CheckpointCompatibilityError):
+        validate_checkpoint_compatibility({"metadata": metadata}, env.cfg)
 
 
 def test_skrl_action_telemetry_reports_normalized_and_physical_scale() -> None:

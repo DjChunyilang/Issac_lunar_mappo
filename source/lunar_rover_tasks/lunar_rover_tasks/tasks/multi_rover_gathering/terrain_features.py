@@ -8,6 +8,9 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import Obse
 
 
 TERRAIN_FEATURE_NAMES = ("height", "slope_x", "slope_y", "roughness", "traversability")
+LOCAL_TERRAIN_GRID_X = (-0.4, 0.0, 0.4, 0.8, 1.2)
+LOCAL_TERRAIN_GRID_Y = (-0.8, -0.4, 0.0, 0.4, 0.8)
+LOCAL_TERRAIN_GRID_CHANNELS = ("relative_height", "risk")
 
 
 def is_flat_terrain(terrain_cfg: TerrainCfg | None) -> bool:
@@ -124,12 +127,88 @@ def query_terrain_features(xy: torch.Tensor, terrain_cfg: TerrainCfg | None = No
     return _base_features(xy, terrain_cfg)
 
 
+def local_terrain_grid_offsets(
+    *,
+    device: torch.device | str,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Return the fixed body-frame grid as [x_index, y_index, xy]."""
+    x = torch.tensor(LOCAL_TERRAIN_GRID_X, device=device, dtype=dtype)
+    y = torch.tensor(LOCAL_TERRAIN_GRID_Y, device=device, dtype=dtype)
+    grid_x, grid_y = torch.meshgrid(x, y, indexing="ij")
+    return torch.stack((grid_x, grid_y), dim=-1)
+
+
+def local_terrain_grid_world_points(
+    positions: torch.Tensor,
+    yaws: torch.Tensor,
+) -> torch.Tensor:
+    """Transform the fixed body-frame grid into world-frame xy sample points."""
+    offsets = local_terrain_grid_offsets(device=positions.device, dtype=positions.dtype)
+    local_x = offsets[..., 0]
+    local_y = offsets[..., 1]
+    cos_yaw = torch.cos(yaws)[..., None, None]
+    sin_yaw = torch.sin(yaws)[..., None, None]
+    world_x = (
+        positions[..., 0, None, None]
+        + cos_yaw * local_x
+        - sin_yaw * local_y
+    )
+    world_y = (
+        positions[..., 1, None, None]
+        + sin_yaw * local_x
+        + cos_yaw * local_y
+    )
+    return torch.stack((world_x, world_y), dim=-1)
+
+
+def build_local_terrain_grid(
+    positions: torch.Tensor,
+    yaws: torch.Tensor,
+    terrain_cfg: TerrainCfg | None = None,
+) -> torch.Tensor:
+    """Return [relative_height, risk] over the fixed body-frame 5x5 grid."""
+    shape = (*positions.shape[:-1], len(LOCAL_TERRAIN_GRID_X), len(LOCAL_TERRAIN_GRID_Y), 2)
+    if _is_flat(terrain_cfg):
+        return torch.zeros(shape, dtype=positions.dtype, device=positions.device)
+
+    sample_xy = local_terrain_grid_world_points(positions, yaws)
+    sample_features = _base_features(sample_xy, terrain_cfg)
+    base_height = _heightfield_height(positions[..., :2], terrain_cfg)[..., None, None]
+    relative_height = sample_features[..., 0] - base_height
+    risk = (1.0 - sample_features[..., 4]).clamp(0.0, 1.0)
+    return torch.stack((relative_height, risk), dim=-1)
+
+
+def flatten_local_terrain_grid(grid: torch.Tensor) -> torch.Tensor:
+    """Flatten in x -> y -> channel order."""
+    return grid.flatten(start_dim=-3)
+
+
+def summarize_local_terrain_grid(grid: torch.Tensor) -> torch.Tensor:
+    """Return the fixed 5-D centralized terrain summary for each environment."""
+    relative_height = grid[..., 0]
+    risk = grid[..., 1]
+    reduce_dims = tuple(range(1, relative_height.ndim))
+    mean_abs_height = relative_height.abs().mean(dim=reduce_dims)
+    max_rise = relative_height.clamp_min(0.0).amax(dim=reduce_dims)
+    max_descent = (-relative_height).clamp_min(0.0).amax(dim=reduce_dims)
+    mean_risk = risk.mean(dim=reduce_dims)
+    max_risk = risk.amax(dim=reduce_dims)
+    return torch.stack(
+        (mean_abs_height, max_rise, max_descent, mean_risk, max_risk),
+        dim=-1,
+    )
+
+
 def build_terrain_features(
     positions: torch.Tensor,
     cfg: ObservationCfg,
     terrain_cfg: TerrainCfg | None = None,
 ) -> torch.Tensor:
-    return _fit_dim(_base_features(positions[..., :2], terrain_cfg), cfg.terrain_dim)
+    """Return the legacy 5-D under-rover features used by dynamics and reward."""
+    del cfg
+    return _base_features(positions[..., :2], terrain_cfg)
 
 
 def build_global_terrain_state(
@@ -137,10 +216,14 @@ def build_global_terrain_state(
     dim: int,
     device: torch.device | str,
     terrain_cfg: TerrainCfg | None = None,
+    yaws: torch.Tensor | None = None,
 ) -> torch.Tensor:
     if positions is None or _is_flat(terrain_cfg):
         num_envs = 1 if positions is None else positions.shape[0]
         return torch.zeros(num_envs, dim, dtype=torch.float32, device=device)
-    local_features = _base_features(positions[..., :2], terrain_cfg)
-    mean_features = local_features.mean(dim=1)
-    return _fit_dim(mean_features, dim)
+    if yaws is None:
+        yaws = torch.zeros(positions.shape[:-1], dtype=positions.dtype, device=positions.device)
+    summary = summarize_local_terrain_grid(
+        build_local_terrain_grid(positions, yaws, terrain_cfg)
+    )
+    return _fit_dim(summary, dim)

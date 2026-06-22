@@ -7,16 +7,10 @@ import torch
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import MultiRoverGatheringEnvCfg
 from lunar_rover_tasks.tasks.multi_rover_gathering.metrics import TeamMetrics
 from lunar_rover_tasks.tasks.multi_rover_gathering.oracle import build_oracle_features
-from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import build_global_terrain_state
-
-
-def _fit_state_terrain_dim(features: torch.Tensor, dim: int) -> torch.Tensor:
-    if features.shape[-1] == dim:
-        return features
-    if features.shape[-1] > dim:
-        return features[..., :dim]
-    pad = torch.zeros(*features.shape[:-1], dim - features.shape[-1], dtype=features.dtype, device=features.device)
-    return torch.cat((features, pad), dim=-1)
+from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
+    build_local_terrain_grid,
+    summarize_local_terrain_grid,
+)
 
 
 def build_agent_global_state(
@@ -61,19 +55,17 @@ def build_critic_state(
     oracle_point: torch.Tensor,
     success_hold_count: torch.Tensor,
     cfg: MultiRoverGatheringEnvCfg,
-    terrain_features: torch.Tensor | None = None,
+    terrain_grid: torch.Tensor | None = None,
 ) -> torch.Tensor:
     agent = build_agent_global_state(positions, yaws, velocities_xy, angular_velocities)
     team = build_team_state(metrics, success_hold_count)
-    terrain = (
-        _fit_state_terrain_dim(terrain_features.mean(dim=1), cfg.state.terrain_state_dim)
-        if terrain_features is not None
-        else build_global_terrain_state(
-            positions,
-            cfg.state.terrain_state_dim,
-            positions.device,
-            cfg.terrain,
+    if terrain_grid is None:
+        terrain_grid = build_local_terrain_grid(positions, yaws, cfg.terrain)
+    terrain = summarize_local_terrain_grid(terrain_grid)
+    if terrain.shape[-1] != cfg.state.terrain_state_dim:
+        raise ValueError(
+            f"Terrain state summary has dim {terrain.shape[-1]}, "
+            f"expected {cfg.state.terrain_state_dim}."
         )
-    )
     oracle = build_oracle_features(positions, metrics.centroid, oracle_point)
     return torch.cat((agent, team, terrain, oracle), dim=-1)

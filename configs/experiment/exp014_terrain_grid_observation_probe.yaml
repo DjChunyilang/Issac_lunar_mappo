@@ -1,0 +1,76 @@
+experiment:
+  name: exp014_terrain_grid_observation_probe
+  seed: 23
+  num_envs: 256
+  device: cuda
+  total_steps: 5000
+  rollout_steps: 32
+  checkpoint_dir: outputs/checkpoints
+  checkpoint_name: exp014_terrain_grid_observation_probe.pt
+  require_skrl_import: true
+
+simulation:
+  episode_length_s: 44.0
+  physics_dt: 0.05
+  control_decimation: 4
+
+task:
+  n_agents: 4
+
+planner:
+  rho_max: 1.2
+  beta_max: 1.57079632679
+
+terrain:
+  type: lunar_crater_proxy
+  dynamics_enabled: true
+  amplitude: 0.04
+  wavelength: 2.8
+  roughness_scale: 1.0
+  traversability_slope_scale: 0.6
+  slope_speed_scale: 0.75
+  min_speed_scale: 0.35
+  crater_count: 7
+  crater_min_radius: 0.35
+  crater_max_radius: 1.15
+  crater_depth_to_diameter: 0.07
+  crater_rim_height_to_diameter: 0.015
+  crater_field_size: 9.0
+  crater_seed: 11
+
+reward:
+  weights:
+    gather: 1.0
+    oracle: 0.5
+    energy: 0.003
+    safety: 1.0
+    terrain: 0.20
+    motion: 0.005
+    consistency: 0.003
+    terminal: 1.0
+  coefficients:
+    dmax_progress: 3.4
+    dispersion_progress: 1.4
+    dmax_level: 0.05
+    dispersion_level: 0.006
+    oracle_mean_distance_progress: 2.2
+    path_length: 0.05
+    slope_cost: 0.25
+    terrain_cost: 0.25
+    turn_cost: 0.015
+    near_distance: 4.0
+    inter_agent_collision: 60.0
+    subgoal_turn: 0.015
+    subgoal_stagnation: 0.04
+    action_consistency: 0.006
+    success_bonus: 35.0
+    failure_penalty: 35.0
+
+algorithm:
+  mode: pure_rl
+  training_semantics: exp014_terrain_grid_observation_probe
+  shared_actor: true
+  centralized_critic: true
+  shared_value: true
+  gamma: 0.99
+  learning_rate: 0.0005

@@ -42,7 +42,9 @@ def test_ego_schema_replaces_zero_placeholders_with_motion_features() -> None:
 
     expected_speed = torch.linalg.norm(env.velocities_xy, dim=-1)
     expected_abs_angular = env.angular_velocities.abs()
-    assert cfg.observation.schema_version == "ego_v2_speed_angular"
+    assert cfg.observation.schema_version == "ego_v3_local_terrain_grid"
+    assert cfg.actor_obs_dim == 86
+    assert cfg.critic_state_dim == 54
     assert torch.allclose(ego[..., -2], expected_speed)
     assert torch.allclose(ego[..., -1], expected_abs_angular)
     assert not torch.allclose(ego[..., -2:], torch.zeros_like(ego[..., -2:]))

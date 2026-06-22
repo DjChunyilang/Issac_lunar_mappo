@@ -31,6 +31,7 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.simple_controller import (
 )
 from lunar_rover_tasks.tasks.multi_rover_gathering.state import build_critic_state
 from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
+    build_local_terrain_grid,
     is_flat_terrain,
     query_height,
     query_terrain_features,
@@ -143,7 +144,7 @@ class MultiRoverGatheringCore:
 
     def get_observations(self) -> tuple[torch.Tensor, torch.Tensor]:
         metrics = compute_team_metrics(self.positions, self.velocities_xy)
-        terrain_features = self.last_terrain_features if self._terrain_dynamics_enabled else None
+        terrain_grid = build_local_terrain_grid(self.positions, self.yaws, self.cfg.terrain)
         actor_obs = build_actor_observation(
             self.positions,
             self.yaws,
@@ -151,7 +152,7 @@ class MultiRoverGatheringCore:
             self.angular_velocities,
             self.communication_radius,
             self.cfg,
-            terrain_features,
+            terrain_grid,
         )
         critic_state = build_critic_state(
             self.positions,
@@ -162,7 +163,7 @@ class MultiRoverGatheringCore:
             self.oracle_point,
             self.success_hold_count,
             self.cfg,
-            terrain_features,
+            terrain_grid,
         )
         return actor_obs, critic_state
 

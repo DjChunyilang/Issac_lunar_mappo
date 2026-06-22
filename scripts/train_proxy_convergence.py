@@ -34,6 +34,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 from _common import ROOT, cfg_from_experiment, ensure_output_dir, load_yaml
+from _skrl_metadata import observation_interface_metadata, validate_checkpoint_compatibility
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore
 from lunar_rover_tasks.tasks.multi_rover_gathering.oracle import (
     compute_geometric_median,
@@ -121,6 +122,7 @@ def _save_checkpoint(
     critic: Critic,
     raw_cfg: dict,
     metrics: dict,
+    cfg,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -132,6 +134,7 @@ def _save_checkpoint(
             "metadata": {
                 "training_semantics": "proxy_convergence",
                 "backend": "proxy_convergence",
+                **observation_interface_metadata(cfg),
             },
         },
         path,
@@ -928,6 +931,7 @@ def main() -> None:
         if not resume_checkpoint.is_absolute():
             resume_checkpoint = ROOT / resume_checkpoint
         checkpoint_data = torch.load(resume_checkpoint, map_location=env.device)
+        validate_checkpoint_compatibility(checkpoint_data, cfg)
         actor.load_state_dict(checkpoint_data["actor"])
         critic.load_state_dict(checkpoint_data["critic"])
     output_layout = args.output_layout or str(exp.get("output_layout", "legacy")).lower()
@@ -1058,7 +1062,7 @@ def main() -> None:
         best_metrics = baseline_metrics
         best_positions = baseline_positions
         best_curve_history = baseline_curve_history
-        _save_checkpoint(checkpoint_path, actor, critic, raw_cfg, baseline_metrics)
+        _save_checkpoint(checkpoint_path, actor, critic, raw_cfg, baseline_metrics, cfg)
 
     reference_actor = None
     if mode in {"bc_ppo", "weak_warmstart"} and bc_steps > 0 and max(reference_start, reference_end) > 0.0:
@@ -1143,7 +1147,7 @@ def main() -> None:
                         best_metrics = eval_metrics
                         best_positions = positions
                         best_curve_history = curve_history
-                        _save_checkpoint(checkpoint_path, actor, critic, raw_cfg, best_metrics)
+                        _save_checkpoint(checkpoint_path, actor, critic, raw_cfg, best_metrics, cfg)
     finally:
         if writer is not None:
             writer.flush()
@@ -1157,7 +1161,7 @@ def main() -> None:
         best_metrics = eval_records[-1]
         best_positions = baseline_positions
         best_curve_history = baseline_curve_history
-        _save_checkpoint(checkpoint_path, actor, critic, raw_cfg, best_metrics)
+        _save_checkpoint(checkpoint_path, actor, critic, raw_cfg, best_metrics, cfg)
     _save_curves(eval_records, curves_path)
     _save_safety_diagnostics(eval_records, best_curve_history, safety_path)
     if best_positions:

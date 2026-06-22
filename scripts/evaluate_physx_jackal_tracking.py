@@ -21,6 +21,7 @@ from physx_jackal_common import (
     JACKAL_MAX_LINEAR_SPEED,
     JACKAL_MAX_WHEEL_SPEED,
     JACKAL_PRIM_PATH,
+    JACKAL_ROOT_Z_OFFSET,
     JACKAL_TRACK_WIDTH,
     JACKAL_WHEEL_DOF_NAMES,
     JACKAL_WHEEL_RADIUS,
@@ -29,13 +30,16 @@ from physx_jackal_common import (
     JackalSkidSteerController,
     ReferencePath,
     TrackingControllerCfg,
+    TrackingControllerState,
     add_tracking_terrain,
     build_physics_scene,
+    compute_chassis_servo_command,
     compute_tracking_command,
     capture_viewport,
     generate_reference_path,
     get_assets_root,
     jackal_usd_path,
+    nearest_path_index,
     offset_reference_path,
     quat_wxyz_to_tilt_deg,
     quat_wxyz_to_yaw,
@@ -43,37 +47,168 @@ from physx_jackal_common import (
     set_camera,
     terrain_height,
     tracking_acceptance,
+    tracking_error,
     yaw_to_quat_wxyz,
 )
 
-PROFILES = ("straight", "circle", "sine")
+PROFILES = ("straight", "circle", "sine", "double_lane_change")
 TERRAINS = ("flat", "strong_lunar_crater")
 DEFAULT_RUN_ID = "jackal_tracking"
+DEFAULT_PHYSICS_DT = 0.01
 
 
 def _controller_grid(target_speed_mps: float) -> list[TrackingControllerCfg]:
     return [
-        TrackingControllerCfg(lookahead_m=0.45, k_heading=1.6, k_cross_track=0.75, angular_scale=1.05, target_speed_mps=target_speed_mps),
-        TrackingControllerCfg(lookahead_m=0.55, k_heading=1.8, k_cross_track=0.85, angular_scale=1.15, target_speed_mps=target_speed_mps),
-        TrackingControllerCfg(lookahead_m=0.65, k_heading=1.9, k_cross_track=0.95, angular_scale=1.10, target_speed_mps=target_speed_mps),
-        TrackingControllerCfg(lookahead_m=0.75, k_heading=1.6, k_cross_track=0.65, angular_scale=1.00, target_speed_mps=target_speed_mps),
+        TrackingControllerCfg(
+            mode="pure_pursuit",
+            lookahead_m=0.35,
+            k_heading=1.6,
+            k_cross_track=0.75,
+            angular_scale=1.05,
+            speed_kp=0.20,
+            speed_ki=0.02,
+            yaw_rate_kp=0.50,
+            yaw_rate_ki=0.02,
+            target_speed_mps=target_speed_mps,
+        ),
+        TrackingControllerCfg(
+            mode="pure_pursuit",
+            lookahead_m=0.45,
+            k_heading=1.8,
+            k_cross_track=0.85,
+            angular_scale=1.10,
+            speed_kp=0.20,
+            speed_ki=0.02,
+            yaw_rate_kp=0.50,
+            yaw_rate_ki=0.02,
+            target_speed_mps=target_speed_mps,
+        ),
+        TrackingControllerCfg(
+            mode="pure_pursuit",
+            lookahead_m=0.55,
+            k_heading=1.6,
+            k_cross_track=0.80,
+            angular_scale=1.05,
+            speed_kp=0.25,
+            speed_ki=0.02,
+            yaw_rate_kp=0.60,
+            yaw_rate_ki=0.02,
+            target_speed_mps=target_speed_mps,
+        ),
+        TrackingControllerCfg(
+            mode="pure_pursuit",
+            lookahead_m=0.65,
+            k_heading=1.6,
+            k_cross_track=0.65,
+            angular_scale=1.00,
+            speed_kp=0.25,
+            speed_ki=0.02,
+            yaw_rate_kp=0.60,
+            yaw_rate_ki=0.02,
+            target_speed_mps=target_speed_mps,
+        ),
     ]
+
+
+def _stanley_coarse_grid(target_speed_mps: float) -> list[TrackingControllerCfg]:
+    candidates: list[TrackingControllerCfg] = []
+    for heading_gain in (0.9, 1.2, 1.5):
+        for stanley_gain in (1.2, 1.6, 2.0):
+            for lookahead_m in (0.28, 0.38):
+                for yaw_rate_kp in (0.35, 0.60):
+                    for speed_kp in (0.12, 0.25):
+                        candidates.append(
+                            TrackingControllerCfg(
+                                mode="stanley_pid",
+                                lookahead_m=lookahead_m,
+                                heading_gain=heading_gain,
+                                stanley_gain=stanley_gain,
+                                curvature_feedforward_gain=0.0,
+                                softening_speed_mps=0.12,
+                                speed_kp=speed_kp,
+                                speed_ki=0.02,
+                                speed_kd=0.0,
+                                yaw_rate_kp=yaw_rate_kp,
+                                yaw_rate_ki=0.02,
+                                yaw_rate_kd=0.0,
+                                max_linear_servo_correction_mps=0.30,
+                                max_angular_servo_correction_radps=1.0,
+                                max_linear_accel_mps2=1.4,
+                                max_angular_accel_radps2=5.0,
+                                target_speed_mps=target_speed_mps,
+                            )
+                        )
+    return candidates
+
+
+def _unique_controller_grid(candidates: Iterable[TrackingControllerCfg]) -> list[TrackingControllerCfg]:
+    seen: set[tuple] = set()
+    unique: list[TrackingControllerCfg] = []
+    for cfg in candidates:
+        key = tuple(sorted(asdict(cfg).items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(cfg)
+    return unique
+
+
+def _stanley_refined_grid(base: TrackingControllerCfg, target_speed_mps: float) -> list[TrackingControllerCfg]:
+    def build(**overrides: float) -> TrackingControllerCfg:
+        values = asdict(base)
+        values.update(overrides)
+        values["target_speed_mps"] = target_speed_mps
+        return TrackingControllerCfg(**values)
+
+    candidates: list[TrackingControllerCfg] = [build()]
+    for delta in (-0.12, 0.12):
+        candidates.append(build(heading_gain=max(0.5, base.heading_gain + delta)))
+        candidates.append(build(stanley_gain=max(0.2, base.stanley_gain + delta * 1.5)))
+        candidates.append(build(lookahead_m=max(0.15, base.lookahead_m + delta)))
+        candidates.append(build(yaw_rate_kp=max(0.1, base.yaw_rate_kp + delta * 0.8)))
+    for delta in (-0.06, 0.06):
+        candidates.append(build(speed_kp=max(0.0, base.speed_kp + delta)))
+    candidates.append(
+        build(
+            heading_gain=max(0.5, base.heading_gain + 0.10),
+            stanley_gain=max(0.2, base.stanley_gain + 0.15),
+            yaw_rate_kp=max(0.1, base.yaw_rate_kp + 0.10),
+        )
+    )
+    return _unique_controller_grid(candidates)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--terrain", choices=TERRAINS, default="flat")
     parser.add_argument("--profile", choices=(*PROFILES, "all"), default="all")
-    parser.add_argument("--steps", type=int, default=660)
+    parser.add_argument("--steps", type=int, default=8000)
     parser.add_argument("--tune-steps", type=int, default=160)
-    parser.add_argument("--sim-steps-per-control", type=int, default=4)
-    parser.add_argument("--completion-stop-ratio", type=float, default=0.97)
+    parser.add_argument("--sim-steps-per-control", type=int, default=1)
+    parser.add_argument("--physics-dt", type=float, default=DEFAULT_PHYSICS_DT)
+    parser.add_argument("--completion-stop-ratio", type=float, default=0.995)
     parser.add_argument("--seed", type=int, default=23)
-    parser.add_argument("--target-speed", type=float, default=0.35)
+    parser.add_argument("--target-speed", type=float, default=0.25)
+    parser.add_argument("--controller-mode", choices=("stanley_pid", "pure_pursuit"), default="stanley_pid")
     parser.add_argument("--lookahead-m", type=float, default=None)
     parser.add_argument("--k-heading", type=float, default=None)
     parser.add_argument("--k-cross-track", type=float, default=None)
     parser.add_argument("--angular-scale", type=float, default=None)
+    parser.add_argument("--heading-gain", type=float, default=None)
+    parser.add_argument("--stanley-gain", type=float, default=None)
+    parser.add_argument("--curvature-feedforward-gain", type=float, default=None)
+    parser.add_argument("--softening-speed", type=float, default=None)
+    parser.add_argument("--speed-kp", type=float, default=None)
+    parser.add_argument("--speed-ki", type=float, default=None)
+    parser.add_argument("--speed-kd", type=float, default=None)
+    parser.add_argument("--yaw-rate-kp", type=float, default=None)
+    parser.add_argument("--yaw-rate-ki", type=float, default=None)
+    parser.add_argument("--yaw-rate-kd", type=float, default=None)
+    parser.add_argument("--velocity-filter-tau", type=float, default=None)
+    parser.add_argument("--max-linear-servo-correction", type=float, default=None)
+    parser.add_argument("--max-angular-servo-correction", type=float, default=None)
+    parser.add_argument("--max-linear-accel", type=float, default=None)
+    parser.add_argument("--max-angular-accel", type=float, default=None)
     parser.add_argument(
         "--controller-json",
         default=None,
@@ -85,6 +220,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-angular", type=float, default=JACKAL_MAX_ANGULAR_SPEED)
     parser.add_argument("--max-wheel-speed", type=float, default=JACKAL_MAX_WHEEL_SPEED)
     parser.add_argument("--tune-flat", action="store_true")
+    parser.add_argument("--tune-top-k", type=int, default=2)
+    parser.add_argument("--step-test", action="store_true")
+    parser.add_argument("--step-duration-s", type=float, default=16.0)
+    parser.add_argument("--step-settle-s", type=float, default=2.0)
+    parser.add_argument("--step-linear", type=float, default=0.25)
+    parser.add_argument("--step-angular", type=float, default=0.60)
     parser.add_argument("--asset-smoke-only", action="store_true")
     parser.add_argument("--render", action="store_true")
     parser.add_argument("--width", type=int, default=1280)
@@ -125,13 +266,67 @@ def _pose(robot) -> tuple[np.ndarray, np.ndarray]:
     return positions.numpy()[0], orientations.numpy()[0]
 
 
+def _reset_robot_root(robot, position: np.ndarray, yaw: float) -> None:
+    position = np.asarray(position, dtype=np.float32)
+    orientation = yaw_to_quat_wxyz(float(yaw))
+    robot.apply_wheel_actions(np.zeros(len(JACKAL_WHEEL_DOF_NAMES), dtype=np.float64))
+    robot.set_world_poses(positions=position, orientations=orientation)
+    try:
+        robot.set_velocities(
+            linear_velocities=np.zeros(3, dtype=np.float32),
+            angular_velocities=np.zeros(3, dtype=np.float32),
+        )
+    except Exception:
+        pass
+
+
 def _make_controller_cfg(args: argparse.Namespace, tuned: TrackingControllerCfg | None = None) -> TrackingControllerCfg:
     base = tuned or TrackingControllerCfg(target_speed_mps=args.target_speed)
     return TrackingControllerCfg(
+        mode=str(args.controller_mode if tuned is None else base.mode),
         lookahead_m=float(args.lookahead_m if args.lookahead_m is not None else base.lookahead_m),
         k_heading=float(args.k_heading if args.k_heading is not None else base.k_heading),
         k_cross_track=float(args.k_cross_track if args.k_cross_track is not None else base.k_cross_track),
         angular_scale=float(args.angular_scale if args.angular_scale is not None else base.angular_scale),
+        heading_gain=float(
+            args.heading_gain
+            if args.heading_gain is not None
+            else (args.k_heading if args.k_heading is not None and base.mode == "stanley_pid" else base.heading_gain)
+        ),
+        stanley_gain=float(args.stanley_gain if args.stanley_gain is not None else base.stanley_gain),
+        curvature_feedforward_gain=float(
+            args.curvature_feedforward_gain
+            if args.curvature_feedforward_gain is not None
+            else base.curvature_feedforward_gain
+        ),
+        softening_speed_mps=float(
+            args.softening_speed if args.softening_speed is not None else base.softening_speed_mps
+        ),
+        speed_kp=float(args.speed_kp if args.speed_kp is not None else base.speed_kp),
+        speed_ki=float(args.speed_ki if args.speed_ki is not None else base.speed_ki),
+        speed_kd=float(args.speed_kd if args.speed_kd is not None else base.speed_kd),
+        yaw_rate_kp=float(args.yaw_rate_kp if args.yaw_rate_kp is not None else base.yaw_rate_kp),
+        yaw_rate_ki=float(args.yaw_rate_ki if args.yaw_rate_ki is not None else base.yaw_rate_ki),
+        yaw_rate_kd=float(args.yaw_rate_kd if args.yaw_rate_kd is not None else base.yaw_rate_kd),
+        velocity_filter_tau_s=float(
+            args.velocity_filter_tau if args.velocity_filter_tau is not None else base.velocity_filter_tau_s
+        ),
+        max_linear_servo_correction_mps=float(
+            args.max_linear_servo_correction
+            if args.max_linear_servo_correction is not None
+            else base.max_linear_servo_correction_mps
+        ),
+        max_angular_servo_correction_radps=float(
+            args.max_angular_servo_correction
+            if args.max_angular_servo_correction is not None
+            else base.max_angular_servo_correction_radps
+        ),
+        max_linear_accel_mps2=float(
+            args.max_linear_accel if args.max_linear_accel is not None else base.max_linear_accel_mps2
+        ),
+        max_angular_accel_radps2=float(
+            args.max_angular_accel if args.max_angular_accel is not None else base.max_angular_accel_radps2
+        ),
         target_speed_mps=float(args.target_speed),
         max_linear_mps=float(args.max_linear),
         max_angular_radps=float(args.max_angular),
@@ -148,11 +343,33 @@ def _load_controller_cfg(path: str | None, target_speed_mps: float) -> TrackingC
     values = payload.get("selected_controller") or payload.get("controller")
     if not isinstance(values, dict):
         raise ValueError(f"Controller JSON does not contain selected_controller: {resolved}")
+    mode = str(
+        values.get(
+            "mode",
+            "stanley_pid" if "heading_gain" in values or "stanley_gain" in values else "pure_pursuit",
+        )
+    )
     return TrackingControllerCfg(
-        lookahead_m=float(values.get("lookahead_m", 0.45)),
+        mode=mode,
+        lookahead_m=float(values.get("lookahead_m", 0.35)),
         k_heading=float(values.get("k_heading", 1.6)),
         k_cross_track=float(values.get("k_cross_track", 0.75)),
         angular_scale=float(values.get("angular_scale", 1.05)),
+        heading_gain=float(values.get("heading_gain", values.get("k_heading", 1.0))),
+        stanley_gain=float(values.get("stanley_gain", values.get("k_cross_track", 1.8))),
+        curvature_feedforward_gain=float(values.get("curvature_feedforward_gain", 0.0)),
+        softening_speed_mps=float(values.get("softening_speed_mps", 0.12)),
+        speed_kp=float(values.get("speed_kp", 0.20)),
+        speed_ki=float(values.get("speed_ki", 0.02)),
+        speed_kd=float(values.get("speed_kd", 0.0)),
+        yaw_rate_kp=float(values.get("yaw_rate_kp", 0.50)),
+        yaw_rate_ki=float(values.get("yaw_rate_ki", 0.02)),
+        yaw_rate_kd=float(values.get("yaw_rate_kd", 0.0)),
+        velocity_filter_tau_s=float(values.get("velocity_filter_tau_s", 0.08)),
+        max_linear_servo_correction_mps=float(values.get("max_linear_servo_correction_mps", 0.35)),
+        max_angular_servo_correction_radps=float(values.get("max_angular_servo_correction_radps", 1.0)),
+        max_linear_accel_mps2=float(values.get("max_linear_accel_mps2", 1.2)),
+        max_angular_accel_radps2=float(values.get("max_angular_accel_radps2", 4.5)),
         target_speed_mps=float(values.get("target_speed_mps", target_speed_mps)),
         max_linear_mps=float(values.get("max_linear_mps", JACKAL_MAX_LINEAR_SPEED)),
         max_angular_radps=float(values.get("max_angular_radps", JACKAL_MAX_ANGULAR_SPEED)),
@@ -160,10 +377,23 @@ def _load_controller_cfg(path: str | None, target_speed_mps: float) -> TrackingC
 
 
 def _score_tracking_result(result: dict) -> float:
+    thresholds = result.get("acceptance", {}).get("thresholds", {})
+    rmse_limit = max(float(thresholds.get("rmse_cross_track_m", 0.08)), 1.0e-6)
+    max_limit = max(float(thresholds.get("max_cross_track_m", 0.18)), 1.0e-6)
+    completion_limit = float(thresholds.get("path_completion_ratio", 0.99))
+    rmse = float(result.get("rmse_cross_track_m", math.inf))
+    max_error = float(result.get("max_cross_track_m", math.inf))
+    completion = float(result.get("path_completion_ratio", 0.0))
+    strict_penalty = (
+        4.0 * max(0.0, rmse - rmse_limit) / rmse_limit
+        + 2.0 * max(0.0, max_error - max_limit) / max_limit
+        + 8.0 * max(0.0, completion_limit - completion)
+    )
     return (
-        float(result.get("rmse_cross_track_m", math.inf))
-        + 0.20 * float(result.get("max_cross_track_m", math.inf))
-        + 0.60 * max(0.0, 1.0 - float(result.get("path_completion_ratio", 0.0)))
+        rmse / rmse_limit
+        + 0.50 * max_error / max_limit
+        + 2.0 * max(0.0, completion_limit - completion)
+        + strict_penalty
         + 0.01 * float(result.get("max_tilt_deg", 0.0))
     )
 
@@ -215,6 +445,18 @@ def _write_timeseries(path: Path, records: list[dict]) -> None:
         "path_completion_ratio",
         "command_linear_mps",
         "command_angular_radps",
+        "desired_speed_mps",
+        "reference_linear_mps",
+        "reference_angular_radps",
+        "measured_speed_mps",
+        "measured_yaw_rate_radps",
+        "linear_speed_error_mps",
+        "yaw_rate_error_radps",
+        "linear_servo_correction_mps",
+        "angular_servo_correction_radps",
+        "stanley_correction_rad",
+        "reference_curvature_radpm",
+        "controller_mode",
         "target_index",
         "ref_x_m",
         "ref_y_m",
@@ -226,6 +468,78 @@ def _write_timeseries(path: Path, records: list[dict]) -> None:
         writer.writeheader()
         for row in records:
             writer.writerow({field: row.get(field) for field in fields})
+
+
+def _write_step_timeseries(path: Path, records: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fields = [
+        "step",
+        "time_s",
+        "phase",
+        "x_m",
+        "y_m",
+        "z_m",
+        "yaw_rad",
+        "tilt_deg",
+        "reference_linear_mps",
+        "reference_angular_radps",
+        "command_linear_mps",
+        "command_angular_radps",
+        "measured_speed_mps",
+        "measured_yaw_rate_radps",
+        "linear_speed_error_mps",
+        "yaw_rate_error_radps",
+        "linear_servo_correction_mps",
+        "angular_servo_correction_radps",
+        "measurement_valid",
+        "left_wheel_radps",
+        "right_wheel_radps",
+    ]
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for row in records:
+            writer.writerow({field: row.get(field) for field in fields})
+
+
+def _plot_step_response(records: list[dict], output_path: Path) -> str | None:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as exc:
+        return f"matplotlib unavailable: {exc}"
+
+    if not records:
+        return "no step response records"
+    time_s = np.array([row["time_s"] for row in records], dtype=np.float64)
+    ref_v = np.array([row["reference_linear_mps"] for row in records], dtype=np.float64)
+    cmd_v = np.array([row["command_linear_mps"] for row in records], dtype=np.float64)
+    meas_v = np.array([row["measured_speed_mps"] for row in records], dtype=np.float64)
+    ref_w = np.array([row["reference_angular_radps"] for row in records], dtype=np.float64)
+    cmd_w = np.array([row["command_angular_radps"] for row in records], dtype=np.float64)
+    meas_w = np.array([row["measured_yaw_rate_radps"] for row in records], dtype=np.float64)
+
+    fig, axes = plt.subplots(2, 1, figsize=(10.5, 6.4), sharex=True)
+    axes[0].step(time_s, ref_v, where="post", label="reference", linewidth=1.5)
+    axes[0].plot(time_s, cmd_v, label="servo command", linewidth=1.2)
+    axes[0].plot(time_s, meas_v, label="measured", linewidth=1.4)
+    axes[0].set_ylabel("linear speed [m/s]")
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend(loc="best")
+    axes[1].step(time_s, ref_w, where="post", label="reference", linewidth=1.5)
+    axes[1].plot(time_s, cmd_w, label="servo command", linewidth=1.2)
+    axes[1].plot(time_s, meas_w, label="measured", linewidth=1.4)
+    axes[1].set_xlabel("time [s]")
+    axes[1].set_ylabel("yaw rate [rad/s]")
+    axes[1].grid(True, alpha=0.3)
+    axes[1].legend(loc="best")
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    return None
 
 
 def _summarize_records(
@@ -272,6 +586,7 @@ def _run_tracking_profile(
     profile: str,
     steps: int,
     sim_steps_per_control: int,
+    physics_dt: float,
     controller_cfg: TrackingControllerCfg,
     wheel_controller: JackalSkidSteerController,
     output_dir: Path | None,
@@ -284,7 +599,7 @@ def _run_tracking_profile(
 
     app.run_coroutine(omni.usd.get_context().new_stage_async())
     stage = omni.usd.get_context().get_stage()
-    build_physics_scene(stage)
+    build_physics_scene(stage, physics_dt=physics_dt)
     add_tracking_terrain(stage, terrain)
 
     path = generate_reference_path(profile)
@@ -294,12 +609,13 @@ def _run_tracking_profile(
         path = offset_reference_path(path, path_offset_xy)
     start_xy = path.points_xy[0]
     start_yaw = float(path.yaws[0])
-    start_z = terrain_height(terrain, float(start_xy[0]), float(start_xy[1])) + 0.22
+    start_z = terrain_height(terrain, float(start_xy[0]), float(start_xy[1])) + JACKAL_ROOT_Z_OFFSET
+    start_position = np.array([start_xy[0], start_xy[1], start_z], dtype=np.float32)
     robot = WheeledRobot(
         paths=JACKAL_PRIM_PATH,
         wheel_dof_names=JACKAL_WHEEL_DOF_NAMES,
         usd_path=jackal_usd,
-        positions=np.array([start_xy[0], start_xy[1], start_z], dtype=np.float32),
+        positions=start_position,
         orientations=yaw_to_quat_wxyz(start_yaw),
     )
 
@@ -310,16 +626,27 @@ def _run_tracking_profile(
 
     timeline = omni.timeline.get_timeline_interface()
     timeline.play()
-    for _ in range(45):
+    for _ in range(8):
         app.update()
+    _reset_robot_root(robot, start_position, start_yaw)
 
     records: list[dict] = []
     progress_index = 0
+    control_dt = max(1, int(sim_steps_per_control)) * float(physics_dt)
+    controller_state = TrackingControllerState()
     wall_start = time.perf_counter()
     for step_id in range(max(1, int(steps))):
         pos, quat = _pose(robot)
         yaw = quat_wxyz_to_yaw(quat)
-        command, details = compute_tracking_command(path, pos[:2], yaw, controller_cfg, progress_index=progress_index)
+        command, details = compute_tracking_command(
+            path,
+            pos[:2],
+            yaw,
+            controller_cfg,
+            progress_index=progress_index,
+            controller_state=controller_state,
+            dt=control_dt,
+        )
         progress_index = max(progress_index, int(details["nearest_index"]))
         wheel_velocities = wheel_controller.forward(command)
         robot.apply_wheel_actions(wheel_velocities)
@@ -327,19 +654,24 @@ def _run_tracking_profile(
             app.update()
         next_pos, next_quat = _pose(robot)
         next_yaw = quat_wxyz_to_yaw(next_quat)
-        next_error = compute_tracking_command(
+        next_nearest_idx = nearest_path_index(
+            path,
+            next_pos[:2],
+            start_index=progress_index,
+            end_index=progress_index + 80,  # matches search_window default in compute_tracking_command
+        )
+        next_error = tracking_error(
             path,
             next_pos[:2],
             next_yaw,
-            controller_cfg,
-            progress_index=progress_index,
-        )[1]
+            nearest_idx=next_nearest_idx,
+        )
         progress_index = max(progress_index, int(next_error["nearest_index"]))
         ref_xy = path.points_xy[int(next_error["nearest_index"])]
         records.append(
             {
                 "step": step_id,
-                "time_s": step_id * sim_steps_per_control * 0.05,
+                "time_s": (step_id + 1) * control_dt,
                 "x_m": float(next_pos[0]),
                 "y_m": float(next_pos[1]),
                 "z_m": float(next_pos[2]),
@@ -351,6 +683,18 @@ def _run_tracking_profile(
                 "path_completion_ratio": float(next_error["path_completion_ratio"]),
                 "command_linear_mps": float(details["command_linear_mps"]),
                 "command_angular_radps": float(details["command_angular_radps"]),
+                "desired_speed_mps": float(details.get("desired_speed_mps", 0.0)),
+                "reference_linear_mps": float(details.get("reference_linear_mps", 0.0)),
+                "reference_angular_radps": float(details.get("reference_angular_radps", 0.0)),
+                "measured_speed_mps": float(details.get("measured_speed_mps", 0.0)),
+                "measured_yaw_rate_radps": float(details.get("measured_yaw_rate_radps", 0.0)),
+                "linear_speed_error_mps": float(details.get("linear_speed_error_mps", 0.0)),
+                "yaw_rate_error_radps": float(details.get("yaw_rate_error_radps", 0.0)),
+                "linear_servo_correction_mps": float(details.get("linear_servo_correction_mps", 0.0)),
+                "angular_servo_correction_radps": float(details.get("angular_servo_correction_radps", 0.0)),
+                "stanley_correction_rad": float(details.get("stanley_correction_rad", 0.0)),
+                "reference_curvature_radpm": float(details.get("reference_curvature_radpm", 0.0)),
+                "controller_mode": str(details.get("controller_mode", controller_cfg.mode)),
                 "target_index": int(details["target_index"]),
                 "ref_x_m": float(ref_xy[0]),
                 "ref_y_m": float(ref_xy[1]),
@@ -373,6 +717,8 @@ def _run_tracking_profile(
         path=path,
         path_offset_xy=path_offset_xy,
     )
+    metrics["physics_dt_s"] = float(physics_dt)
+    metrics["control_dt_s"] = float(control_dt)
     if output_dir is not None:
         metrics_dir = output_dir / "metrics"
         figures_dir = output_dir / "figures"
@@ -391,19 +737,207 @@ def _run_tracking_profile(
     return metrics
 
 
-def _run_asset_smoke(app, *, jackal_usd: str, run_dir: Path) -> dict:
+def _step_reference(
+    time_s: float,
+    *,
+    duration_s: float,
+    linear_mps: float,
+    angular_radps: float,
+) -> tuple[str, np.ndarray]:
+    warmup_end = min(1.0, 0.20 * duration_s)
+    angular_start = max(warmup_end, 0.45 * duration_s)
+    stop_start = max(angular_start, 0.75 * duration_s)
+    if time_s < warmup_end:
+        return "hold_zero", np.array([0.0, 0.0], dtype=np.float64)
+    if time_s < angular_start:
+        return "linear_step", np.array([linear_mps, 0.0], dtype=np.float64)
+    if time_s < stop_start:
+        return "yaw_rate_step", np.array([linear_mps, angular_radps], dtype=np.float64)
+    return "stop_step", np.array([0.0, 0.0], dtype=np.float64)
+
+
+def _summarize_step_response(
+    *,
+    records: list[dict],
+    physics_dt: float,
+    sim_steps_per_control: int,
+    settle_s: float,
+    controller_cfg: TrackingControllerCfg,
+    wall_time_s: float,
+) -> dict:
+    valid = [row for row in records if row.get("measurement_valid")]
+    linear_error = np.array([row["linear_speed_error_mps"] for row in valid], dtype=np.float64)
+    yaw_error = np.array([row["yaw_rate_error_radps"] for row in valid], dtype=np.float64)
+    measured_speed = np.array([row["measured_speed_mps"] for row in valid], dtype=np.float64)
+    measured_yaw_rate = np.array([row["measured_yaw_rate_radps"] for row in valid], dtype=np.float64)
+    control_dt = max(1, int(sim_steps_per_control)) * float(physics_dt)
+    return {
+        "status": "ok",
+        "backend": "physx_jackal",
+        "test": "step_response",
+        "physics_dt_s": float(physics_dt),
+        "sim_steps_per_control": int(sim_steps_per_control),
+        "control_dt_s": float(control_dt),
+        "steps": len(records),
+        "duration_s": float(records[-1]["time_s"]) if records else 0.0,
+        "settle_s": float(settle_s),
+        "wall_time_s": float(wall_time_s),
+        "control_steps_per_s": len(records) / wall_time_s if wall_time_s > 0.0 else math.inf,
+        "linear_speed_rmse_mps": float(np.sqrt(np.mean(linear_error**2))) if len(linear_error) else math.inf,
+        "yaw_rate_rmse_radps": float(np.sqrt(np.mean(yaw_error**2))) if len(yaw_error) else math.inf,
+        "max_abs_linear_speed_error_mps": float(np.max(np.abs(linear_error))) if len(linear_error) else math.inf,
+        "max_abs_yaw_rate_error_radps": float(np.max(np.abs(yaw_error))) if len(yaw_error) else math.inf,
+        "max_measured_speed_mps": float(np.max(measured_speed)) if len(measured_speed) else 0.0,
+        "max_abs_measured_yaw_rate_radps": float(np.max(np.abs(measured_yaw_rate))) if len(measured_yaw_rate) else 0.0,
+        "final_x_m": float(records[-1]["x_m"]) if records else 0.0,
+        "final_y_m": float(records[-1]["y_m"]) if records else 0.0,
+        "final_yaw_rad": float(records[-1]["yaw_rad"]) if records else 0.0,
+        "controller": asdict(controller_cfg),
+    }
+
+
+def _run_step_response_test(
+    app,
+    *,
+    jackal_usd: str,
+    physics_dt: float,
+    sim_steps_per_control: int,
+    duration_s: float,
+    settle_s: float,
+    step_linear_mps: float,
+    step_angular_radps: float,
+    controller_cfg: TrackingControllerCfg,
+    wheel_controller: JackalSkidSteerController,
+    run_dir: Path,
+    render: bool,
+) -> dict:
+    import omni.timeline
     import omni.usd
     from isaacsim.robot.experimental.wheeled_robots.robots import WheeledRobot
 
     app.run_coroutine(omni.usd.get_context().new_stage_async())
     stage = omni.usd.get_context().get_stage()
-    build_physics_scene(stage)
+    build_physics_scene(stage, physics_dt=physics_dt)
+    add_tracking_terrain(stage, "flat")
+
+    robot = WheeledRobot(
+        paths=JACKAL_PRIM_PATH,
+        wheel_dof_names=JACKAL_WHEEL_DOF_NAMES,
+        usd_path=jackal_usd,
+        positions=np.array([0.0, 0.0, JACKAL_ROOT_Z_OFFSET], dtype=np.float32),
+        orientations=yaw_to_quat_wxyz(0.0),
+    )
+    if render:
+        set_camera()
+    for _ in range(60):
+        app.update()
+
+    timeline = omni.timeline.get_timeline_interface()
+    timeline.play()
+    robot.apply_wheel_actions(wheel_controller.forward([0.0, 0.0]))
+    for _ in range(max(1, int(math.ceil(max(0.0, float(settle_s)) / float(physics_dt))))):
+        app.update()
+    _reset_robot_root(robot, np.array([0.0, 0.0, JACKAL_ROOT_Z_OFFSET], dtype=np.float32), 0.0)
+
+    control_dt = max(1, int(sim_steps_per_control)) * float(physics_dt)
+    step_count = max(1, int(math.ceil(float(duration_s) / control_dt)))
+    state = TrackingControllerState()
+    records: list[dict] = []
+    wall_start = time.perf_counter()
+    for step_id in range(step_count):
+        time_s = step_id * control_dt
+        phase, reference = _step_reference(
+            time_s,
+            duration_s=float(duration_s),
+            linear_mps=float(step_linear_mps),
+            angular_radps=float(step_angular_radps),
+        )
+        pos, quat = _pose(robot)
+        yaw = quat_wxyz_to_yaw(quat)
+        command, details = compute_chassis_servo_command(
+            reference,
+            pos[:2],
+            yaw,
+            controller_cfg,
+            controller_state=state,
+            dt=control_dt,
+        )
+        wheel_velocities = wheel_controller.forward(command)
+        records.append(
+            {
+                "step": step_id,
+                "time_s": float(time_s),
+                "phase": phase,
+                "x_m": float(pos[0]),
+                "y_m": float(pos[1]),
+                "z_m": float(pos[2]),
+                "yaw_rad": float(yaw),
+                "tilt_deg": float(quat_wxyz_to_tilt_deg(quat)),
+                "reference_linear_mps": float(details["reference_linear_mps"]),
+                "reference_angular_radps": float(details["reference_angular_radps"]),
+                "command_linear_mps": float(details["command_linear_mps"]),
+                "command_angular_radps": float(details["command_angular_radps"]),
+                "measured_speed_mps": float(details["measured_speed_mps"]),
+                "measured_yaw_rate_radps": float(details["measured_yaw_rate_radps"]),
+                "linear_speed_error_mps": float(details["linear_speed_error_mps"]),
+                "yaw_rate_error_radps": float(details["yaw_rate_error_radps"]),
+                "linear_servo_correction_mps": float(details["linear_servo_correction_mps"]),
+                "angular_servo_correction_radps": float(details["angular_servo_correction_radps"]),
+                "measurement_valid": bool(details["measurement_valid"]),
+                "left_wheel_radps": float(wheel_velocities[0]),
+                "right_wheel_radps": float(wheel_velocities[1]),
+            }
+        )
+        robot.apply_wheel_actions(wheel_velocities)
+        for _ in range(max(1, int(sim_steps_per_control))):
+            app.update()
+
+    wall_time_s = time.perf_counter() - wall_start
+    timeline.stop()
+
+    output_dir = run_dir / "physx"
+    metrics_dir = output_dir / "metrics"
+    figures_dir = output_dir / "figures"
+    csv_path = metrics_dir / "step_response_timeseries.csv"
+    figure_path = figures_dir / "step_response.png"
+    _write_step_timeseries(csv_path, records)
+    plot_error = _plot_step_response(records, figure_path)
+    summary = _summarize_step_response(
+        records=records,
+        physics_dt=physics_dt,
+        sim_steps_per_control=sim_steps_per_control,
+        settle_s=settle_s,
+        controller_cfg=controller_cfg,
+        wall_time_s=wall_time_s,
+    )
+    summary["step_command"] = {
+        "linear_mps": float(step_linear_mps),
+        "angular_radps": float(step_angular_radps),
+    }
+    summary["artifacts"] = {
+        "step_response_csv": str(csv_path),
+        "step_response_figure": str(figure_path) if plot_error is None else None,
+        "step_response_figure_error": plot_error,
+    }
+    output_path = metrics_dir / "step_response_summary.json"
+    _write_json(output_path, summary)
+    summary["artifact"] = str(output_path)
+    return summary
+
+
+def _run_asset_smoke(app, *, jackal_usd: str, run_dir: Path, physics_dt: float) -> dict:
+    import omni.usd
+    from isaacsim.robot.experimental.wheeled_robots.robots import WheeledRobot
+
+    app.run_coroutine(omni.usd.get_context().new_stage_async())
+    stage = omni.usd.get_context().get_stage()
+    build_physics_scene(stage, physics_dt=physics_dt)
     add_tracking_terrain(stage, "flat")
     robot = WheeledRobot(
         paths=JACKAL_PRIM_PATH,
         wheel_dof_names=JACKAL_WHEEL_DOF_NAMES,
         usd_path=jackal_usd,
-        positions=np.array([0.0, 0.0, 0.22], dtype=np.float32),
+        positions=np.array([0.0, 0.0, JACKAL_ROOT_Z_OFFSET], dtype=np.float32),
     )
     for _ in range(50):
         app.update()
@@ -414,6 +948,7 @@ def _run_asset_smoke(app, *, jackal_usd: str, run_dir: Path) -> dict:
         "prim_path": JACKAL_PRIM_PATH,
         "wheel_dof_names": JACKAL_WHEEL_DOF_NAMES,
         "resolved_dof_names": list(getattr(robot, "dof_names", [])),
+        "physics_dt_s": float(physics_dt),
     }
     output = run_dir / "physx" / "metrics" / "asset_smoke.json"
     _write_json(output, result)
@@ -429,45 +964,90 @@ def _run_tuning(
     wheel_controller: JackalSkidSteerController,
     run_dir: Path,
 ) -> tuple[TrackingControllerCfg, dict]:
-    candidates = _controller_grid(args.target_speed)
     rows = []
-    best_cfg = candidates[0]
+    best_cfg = TrackingControllerCfg(mode=args.controller_mode, target_speed_mps=args.target_speed)
     best_score = math.inf
-    for cfg_index, cfg in enumerate(candidates):
-        profile_results = []
-        for profile in PROFILES:
-            result = _run_tracking_profile(
-                app,
-                jackal_usd=jackal_usd,
-                terrain="flat",
-                profile=profile,
-                steps=args.tune_steps,
-                sim_steps_per_control=args.sim_steps_per_control,
-                controller_cfg=cfg,
-                wheel_controller=wheel_controller,
-                output_dir=None,
-                render=False,
-                completion_stop_ratio=args.completion_stop_ratio,
+    rounds: list[dict] = []
+
+    def evaluate_candidates(phase: str, candidates: list[TrackingControllerCfg], start_index: int) -> int:
+        nonlocal best_cfg, best_score
+        phase_rows = []
+        for local_index, cfg in enumerate(candidates):
+            profile_results = []
+            for profile in PROFILES:
+                result = _run_tracking_profile(
+                    app,
+                    jackal_usd=jackal_usd,
+                    terrain="flat",
+                    profile=profile,
+                    steps=args.tune_steps,
+                    sim_steps_per_control=args.sim_steps_per_control,
+                    physics_dt=args.physics_dt,
+                    controller_cfg=cfg,
+                    wheel_controller=wheel_controller,
+                    output_dir=None,
+                    render=False,
+                    completion_stop_ratio=args.completion_stop_ratio,
+                )
+                profile_results.append(result)
+            score = float(np.mean([_score_tracking_result(item) for item in profile_results]))
+            row = {
+                "candidate": start_index + local_index,
+                "phase": phase,
+                "score": score,
+                "passed": all(bool(item.get("passed")) for item in profile_results),
+                "controller": asdict(cfg),
+                "profile_results": profile_results,
+            }
+            rows.append(row)
+            phase_rows.append(row)
+            if score < best_score:
+                best_score = score
+                best_cfg = cfg
+        rounds.append(
+            {
+                "phase": phase,
+                "candidate_count": len(candidates),
+                "best_candidate": min(phase_rows, key=lambda item: item["score"])["candidate"] if phase_rows else None,
+            }
+        )
+        return start_index + len(candidates)
+
+    if args.controller_mode == "pure_pursuit":
+        evaluate_candidates("pure_pursuit", _controller_grid(args.target_speed), 0)
+    else:
+        next_index = evaluate_candidates("coarse", _stanley_coarse_grid(args.target_speed), 0)
+        top_k = max(1, int(args.tune_top_k))
+        top_rows = sorted(rows, key=lambda item: item["score"])[:top_k]
+        refined = _unique_controller_grid(
+            candidate
+            for row in top_rows
+            for candidate in _stanley_refined_grid(
+                TrackingControllerCfg(**row["controller"]),
+                args.target_speed,
             )
-            profile_results.append(result)
-        score = float(np.mean([_score_tracking_result(item) for item in profile_results]))
-        row = {
-            "candidate": cfg_index,
-            "score": score,
-            "controller": asdict(cfg),
-            "profile_results": profile_results,
-        }
-        rows.append(row)
-        if score < best_score:
-            best_score = score
-            best_cfg = cfg
+        )
+        evaluate_candidates("refined", refined, next_index)
+
+    selected_row = min(rows, key=lambda item: item["score"]) if rows else None
+    selected_passed = bool(selected_row.get("passed")) if selected_row else False
     payload = {
         "status": "ok",
         "backend": "physx_jackal",
         "terrain": "flat",
+        "controller_mode": args.controller_mode,
         "selected_score": best_score,
+        "selected_passed": selected_passed,
+        "strict_thresholds": rows[0]["profile_results"][0]["acceptance"]["thresholds"] if rows else {},
         "selected_controller": asdict(best_cfg),
+        "rounds": rounds,
+        "candidate_count": len(rows),
         "grid": rows,
+        "next_step_recommendation": (
+            None
+            if selected_passed
+            else "Best flat candidate did not satisfy the strict gate; keep the strict thresholds and inspect per-profile failures before widening the search or moving to strong-terrain control."
+        ),
     }
     output = run_dir / "physx" / "metrics" / "flat_tuning_grid.json"
     _write_json(output, payload)
@@ -529,6 +1109,8 @@ def _aggregate_results(profile_results: list[dict]) -> dict:
 
 def main() -> None:
     args = parse_args()
+    if args.physics_dt <= 0.0:
+        raise ValueError("--physics-dt must be positive")
     run_dir = _resolve_run_dir(args.run_dir)
 
     from isaacsim import SimulationApp
@@ -546,7 +1128,7 @@ def main() -> None:
         assets_root = get_assets_root(app)
         jackal_usd = jackal_usd_path(assets_root)
         if args.asset_smoke_only:
-            summary = _run_asset_smoke(app, jackal_usd=jackal_usd, run_dir=run_dir)
+            summary = _run_asset_smoke(app, jackal_usd=jackal_usd, run_dir=run_dir, physics_dt=args.physics_dt)
             print(json.dumps(summary, indent=2, sort_keys=True))
             return
 
@@ -569,6 +1151,25 @@ def main() -> None:
             )
 
         controller_cfg = _make_controller_cfg(args, tuned=tuned_cfg)
+        if args.step_test:
+            summary = _run_step_response_test(
+                app,
+                jackal_usd=jackal_usd,
+                physics_dt=args.physics_dt,
+                sim_steps_per_control=args.sim_steps_per_control,
+                duration_s=args.step_duration_s,
+                settle_s=args.step_settle_s,
+                step_linear_mps=args.step_linear,
+                step_angular_radps=args.step_angular,
+                controller_cfg=controller_cfg,
+                wheel_controller=wheel_controller,
+                run_dir=run_dir,
+                render=args.render,
+            )
+            _write_manifest(run_dir, summary, command=["scripts/evaluate_physx_jackal_tracking.py"])
+            print(json.dumps(summary, indent=2, sort_keys=True))
+            return
+
         output_dir = run_dir / "physx"
         profiles = _profiles_from_arg(args.profile)
         profile_results = [
@@ -579,6 +1180,7 @@ def main() -> None:
                 profile=profile,
                 steps=args.steps,
                 sim_steps_per_control=args.sim_steps_per_control,
+                physics_dt=args.physics_dt,
                 controller_cfg=controller_cfg,
                 wheel_controller=wheel_controller,
                 output_dir=output_dir,
@@ -613,6 +1215,8 @@ def main() -> None:
             "profiles": profiles,
             "steps": args.steps,
             "sim_steps_per_control": args.sim_steps_per_control,
+            "physics_dt_s": float(args.physics_dt),
+            "control_dt_s": float(max(1, int(args.sim_steps_per_control)) * float(args.physics_dt)),
             "controller": asdict(controller_cfg),
             "passed": passed,
             "aggregate": aggregate,

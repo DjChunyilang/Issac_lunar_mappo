@@ -10,6 +10,10 @@ from typing import Any
 DEFAULT_TRAINING_SEMANTICS = "skrl_mappo_smoke"
 
 
+class CheckpointCompatibilityError(ValueError):
+    """Raised when a checkpoint does not match the active observation interface."""
+
+
 def _section(raw_cfg: dict[str, Any], name: str) -> dict[str, Any]:
     values = raw_cfg.get(name, {})
     return values if isinstance(values, dict) else {}
@@ -58,3 +62,43 @@ def resolve_checkpoint_name(raw_cfg: dict[str, Any], config_path: str | Path) ->
 
     fallback_name = experiment.get("name") or Path(config_path).stem
     return sanitize_checkpoint_name(f"{fallback_name}_skrl_mappo.pt")
+
+
+def observation_interface_metadata(cfg: Any) -> dict[str, Any]:
+    return {
+        "observation_schema_version": str(cfg.observation.schema_version),
+        "actor_obs_dim": int(cfg.actor_obs_dim),
+        "critic_state_dim": int(cfg.critic_state_dim),
+    }
+
+
+def validate_checkpoint_compatibility(checkpoint: dict[str, Any], cfg: Any) -> dict[str, Any]:
+    metadata = checkpoint.get("metadata")
+    if not isinstance(metadata, dict):
+        raise CheckpointCompatibilityError(
+            "Checkpoint is missing metadata and is incompatible with "
+            f"observation schema {cfg.observation.schema_version!r}."
+        )
+
+    expected = observation_interface_metadata(cfg)
+    missing = sorted(key for key in expected if key not in metadata)
+    if missing:
+        raise CheckpointCompatibilityError(
+            "Checkpoint is missing observation interface metadata: "
+            f"{', '.join(missing)}. Old checkpoints are not auto-migrated."
+        )
+
+    mismatches = {
+        key: (metadata[key], value)
+        for key, value in expected.items()
+        if metadata[key] != value
+    }
+    if mismatches:
+        details = ", ".join(
+            f"{key}={actual!r} (expected {expected_value!r})"
+            for key, (actual, expected_value) in mismatches.items()
+        )
+        raise CheckpointCompatibilityError(
+            f"Checkpoint observation interface is incompatible: {details}."
+        )
+    return metadata

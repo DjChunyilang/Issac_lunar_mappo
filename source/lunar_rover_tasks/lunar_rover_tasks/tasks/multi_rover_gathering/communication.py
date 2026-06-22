@@ -28,6 +28,40 @@ def build_neighbor_features(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     num_envs, n_agents, _ = positions.shape
     visibility = compute_visibility_mask(positions, communication_radius)
+    pairwise_delta = positions[:, None, :, :2] - positions[:, :, None, :2]
+    pairwise_vel = velocities_xy[:, None, :, :] - velocities_xy[:, :, None, :]
+    yaw_delta = wrap_to_pi(yaws[:, None, :] - yaws[:, :, None])
+    pairwise_dist = torch.linalg.norm(pairwise_delta, dim=-1)
+    slot_count = min(cfg.max_neighbors, n_agents)
+    masked_dist = pairwise_dist.masked_fill(~visibility, float("inf"))
+    selected_dist, selected = torch.topk(
+        masked_dist,
+        k=slot_count,
+        dim=-1,
+        largest=False,
+        sorted=True,
+    )
+    valid = torch.isfinite(selected_dist)
+    gather_xy = selected[..., None].expand(-1, -1, -1, 2)
+    selected_delta = torch.gather(pairwise_delta, dim=2, index=gather_xy)
+    selected_vel = torch.gather(pairwise_vel, dim=2, index=gather_xy)
+    selected_yaw = torch.gather(yaw_delta, dim=2, index=selected)
+    selected_features = torch.cat(
+        (
+            selected_delta,
+            selected_vel,
+            torch.cos(selected_yaw).unsqueeze(-1),
+            torch.sin(selected_yaw).unsqueeze(-1),
+            valid.to(dtype=positions.dtype).unsqueeze(-1),
+        ),
+        dim=-1,
+    )
+    selected_features = torch.where(
+        valid.unsqueeze(-1),
+        selected_features,
+        torch.zeros_like(selected_features),
+    )
+
     features = torch.zeros(
         num_envs,
         n_agents,
@@ -43,31 +77,6 @@ def build_neighbor_features(
         dtype=positions.dtype,
         device=positions.device,
     )
-
-    pairwise_delta = positions[:, None, :, :2] - positions[:, :, None, :2]
-    pairwise_vel = velocities_xy[:, None, :, :] - velocities_xy[:, :, None, :]
-    yaw_delta = wrap_to_pi(yaws[:, None, :] - yaws[:, :, None])
-    pairwise_dist = torch.linalg.norm(pairwise_delta, dim=-1)
-
-    for env_id in range(num_envs):
-        for agent_id in range(n_agents):
-            candidates = torch.nonzero(visibility[env_id, agent_id], as_tuple=False).flatten()
-            if candidates.numel() == 0:
-                continue
-            order = torch.argsort(pairwise_dist[env_id, agent_id, candidates])
-            selected = candidates[order[: cfg.max_neighbors]]
-            slot_count = selected.numel()
-            features[env_id, agent_id, :slot_count, 0:2] = pairwise_delta[
-                env_id, agent_id, selected
-            ]
-            features[env_id, agent_id, :slot_count, 2:4] = pairwise_vel[env_id, agent_id, selected]
-            features[env_id, agent_id, :slot_count, 4] = torch.cos(
-                yaw_delta[env_id, agent_id, selected]
-            )
-            features[env_id, agent_id, :slot_count, 5] = torch.sin(
-                yaw_delta[env_id, agent_id, selected]
-            )
-            features[env_id, agent_id, :slot_count, 6] = 1.0
-            masks[env_id, agent_id, :slot_count] = 1.0
+    features[..., :slot_count, :] = selected_features
+    masks[..., :slot_count] = valid.to(dtype=positions.dtype)
     return features.flatten(start_dim=2), masks
-

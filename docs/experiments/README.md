@@ -20,5 +20,6 @@ PhysX / Jackal tracking 结果是 high-fidelity validation，不等于 Isaac Lab
 | exp010 | 强 lunar crater 3D proxy | 成功 gate 诊断 + hold/safety 短程修复 | seed23 eval；seed31 continuation；seed47 未启动 | 未通过 | success 可改善，但 collision/timeout gate 仍失败。 | [exp_010_strong_success_diagnostics.md](exp_010_strong_success_diagnostics.md) |
 | exp012 | proxy SKRL-MAPPO CUDA 诊断 | action scale warmup probe | seed7 | 未通过 | 工程链路和动作尺度诊断，不作为主结果。 | [exp_012_action_scale_warmup_probe.md](exp_012_action_scale_warmup_probe.md) |
 | exp013 | proxy SKRL-MAPPO CUDA 诊断 | action scale ablation + teacher reachability | seed7 | 未通过 | 当前 100-step 小动作配置本身几乎不可达；统一评估会写 checkpoint status。 | [exp_013_action_scale_ablation.md](exp_013_action_scale_ablation.md) |
+| exp014 | 弱 lunar crater proxy | 5×5 局部地形网格 SKRL-MAPPO probe | seed23 | 未运行 strict | CUDA 工程验收通过；只证明新观测与训练链路有效。 | [exp_014_terrain_grid_observation_probe.md](exp_014_terrain_grid_observation_probe.md) |
 
 新增实验时，在这里加一行，并在本目录创建独立的 `exp_###_*.md` 文档。日期流水账放入 `docs/archive/`，不要继续堆到当前实验文档里。

@@ -10,12 +10,14 @@ import gymnasium as gym
 import torch
 
 from _common import cfg_from_experiment
+from _skrl_metadata import validate_checkpoint_compatibility
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore
 from train import Actor
 from train_skrl_mappo import SKRLPolicy
 
 
 def _load_policy_players(checkpoint: dict, cfg, device):
+    validate_checkpoint_compatibility(checkpoint, cfg)
     if "actor" in checkpoint:
         actor = Actor(cfg.actor_obs_dim).to(device)
         actor.load_state_dict(checkpoint["actor"])

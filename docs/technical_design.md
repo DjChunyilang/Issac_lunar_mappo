@@ -23,11 +23,11 @@ actor observation
 - Actor 执行期只使用自车、邻居、地形手工特征和局部聚合特征。
 - Actor observation 不包含 `p*`、oracle 距离或 oracle 距离下降量。
 - Centralized critic state 和 reward shaping 可以使用训练期 oracle 信息。
-- 视觉观测当前不进入 policy input；地形以低维结构化特征进入策略。
+- 视觉观测当前不进入 policy input；地形以车体系局部结构化网格进入策略。
 
 ## Actor Observation
 
-当前 schema 为 `ego_v2_speed_angular`，形状为：
+当前 schema 为 `ego_v3_local_terrain_grid`，形状为：
 
 ```text
 (num_envs, 4, obs_dim)
@@ -38,10 +38,21 @@ actor observation
 ```text
 ego_dim: 10
 neighbor_dim: 7
-terrain_dim: 5
+terrain_dim: 50
 aggregation_dim: 5
 communication_radius: cfg.observation.communication_radius
 ```
+
+Actor 总输入维度为 86。地形观测使用固定车体系 `5×5` 网格：
+
+```text
+x = [-0.4, 0.0, 0.4, 0.8, 1.2] m
+y = [-0.8, -0.4, 0.0, 0.4, 0.8] m
+channels = [relative_height, risk]
+flatten = x -> y -> channel
+```
+
+`relative_height` 相对 rover 脚下高度计算，`risk=1-traversability`。平地输出全零。原脚下 5 维 `height/slope_x/slope_y/roughness/traversability` 仍用于 proxy 动力学和 terrain reward，不再直接作为 actor 地形观测。
 
 `observation.communication_radius` 是当前唯一允许从 experiment YAML 覆盖的 observation 字段。`max_neighbors`、`ego_dim`、`neighbor_dim`、`terrain_dim` 和 `aggregation_dim` 会改变模型输入接口，本轮不开放配置覆盖。
 
@@ -53,7 +64,7 @@ Critic state 形状为：
 (num_envs, state_dim)
 ```
 
-它包含全部 rover 真值状态、队形几何信息、地形摘要和仅训练使用的 oracle 特征。该信息只服务 centralized critic、reward shaping 和评估指标，不进入 actor 执行期输入。
+它包含全部 rover 真值状态、队形几何信息、地形摘要和仅训练使用的 oracle 特征。该信息只服务 centralized critic、reward shaping 和评估指标，不进入 actor 执行期输入。Critic 总维度保持 54；地形 5 维摘要改为平均绝对高差、最大上升、最大下降、平均风险和最大风险。
 
 ## Action 与轨迹控制
 
@@ -100,7 +111,7 @@ Reward 由以下部分组成：
 - Actor 是同构多智能体策略，输入去中心化 observation，输出每车 `[rho, beta]`。
 - Critic 使用 centralized state，服务 MAPPO/PPO 训练。
 - SKRL-MAPPO 训练通过 `MultiRoverGatheringSKRLEnv` 和 `isaaclab-multi-agent` wrapper 接入；该 wrapper 是接口层，不代表 PhysX 训练。
-- Checkpoint metadata 必须记录 observation schema 等关键接口信息，避免语义漂移。
+- Checkpoint metadata 必须记录 `observation_schema_version`、`actor_obs_dim` 和 `critic_state_dim`。旧 schema 或缺少 metadata 的 checkpoint 明确拒绝，不自动迁移。
 
 ## 评估判据
 

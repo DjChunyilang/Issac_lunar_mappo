@@ -38,6 +38,7 @@ PY
 - `scripts/train_skrl_mappo.py --device cuda` 必须在 CUDA 不可用时失败。
 - 每段训练都追加 telemetry JSONL。
 - checkpoint metadata 必须包含 `training_semantics`、`shared_actor`、`centralized_critic`、`shared_value`、`observation_schema_version` 和 `device`。
+- checkpoint metadata 还必须包含 `actor_obs_dim` 和 `critic_state_dim`；旧 schema 或维度不匹配 checkpoint 会明确拒绝。
 - `nan_flag` 必须为 false。
 
 产物路径：
@@ -49,6 +50,41 @@ outputs/checkpoints/exp_cuda_contract.pt
 ```
 
 `success_rate_final` 可以为 0；这个 contract 不要求策略收敛。
+
+## exp014 Terrain-Grid Observation Probe
+
+先运行完整测试：
+
+```bash
+.venv_isaaclab/bin/python -m pytest -q -ra
+```
+
+再运行弱 lunar crater CUDA 探针：
+
+```bash
+.venv_isaaclab/bin/python scripts/run_terrain_observation_validation.py \
+  --device cuda \
+  --timesteps 5000
+```
+
+该脚本使用 `configs/experiment/exp014_terrain_grid_observation_probe.yaml`，检查：
+
+- observation schema 为 `ego_v3_local_terrain_grid`；
+- Actor / Critic 维度为 `86 / 54`；
+- 训练无 NaN/Inf；
+- policy 参数和第一层 terrain 输入列权重发生更新；
+- post-training 动作非退化；
+- 弱月面局部地形观测不是全零。
+
+产物路径：
+
+```text
+outputs/runs/exp014_terrain_grid_observation_probe/metrics.jsonl
+outputs/runs/exp014_terrain_grid_observation_probe/terrain_observation_validation_summary.json
+outputs/checkpoints/exp014_terrain_grid_observation_probe.pt
+```
+
+该探针只验证工程与训练信号，不要求 strict convergence。
 
 ## exp012 Action-Scale Suite
 

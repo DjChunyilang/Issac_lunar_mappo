@@ -491,6 +491,7 @@ def build_training_telemetry(
     phase: str,
     random_baseline: dict | None = None,
     post_training_eval: dict | None = None,
+    training_diagnostics: dict | None = None,
     peak_cuda_memory_mb: float | None = None,
 ) -> dict:
     metrics = compute_team_metrics(env.core.positions, env.core.velocities_xy)
@@ -515,6 +516,8 @@ def build_training_telemetry(
         "checkpoint_path": str(checkpoint_path),
         "training_semantics": training_semantics,
         "observation_schema_version": env.cfg.observation.schema_version,
+        "actor_obs_dim": env.cfg.actor_obs_dim,
+        "critic_state_dim": env.cfg.critic_state_dim,
         "success_threshold": {
             "dmax": float(env.cfg.success_thresholds.dmax),
             "dispersion": float(env.cfg.success_thresholds.dispersion),
@@ -541,6 +544,9 @@ def build_training_telemetry(
     if post_training_eval is not None:
         telemetry["post_training_eval"] = post_training_eval
         telemetry.update(post_training_eval)
+    if training_diagnostics is not None:
+        telemetry["training_diagnostics"] = training_diagnostics
+        telemetry.update(training_diagnostics)
     return telemetry
 
 
@@ -665,6 +671,8 @@ def skrl_mappo_checkpoint_payload(
     timesteps: int,
     training_semantics: str = DEFAULT_TRAINING_SEMANTICS,
     observation_schema_version: str | None = None,
+    actor_obs_dim: int | None = None,
+    critic_state_dim: int | None = None,
     device: str | None = None,
     checkpoint_path: str | None = None,
 ) -> dict:
@@ -683,6 +691,8 @@ def skrl_mappo_checkpoint_payload(
         "experiment_name": experiment.get("name"),
         "algorithm_mode": algorithm.get("mode"),
         "observation_schema_version": observation_schema_version,
+        "actor_obs_dim": actor_obs_dim,
+        "critic_state_dim": critic_state_dim,
         "shared_actor": shared_actor,
         "centralized_critic": centralized_critic,
         "shared_value": shared_value,
@@ -740,6 +750,7 @@ def main() -> None:
         centralized_critic=centralized_critic,
         shared_value=shared_value,
     )
+    policy = models[possible_agents[0]]["policy"]
     memories = build_skrl_mappo_memories(env, rollout_steps=int(exp.get("rollout_steps", 32)))
 
     agent = MAPPO(
@@ -766,6 +777,11 @@ def main() -> None:
             "learning_starts": 0,
         },
     )
+    initial_policy_parameters = [
+        parameter.detach().clone()
+        for parameter in policy.parameters()
+    ]
+    initial_first_layer_weight = policy.net[0].weight.detach().clone()
 
     def write_interval_telemetry(step: int) -> None:
         _snapshot_numeric_metrics(telemetry_state, "action", "action_window")
@@ -811,8 +827,24 @@ def main() -> None:
     post_training_eval = evaluate_policy_signal(
         MultiRoverGatheringSKRLEnv(cfg),
         mode="policy",
-        policy=models[possible_agents[0]]["policy"],
+        policy=policy,
     )
+    parameter_delta_sq = torch.zeros((), device=env.device)
+    for initial, current in zip(initial_policy_parameters, policy.parameters(), strict=True):
+        parameter_delta_sq = parameter_delta_sq + (current.detach() - initial).square().sum()
+    terrain_start = (
+        cfg.observation.ego_dim
+        + cfg.observation.max_neighbors * cfg.observation.neighbor_dim
+    )
+    terrain_end = terrain_start + cfg.observation.terrain_dim
+    first_layer_delta = policy.net[0].weight.detach() - initial_first_layer_weight
+    training_diagnostics = {
+        "policy_parameter_delta_l2": float(torch.sqrt(parameter_delta_sq).cpu()),
+        "terrain_input_weight_delta_l2": float(
+            torch.linalg.vector_norm(first_layer_delta[:, terrain_start:terrain_end]).cpu()
+        ),
+        "post_training_action_std": post_training_eval.get("eval_action_std"),
+    }
     _snapshot_numeric_metrics(telemetry_state, "action", "action_window")
     _snapshot_numeric_metrics(telemetry_state, "reward", "reward_window")
 
@@ -823,6 +855,8 @@ def main() -> None:
             raw_cfg=raw_cfg,
             training_semantics=training_semantics,
             observation_schema_version=cfg.observation.schema_version,
+            actor_obs_dim=cfg.actor_obs_dim,
+            critic_state_dim=cfg.critic_state_dim,
             shared_actor=shared_actor,
             centralized_critic=centralized_critic,
             shared_value=shared_value,
@@ -845,6 +879,7 @@ def main() -> None:
             phase="final",
             random_baseline=random_baseline,
             post_training_eval=post_training_eval,
+            training_diagnostics=training_diagnostics,
             peak_cuda_memory_mb=peak_cuda_memory_mb,
         ),
     )

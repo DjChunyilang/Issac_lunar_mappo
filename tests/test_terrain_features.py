@@ -12,10 +12,17 @@ from check_terrain_profile import sample_terrain_profile
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import make_debug_cfg
 from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
+    LOCAL_TERRAIN_GRID_CHANNELS,
+    LOCAL_TERRAIN_GRID_X,
+    LOCAL_TERRAIN_GRID_Y,
     TERRAIN_FEATURE_NAMES,
+    build_local_terrain_grid,
     build_global_terrain_state,
     build_terrain_features,
+    flatten_local_terrain_grid,
+    local_terrain_grid_world_points,
     query_height,
+    summarize_local_terrain_grid,
 )
 from terrain_viz import height_grid_for_extent
 
@@ -31,6 +38,11 @@ def test_flat_terrain_features_remain_zero() -> None:
     positions = torch.tensor([[[0.0, 0.0, 0.0], [1.0, -1.0, 0.0]]])
 
     local = build_terrain_features(positions, cfg.observation, cfg.terrain)
+    grid = build_local_terrain_grid(
+        positions,
+        torch.zeros(positions.shape[:-1]),
+        cfg.terrain,
+    )
     global_state = build_global_terrain_state(
         positions,
         cfg.state.terrain_state_dim,
@@ -39,9 +51,11 @@ def test_flat_terrain_features_remain_zero() -> None:
     )
 
     assert TERRAIN_FEATURE_NAMES == ("height", "slope_x", "slope_y", "roughness", "traversability")
-    assert local.shape == (1, 2, cfg.observation.terrain_dim)
+    assert local.shape == (1, 2, 5)
+    assert grid.shape == (1, 2, 5, 5, 2)
     assert global_state.shape == (1, cfg.state.terrain_state_dim)
     assert torch.allclose(local, torch.zeros_like(local))
+    assert torch.allclose(grid, torch.zeros_like(grid))
     assert torch.allclose(global_state, torch.zeros_like(global_state))
 
 
@@ -53,6 +67,11 @@ def test_procedural_terrain_features_are_finite_and_structured() -> None:
     positions = torch.tensor([[[0.25, 0.4, 0.0], [1.5, -0.75, 0.0], [-1.0, 2.0, 0.0]]])
 
     local = build_terrain_features(positions, cfg.observation, cfg.terrain)
+    grid = build_local_terrain_grid(
+        positions,
+        torch.zeros(positions.shape[:-1]),
+        cfg.terrain,
+    )
     height = query_height(positions[..., :2], cfg.terrain)
     global_state = build_global_terrain_state(
         positions,
@@ -61,14 +80,66 @@ def test_procedural_terrain_features_are_finite_and_structured() -> None:
         cfg.terrain,
     )
 
-    assert local.shape == (1, 3, cfg.observation.terrain_dim)
+    assert local.shape == (1, 3, 5)
+    assert grid.shape == (1, 3, 5, 5, 2)
     assert height.shape == (1, 3, 1)
     assert global_state.shape == (1, cfg.state.terrain_state_dim)
     assert torch.isfinite(local).all()
     assert torch.isfinite(height).all()
     assert torch.isfinite(global_state).all()
     assert not torch.allclose(local, torch.zeros_like(local))
+    assert torch.isfinite(grid).all()
+    assert torch.all((grid[..., 1] >= 0.0) & (grid[..., 1] <= 1.0))
     assert torch.all((local[..., 4] >= 0.0) & (local[..., 4] <= 1.0))
+
+
+def test_local_terrain_grid_rotates_from_body_to_world_frame() -> None:
+    positions = torch.tensor([[[10.0, 20.0, 0.0]]])
+    yaws = torch.tensor([[torch.pi / 2.0]])
+
+    world = local_terrain_grid_world_points(positions, yaws)
+
+    assert LOCAL_TERRAIN_GRID_X == (-0.4, 0.0, 0.4, 0.8, 1.2)
+    assert LOCAL_TERRAIN_GRID_Y == (-0.8, -0.4, 0.0, 0.4, 0.8)
+    assert LOCAL_TERRAIN_GRID_CHANNELS == ("relative_height", "risk")
+    assert world.shape == (1, 1, 5, 5, 2)
+    assert torch.allclose(world[0, 0, 4, 4], torch.tensor([9.2, 21.2]), atol=1.0e-6)
+
+
+def test_local_grid_distinguishes_same_underfoot_height_with_different_forward_terrain() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.terrain.type = "lunar_crater_proxy"
+    cfg.terrain.crater_count = 1
+    cfg.terrain.crater_min_radius = 1.0
+    cfg.terrain.crater_max_radius = 1.0
+    cfg.terrain.crater_depth_to_diameter = 0.08
+    cfg.terrain.crater_rim_height_to_diameter = 0.02
+    positions = torch.tensor([[[-1.2, 0.0, 0.0], [1.2, 0.0, 0.0]]])
+    yaws = torch.zeros(1, 2)
+
+    underfoot_height = query_height(positions[..., :2], cfg.terrain)
+    grid = build_local_terrain_grid(positions, yaws, cfg.terrain)
+
+    assert torch.allclose(underfoot_height[:, 0], underfoot_height[:, 1], atol=1.0e-6)
+    assert not torch.allclose(grid[:, 0], grid[:, 1])
+    assert grid[0, 0, ..., 0].amin() < grid[0, 1, ..., 0].amin()
+
+
+def test_local_grid_flatten_order_and_critic_summary() -> None:
+    grid = torch.zeros(1, 1, 5, 5, 2)
+    grid[0, 0, 0, 0] = torch.tensor([-0.3, 0.2])
+    grid[0, 0, 4, 4] = torch.tensor([0.5, 0.8])
+
+    flat = flatten_local_terrain_grid(grid)
+    summary = summarize_local_terrain_grid(grid)
+
+    assert flat.shape == (1, 1, 50)
+    assert torch.allclose(flat[0, 0, :2], torch.tensor([-0.3, 0.2]))
+    assert torch.allclose(flat[0, 0, -2:], torch.tensor([0.5, 0.8]))
+    assert torch.allclose(
+        summary,
+        torch.tensor([[(0.3 + 0.5) / 25.0, 0.5, 0.3, 1.0 / 25.0, 0.8]]),
+    )
 
 
 def test_lunar_crater_proxy_has_depressed_bowl_and_raised_rim() -> None:
@@ -151,6 +222,8 @@ def test_actor_and_critic_include_structured_terrain_without_shape_changes() -> 
 
     assert actor_obs.shape == (1, 4, cfg.actor_obs_dim)
     assert critic_state.shape == (1, cfg.critic_state_dim)
+    assert cfg.actor_obs_dim == 86
+    assert cfg.critic_state_dim == 54
     assert torch.isfinite(actor_obs).all()
     assert torch.isfinite(critic_state).all()
     assert not torch.allclose(terrain, torch.zeros_like(terrain))

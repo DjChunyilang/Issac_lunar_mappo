@@ -19,6 +19,7 @@ import torch.nn.functional as F
 import yaml
 
 from _common import cfg_from_experiment, ensure_output_dir, load_yaml
+from _skrl_metadata import observation_interface_metadata
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore
 
 
@@ -213,10 +214,15 @@ def main() -> None:
     log_dir = ensure_output_dir(exp.get("log_dir", "outputs/logs/exp_001_minimal"))
     checkpoint_dir = ensure_output_dir(exp.get("checkpoint_dir", "outputs/checkpoints"))
     log_path = log_dir / "train_metrics.json"
+    checkpoint_metadata = {
+        "training_semantics": "smoke_pg_baseline",
+        "backend": "smoke",
+        **observation_interface_metadata(cfg),
+    }
     with log_path.open("w", encoding="utf-8") as stream:
         json.dump(
             {
-                "metadata": {"training_semantics": "smoke_pg_baseline", "backend": "smoke"},
+                "metadata": checkpoint_metadata,
                 "skrl_version": skrl_version,
                 "metrics": metrics,
             },
@@ -231,7 +237,7 @@ def main() -> None:
             "critic": critic.state_dict(),
             "cfg": raw_cfg,
             "skrl_version": skrl_version,
-            "metadata": {"training_semantics": "smoke_pg_baseline", "backend": "smoke"},
+            "metadata": checkpoint_metadata,
         },
         checkpoint_path,
     )

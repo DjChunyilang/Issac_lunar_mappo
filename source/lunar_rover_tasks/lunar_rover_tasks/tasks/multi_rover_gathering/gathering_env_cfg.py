@@ -128,11 +128,11 @@ class SafetyCfg:
 @dataclass(slots=True)
 class ObservationCfg:
     communication_radius: float = 6.0
-    schema_version: str = "ego_v2_speed_angular"
+    schema_version: str = "ego_v3_local_terrain_grid"
     max_neighbors: int = 3
     ego_dim: int = 10
     neighbor_dim: int = 7
-    terrain_dim: int = 5
+    terrain_dim: int = 50
     aggregation_dim: int = 5
 
     @property

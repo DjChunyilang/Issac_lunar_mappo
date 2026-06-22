@@ -12,10 +12,16 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from _common import cfg_from_experiment  # noqa: E402
+from _skrl_metadata import observation_interface_metadata  # noqa: E402
 from evaluate_proxy_policy import evaluate_checkpoint  # noqa: E402
 from physx_jackal_common import (  # noqa: E402
     JackalSkidSteerController,
+    TrackingControllerCfg,
+    TrackingControllerState,
+    compute_chassis_servo_command,
+    compute_tracking_command,
     generate_reference_path,
+    nearest_path_index,
     tracking_acceptance,
 )
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore  # noqa: E402
@@ -149,7 +155,15 @@ def test_evaluate_proxy_policy_outputs_finite_ratio(tmp_path: Path) -> None:
     actor = Actor(cfg.actor_obs_dim)
     critic = Critic(cfg.critic_state_dim)
     checkpoint_path = tmp_path / "checkpoint.pt"
-    torch.save({"actor": actor.state_dict(), "critic": critic.state_dict(), "cfg": {}}, checkpoint_path)
+    torch.save(
+        {
+            "actor": actor.state_dict(),
+            "critic": critic.state_dict(),
+            "cfg": {},
+            "metadata": observation_interface_metadata(cfg),
+        },
+        checkpoint_path,
+    )
     result = evaluate_checkpoint(
         config_path,
         checkpoint_path,
@@ -246,18 +260,19 @@ def test_jackal_skid_steer_controller_maps_and_clips_wheels() -> None:
 
     straight = controller.forward([0.5, 0.0])
     turn = controller.forward([0.0, 1.0])
+    arc = controller.forward([0.4, -0.5])
     clipped = controller.forward([10.0, 10.0])
 
     assert straight.tolist() == [5.0, 5.0, 5.0, 5.0]
-    assert turn[0] < 0.0
-    assert turn[1] > 0.0
+    assert turn.tolist() == [-2.0, 2.0, -2.0, 2.0]
+    assert arc[0] > arc[1]
     assert turn[2] == turn[0]
     assert turn[3] == turn[1]
     assert float(abs(clipped).max()) <= 8.0
 
 
 def test_reference_paths_are_finite_and_monotonic() -> None:
-    for profile in ("straight", "circle", "sine"):
+    for profile in ("straight", "circle", "sine", "double_lane_change"):
         path = generate_reference_path(profile, samples=32)
         assert path.points_xy.shape == (32, 2)
         assert path.yaws.shape == (32,)
@@ -269,29 +284,280 @@ def test_reference_paths_are_finite_and_monotonic() -> None:
         assert path.length_m > 0.0
 
 
+def test_double_lane_change_path_shifts_out_and_back() -> None:
+    path = generate_reference_path("double_lane_change", samples=128)
+
+    assert abs(float(path.points_xy[0, 1])) < 1.0e-9
+    assert abs(float(path.points_xy[-1, 1])) < 1.0e-9
+    assert float(path.points_xy[:, 1].max()) > 0.45
+    assert path.length_m > 6.0
+
+
+def test_circular_path_progress_search_does_not_wrap_to_finish() -> None:
+    path = generate_reference_path("circle", samples=128)
+    near_start = path.points_xy[0] + torch.tensor([0.01, 0.0]).numpy()
+
+    limited_idx = nearest_path_index(path, near_start, start_index=0, end_index=32)
+
+    assert limited_idx < 32
+
+
+def test_stanley_keeps_terminal_crawl_before_endpoint() -> None:
+    path = generate_reference_path("straight", samples=128)
+    cfg = TrackingControllerCfg(
+        mode="stanley_pid",
+        target_speed_mps=0.25,
+        speed_kp=0.0,
+        yaw_rate_kp=0.0,
+        max_linear_accel_mps2=100.0,
+        max_angular_accel_radps2=100.0,
+    )
+
+    _, details = compute_tracking_command(
+        path,
+        path.points_xy[-5],
+        float(path.yaws[-5]),
+        cfg,
+        progress_index=len(path.points_xy) - 8,
+        controller_state=TrackingControllerState(),
+        dt=0.01,
+    )
+
+    assert 0.0 < details["reference_linear_mps"] <= cfg.target_speed_mps
+
+
+def test_stanley_controller_corrects_cross_track_direction() -> None:
+    path = generate_reference_path("straight", samples=64)
+    cfg = TrackingControllerCfg(
+        mode="stanley_pid",
+        heading_gain=0.0,
+        stanley_gain=1.0,
+        softening_speed_mps=0.2,
+        target_speed_mps=0.3,
+        max_angular_accel_radps2=100.0,
+    )
+
+    left_command, left_details = compute_tracking_command(path, [-2.0, 0.2], 0.0, cfg, dt=0.2)
+    right_command, right_details = compute_tracking_command(path, [-2.0, -0.2], 0.0, cfg, dt=0.2)
+
+    assert left_details["signed_cross_track_m"] > 0.0
+    assert left_command[1] < 0.0
+    assert right_details["signed_cross_track_m"] < 0.0
+    assert right_command[1] > 0.0
+
+
+def test_stanley_speed_pid_limits_acceleration_and_resets() -> None:
+    path = generate_reference_path("straight", samples=64)
+    cfg = TrackingControllerCfg(
+        mode="stanley_pid",
+        target_speed_mps=0.5,
+        speed_kp=0.5,
+        speed_ki=0.1,
+        max_linear_servo_correction_mps=0.05,
+        max_linear_accel_mps2=1.0,
+        max_angular_accel_radps2=100.0,
+    )
+    state = TrackingControllerState()
+
+    first, first_details = compute_tracking_command(
+        path,
+        [-2.6, 0.0],
+        0.0,
+        cfg,
+        controller_state=state,
+        dt=0.2,
+    )
+    second, _ = compute_tracking_command(
+        path,
+        [-2.6, 0.0],
+        0.0,
+        cfg,
+        controller_state=state,
+        dt=0.2,
+    )
+
+    assert 0.0 < first[0] <= 0.2
+    assert second[0] <= first[0] + 0.2 + 1.0e-9
+    assert first_details["measured_speed_mps"] == 0.0
+    assert abs(first_details["linear_servo_correction_mps"]) == 0.0
+    state.reset()
+    assert state.last_xy is None
+    assert state.last_yaw is None
+    assert state.previous_linear_mps == 0.0
+    assert state.measured_yaw_rate_radps == 0.0
+
+
+def test_chassis_servo_step_command_uses_measured_velocity_errors() -> None:
+    cfg = TrackingControllerCfg(
+        mode="stanley_pid",
+        speed_kp=0.5,
+        speed_ki=0.0,
+        yaw_rate_kp=0.5,
+        yaw_rate_ki=0.0,
+        max_linear_servo_correction_mps=1.0,
+        max_angular_servo_correction_radps=1.0,
+        max_linear_accel_mps2=100.0,
+        max_angular_accel_radps2=100.0,
+    )
+    state = TrackingControllerState()
+
+    first_command, first_details = compute_chassis_servo_command(
+        [0.4, 0.5],
+        [0.0, 0.0],
+        0.0,
+        cfg,
+        controller_state=state,
+        dt=0.1,
+    )
+    second_command, second_details = compute_chassis_servo_command(
+        [0.4, 0.5],
+        [0.0, 0.0],
+        0.0,
+        cfg,
+        controller_state=state,
+        dt=0.1,
+    )
+
+    assert not first_details["measurement_valid"]
+    assert first_command.tolist() == [0.4, 0.5]
+    assert second_details["measurement_valid"]
+    assert second_details["measured_speed_mps"] == 0.0
+    assert second_details["measured_yaw_rate_radps"] == 0.0
+    assert second_command[0] > second_details["reference_linear_mps"]
+    assert second_command[1] > second_details["reference_angular_radps"]
+
+
+def test_stanley_chassis_velocity_observation_projects_forward_speed_and_yaw_rate() -> None:
+    path = generate_reference_path("straight", samples=64)
+    cfg = TrackingControllerCfg(
+        mode="stanley_pid",
+        target_speed_mps=0.0,
+        heading_gain=0.0,
+        stanley_gain=0.0,
+        speed_kp=0.0,
+        yaw_rate_kp=0.0,
+        max_linear_accel_mps2=100.0,
+        max_angular_accel_radps2=100.0,
+    )
+    state = TrackingControllerState()
+
+    _, first = compute_tracking_command(path, [-2.6, 0.0], 0.0, cfg, controller_state=state, dt=0.2)
+    _, second = compute_tracking_command(path, [-2.4, 0.0], 0.2, cfg, controller_state=state, dt=0.2)
+
+    assert first["measured_speed_mps"] == 0.0
+    assert first["measured_yaw_rate_radps"] == 0.0
+    assert abs(second["measured_speed_mps"] - 0.9800665778) < 1.0e-6
+    assert abs(second["measured_yaw_rate_radps"] - 1.0) < 1.0e-6
+
+
+def test_stanley_chassis_velocity_observation_ignores_sideways_motion() -> None:
+    path = generate_reference_path("straight", samples=64)
+    cfg = TrackingControllerCfg(
+        mode="stanley_pid",
+        target_speed_mps=0.0,
+        heading_gain=0.0,
+        stanley_gain=0.0,
+        speed_kp=0.0,
+        yaw_rate_kp=0.0,
+        max_linear_accel_mps2=100.0,
+        max_angular_accel_radps2=100.0,
+    )
+    state = TrackingControllerState()
+
+    compute_tracking_command(path, [-2.6, 0.0], 0.0, cfg, controller_state=state, dt=0.2)
+    _, details = compute_tracking_command(path, [-2.6, 0.2], 0.0, cfg, controller_state=state, dt=0.2)
+
+    assert abs(details["measured_speed_mps"]) < 1.0e-9
+
+
+def test_yaw_rate_servo_increases_and_decreases_angular_command() -> None:
+    path = generate_reference_path("straight", samples=64)
+    cfg = TrackingControllerCfg(
+        mode="stanley_pid",
+        target_speed_mps=0.0,
+        heading_gain=1.0,
+        stanley_gain=0.0,
+        curvature_feedforward_gain=0.0,
+        speed_kp=0.0,
+        yaw_rate_kp=0.5,
+        yaw_rate_ki=0.0,
+        max_angular_servo_correction_radps=10.0,
+        max_linear_accel_mps2=100.0,
+        max_angular_accel_radps2=100.0,
+    )
+
+    slow_state = TrackingControllerState()
+    compute_tracking_command(path, [-2.6, 0.0], -0.4, cfg, controller_state=slow_state, dt=0.2)
+    slow_command, slow_details = compute_tracking_command(
+        path,
+        [-2.6, 0.0],
+        -0.4,
+        cfg,
+        controller_state=slow_state,
+        dt=0.2,
+    )
+    assert slow_details["measured_yaw_rate_radps"] == 0.0
+    assert slow_command[1] > slow_details["reference_angular_radps"]
+
+    fast_state = TrackingControllerState()
+    compute_tracking_command(path, [-2.6, 0.0], -0.6, cfg, controller_state=fast_state, dt=0.2)
+    fast_command, fast_details = compute_tracking_command(
+        path,
+        [-2.6, 0.0],
+        0.0,
+        cfg,
+        controller_state=fast_state,
+        dt=0.2,
+    )
+    assert fast_details["measured_yaw_rate_radps"] > fast_details["reference_angular_radps"]
+    assert fast_command[1] < fast_details["reference_angular_radps"]
+
+
+def test_yaw_rate_servo_correction_is_clipped() -> None:
+    path = generate_reference_path("straight", samples=64)
+    cfg = TrackingControllerCfg(
+        mode="stanley_pid",
+        target_speed_mps=0.0,
+        heading_gain=2.0,
+        stanley_gain=0.0,
+        speed_kp=0.0,
+        yaw_rate_kp=10.0,
+        yaw_rate_ki=1.0,
+        max_angular_servo_correction_radps=0.25,
+        max_linear_accel_mps2=100.0,
+        max_angular_accel_radps2=100.0,
+    )
+    state = TrackingControllerState()
+
+    compute_tracking_command(path, [-2.6, 0.0], -1.0, cfg, controller_state=state, dt=0.2)
+    _, details = compute_tracking_command(path, [-2.6, 0.0], -1.0, cfg, controller_state=state, dt=0.2)
+
+    assert abs(details["angular_servo_correction_radps"]) <= 0.25 + 1.0e-9
+
+
 def test_tracking_acceptance_uses_error_completion_and_tilt() -> None:
     passing = tracking_acceptance(
         {
-            "rmse_cross_track_m": 0.12,
-            "max_cross_track_m": 0.4,
-            "path_completion_ratio": 0.92,
+            "rmse_cross_track_m": 0.07,
+            "max_cross_track_m": 0.17,
+            "path_completion_ratio": 0.995,
             "max_tilt_deg": 3.0,
         },
         "flat",
     )
     high_error = tracking_acceptance(
         {
-            "rmse_cross_track_m": 0.30,
-            "max_cross_track_m": 0.4,
-            "path_completion_ratio": 0.92,
+            "rmse_cross_track_m": 0.09,
+            "max_cross_track_m": 0.17,
+            "path_completion_ratio": 0.995,
             "max_tilt_deg": 3.0,
         },
         "flat",
     )
     low_completion = tracking_acceptance(
         {
-            "rmse_cross_track_m": 0.12,
-            "max_cross_track_m": 0.4,
+            "rmse_cross_track_m": 0.07,
+            "max_cross_track_m": 0.17,
             "path_completion_ratio": 0.5,
             "max_tilt_deg": 3.0,
         },
@@ -301,6 +567,22 @@ def test_tracking_acceptance_uses_error_completion_and_tilt() -> None:
     assert passing["passed"]
     assert not high_error["passed"]
     assert not low_completion["passed"]
+
+
+def test_strong_terrain_acceptance_is_diagnostic_only() -> None:
+    result = tracking_acceptance(
+        {
+            "rmse_cross_track_m": 2.0,
+            "max_cross_track_m": 3.0,
+            "path_completion_ratio": 0.1,
+            "max_tilt_deg": 40.0,
+        },
+        "strong_lunar_crater",
+    )
+
+    assert result["diagnostic_only"]
+    assert result["passed"]
+    assert not result["diagnostic_passed"]
 
 
 def test_required_ppo_checkpoint_filter_rejects_bc_candidates() -> None:

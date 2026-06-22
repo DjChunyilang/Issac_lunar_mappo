@@ -12,6 +12,8 @@ from typing import Any
 
 import torch
 
+from _common import cfg_from_experiment
+from _skrl_metadata import validate_checkpoint_compatibility
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "configs" / "experiment" / "exp_cuda_contract.yaml"
@@ -22,6 +24,8 @@ REQUIRED_METADATA = {
     "centralized_critic",
     "shared_value",
     "observation_schema_version",
+    "actor_obs_dim",
+    "critic_state_dim",
     "device",
 }
 RUNS = (
@@ -49,6 +53,7 @@ def _load_checkpoint_metadata(path: Path) -> dict[str, Any]:
     missing = sorted(key for key in REQUIRED_METADATA if key not in metadata)
     if missing:
         raise RuntimeError(f"Checkpoint metadata missing required field(s): {', '.join(missing)}")
+    validate_checkpoint_compatibility(payload, cfg_from_experiment(CONFIG))
     return metadata
 
 
@@ -73,6 +78,9 @@ def _summarize_run(
     return {
         "run_name": run_name,
         "device": metadata.get("device"),
+        "observation_schema_version": metadata.get("observation_schema_version"),
+        "actor_obs_dim": metadata.get("actor_obs_dim"),
+        "critic_state_dim": metadata.get("critic_state_dim"),
         "timesteps": timesteps,
         "status": "ok",
         "checkpoint_path": str(checkpoint_path),
