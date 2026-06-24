@@ -86,6 +86,9 @@ def compute_terrain_reward(
     subgoal_terrain_features: torch.Tensor | None = None,
     terrain_speed_scale: torch.Tensor | None = None,
     height_delta: torch.Tensor | None = None,
+    path_terrain_risk_mean: torch.Tensor | None = None,
+    path_terrain_risk_max: torch.Tensor | None = None,
+    path_height_change_mean: torch.Tensor | None = None,
 ) -> torch.Tensor:
     coeff = cfg.reward_coefficients
     if terrain_features is None:
@@ -103,6 +106,12 @@ def compute_terrain_reward(
         cost = cost + coeff.terrain_speed_loss_cost * (1.0 - terrain_speed_scale).mean(dim=-1)
     if height_delta is not None and coeff.terrain_height_change_cost != 0.0:
         cost = cost + coeff.terrain_height_change_cost * height_delta.abs().mean(dim=-1)
+    if path_terrain_risk_mean is not None and coeff.path_terrain_mean_cost != 0.0:
+        cost = cost + coeff.path_terrain_mean_cost * path_terrain_risk_mean.mean(dim=-1)
+    if path_terrain_risk_max is not None and coeff.path_terrain_max_cost != 0.0:
+        cost = cost + coeff.path_terrain_max_cost * path_terrain_risk_max.amax(dim=-1)
+    if path_height_change_mean is not None and coeff.path_height_change_cost != 0.0:
+        cost = cost + coeff.path_height_change_cost * path_height_change_mean.mean(dim=-1)
     return -cost
 
 
@@ -159,6 +168,9 @@ def compute_reward(
     subgoal_terrain_features: torch.Tensor | None = None,
     terrain_speed_scale: torch.Tensor | None = None,
     height_delta: torch.Tensor | None = None,
+    path_terrain_risk_mean: torch.Tensor | None = None,
+    path_terrain_risk_max: torch.Tensor | None = None,
+    path_height_change_mean: torch.Tensor | None = None,
 ) -> tuple[RewardTerms, torch.Tensor]:
     weights = cfg.reward_weights
     gather = compute_gather_reward(prev_metrics, metrics, cfg)
@@ -177,6 +189,9 @@ def compute_reward(
         subgoal_terrain_features=subgoal_terrain_features,
         terrain_speed_scale=terrain_speed_scale,
         height_delta=height_delta,
+        path_terrain_risk_mean=path_terrain_risk_mean,
+        path_terrain_risk_max=path_terrain_risk_max,
+        path_height_change_mean=path_height_change_mean,
     )
     motion = compute_motion_reward(physical_action, cfg)
     consistency = compute_consistency_reward(physical_action, previous_physical_action, cfg)

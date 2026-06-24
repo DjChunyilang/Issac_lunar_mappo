@@ -112,6 +112,9 @@ class RewardCoefficientsCfg:
     subgoal_terrain_cost: float = 0.0
     terrain_speed_loss_cost: float = 0.0
     terrain_height_change_cost: float = 0.0
+    path_terrain_mean_cost: float = 0.0
+    path_terrain_max_cost: float = 0.0
+    path_height_change_cost: float = 0.0
     inter_agent_collision: float = 8.0
     near_distance: float = 0.5
     subgoal_turn: float = 0.05
@@ -129,6 +132,7 @@ class SuccessThresholdsCfg:
     dispersion: float = 0.30
     speed: float = 0.25
     hold_steps: int = 8
+    min_pairwise_distance: float = 0.0
 
 
 @dataclass(slots=True)

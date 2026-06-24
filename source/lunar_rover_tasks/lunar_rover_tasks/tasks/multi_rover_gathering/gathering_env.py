@@ -37,6 +37,7 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
     query_height,
     query_terrain_features,
     randomize_terrain_runtime,
+    sample_path_terrain_risk,
 )
 from lunar_rover_tasks.tasks.multi_rover_gathering.termination import (
     DoneFlags,
@@ -202,6 +203,17 @@ class MultiRoverGatheringCore:
             if self._terrain_dynamics_enabled
             else None
         )
+        path_terrain = (
+            sample_path_terrain_risk(
+                self.positions,
+                decoded.world_subgoal,
+                self.cfg.terrain,
+                self.terrain_runtime,
+                num_samples=5,
+            )
+            if self._terrain_dynamics_enabled
+            else None
+        )
         trajectory = generate_trajectory(
             self.positions,
             decoded.world_subgoal,
@@ -245,6 +257,15 @@ class MultiRoverGatheringCore:
             subgoal_terrain_features=subgoal_terrain_features,
             terrain_speed_scale=self.last_terrain_speed_scale,
             height_delta=self.last_height_delta,
+            path_terrain_risk_mean=(
+                path_terrain["risk_mean"] if path_terrain is not None else None
+            ),
+            path_terrain_risk_max=(
+                path_terrain["risk_max"] if path_terrain is not None else None
+            ),
+            path_height_change_mean=(
+                path_terrain["height_change_mean"] if path_terrain is not None else None
+            ),
         )
         self.prev_mean_oracle_distance = mean_oracle
         self.previous_physical_action = decoded.physical
@@ -254,6 +275,11 @@ class MultiRoverGatheringCore:
         terrain_features = self.last_terrain_features.clone()
         terrain_speed_scale = self.last_terrain_speed_scale.clone()
         height_delta = self.last_height_delta.clone()
+        path_terrain_snapshot = (
+            {key: value.clone() for key, value in path_terrain.items()}
+            if path_terrain is not None
+            else None
+        )
         terrain_runtime = self.terrain_runtime.clone()
         success_hold_count = self.success_hold_count.clone()
 
@@ -281,6 +307,7 @@ class MultiRoverGatheringCore:
                 "terrain_features": terrain_features,
                 "terrain_speed_scale": terrain_speed_scale,
                 "height_delta": height_delta,
+                "path_terrain": path_terrain_snapshot,
                 "terrain_runtime": terrain_runtime,
                 "oracle_point": self.oracle_point.clone(),
             },

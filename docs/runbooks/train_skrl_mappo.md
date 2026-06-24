@@ -336,6 +336,120 @@ outputs/runs/exp018_randomized_terrain_pure_rl/pure_rl_seed23_20m_randomized_ter
 
 当前结果：20M best checkpoint 的 final eval dmax ratio `0.1417`、success `0.9609` 已达标，但 collision `0.0352` 和 timeout `0.0088` 未过 strict gate。因此 exp018 是随机地形 candidate / 安全失败分析，不是 strict pass。
 
+## exp019 安全成功门控 + 路径级地形风险
+
+exp019 基于 exp018，新增 `success_thresholds.min_pairwise_distance=0.42` 和路径级 terrain risk。先运行专项测试：
+
+```bash
+.venv_isaaclab/bin/python -m pytest -q \
+  tests/test_termination.py \
+  tests/test_reward.py \
+  tests/test_terrain_features.py \
+  tests/test_exp019_training.py
+
+.venv_isaaclab/bin/python -m pytest -q -ra
+```
+
+CPU smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp019_randomized_terrain_safe_path_risk.yaml \
+  --device cpu \
+  --num-envs 8 \
+  --rollout-steps 4 \
+  --timesteps 8 \
+  --checkpoint-interval 4 \
+  --run-name smoke_cpu_exp019 \
+  --output-layout run
+```
+
+CUDA smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp019_randomized_terrain_safe_path_risk.yaml \
+  --device cuda \
+  --num-envs 256 \
+  --rollout-steps 32 \
+  --timesteps 64 \
+  --checkpoint-interval 32 \
+  --run-name smoke_cuda_exp019 \
+  --output-layout run
+```
+
+长训练使用用户级 transient service：
+
+```bash
+ROOT=$(pwd)
+mkdir -p outputs/runs/exp019_randomized_terrain_safe_path_risk/_launcher
+
+systemd-run --user --unit exp019-safe-path-risk-20m \
+  --same-dir \
+  --collect \
+  --property=StandardOutput=append:${ROOT}/outputs/runs/exp019_randomized_terrain_safe_path_risk/_launcher/train.log \
+  --property=StandardError=append:${ROOT}/outputs/runs/exp019_randomized_terrain_safe_path_risk/_launcher/train.log \
+  .venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+    --config configs/experiment/exp019_randomized_terrain_safe_path_risk.yaml \
+    --device cuda \
+    --timesteps 10240 \
+    --seed 23 \
+    --num-envs 2048 \
+    --output-layout run \
+    --run-name pure_rl_seed23_20m_safe_path_risk \
+    --rollout-steps 32 \
+    --checkpoint-interval 1024 \
+    --eval-num-envs 1024 \
+    --eval-steps 220 \
+    --eval-seed-offset 1000 \
+    --bc-updates 0 \
+    --selection-gate pure_rl_long
+```
+
+`systemd-run --property=StandardOutput=append:` 要使用绝对路径；相对路径可能被 systemd 拒绝。
+
+监控：
+
+```bash
+systemctl --user status exp019-safe-path-risk-20m.service --no-pager
+
+tail -n 1 \
+  outputs/runs/exp019_randomized_terrain_safe_path_risk/pure_rl_seed23_20m_safe_path_risk/metrics/train_metrics.jsonl | jq '{
+    timesteps,
+    success_rate,
+    safe_success_rate,
+    collision_done,
+    timeout_done,
+    final_nearest_neighbor_distance,
+    min_pairwise_ok_rate,
+    path_terrain_risk_mean,
+    path_terrain_risk_max
+  }'
+```
+
+训练后重点读取：
+
+```text
+outputs/runs/exp019_randomized_terrain_safe_path_risk/pure_rl_seed23_20m_safe_path_risk/metrics/final_eval_proxy.json
+outputs/runs/exp019_randomized_terrain_safe_path_risk/pure_rl_seed23_20m_safe_path_risk/metrics/strict_acceptance.json
+outputs/runs/exp019_randomized_terrain_safe_path_risk/pure_rl_seed23_20m_safe_path_risk/metrics/eval_metrics.json
+```
+
+本轮 exp019 seed23 20M 已完成，但 strict 未通过。关键结论：
+
+- 训练工程正常：`joint_update_count=320`、`optimizer_count=1`、无 NaN，terrain 输入权重更新。
+- `ppo_timestep_010240.pt` 有集合趋势：dmax ratio `0.1552`、success `0.6201`，但 collision `0.1279`、timeout `0.2627`。
+- 当前 `best.pt` 由 collision-aware 排序选中 `ppo_timestep_001024.pt`，5 seed 复验均值为 success `0.0143`、collision `0.0801`、timeout `0.9082`。
+- path risk telemetry 稳定非零，但软惩罚没有诱导出可靠绕障。
+
+复验/GIF 输出：
+
+```text
+outputs/runs/exp019_randomized_terrain_safe_path_risk/pure_rl_seed23_20m_safe_path_risk/metrics/multi_eval_20260624_115351/
+outputs/runs/exp019_randomized_terrain_safe_path_risk/pure_rl_seed23_20m_safe_path_risk/videos/multi_eval_20260624_115351/
+outputs/runs/exp019_randomized_terrain_safe_path_risk/_suite/metrics/
+```
+
 ## Checkpoint 统一评估
 
 训练完成后运行：

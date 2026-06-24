@@ -25,6 +25,7 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
     query_height,
     query_terrain_features,
     randomize_terrain_runtime,
+    sample_path_terrain_risk,
     summarize_local_terrain_grid,
 )
 from terrain_viz import height_grid_for_extent
@@ -227,6 +228,38 @@ def test_lunar_crater_proxy_has_depressed_bowl_and_raised_rim() -> None:
     assert rim_height > 0.0
     assert abs(float(outside_height)) < 0.01
     assert torch.all((local[..., 4] >= 0.0) & (local[..., 4] <= 1.0))
+
+
+def test_path_terrain_risk_is_zero_on_flat_terrain() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    start = torch.tensor([[[0.0, 0.0, 0.0]]])
+    target = torch.tensor([[[1.0, 0.0, 0.0]]])
+
+    risk = sample_path_terrain_risk(start, target, cfg.terrain, num_samples=5)
+
+    assert torch.allclose(risk["risk_mean"], torch.zeros(1, 1))
+    assert torch.allclose(risk["risk_max"], torch.zeros(1, 1))
+    assert torch.allclose(risk["height_change_mean"], torch.zeros(1, 1))
+
+
+def test_path_terrain_risk_distinguishes_crater_crossing_from_bypass() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.terrain.type = "lunar_crater_proxy"
+    cfg.terrain.amplitude = 0.0
+    cfg.terrain.crater_count = 1
+    cfg.terrain.crater_min_radius = 1.0
+    cfg.terrain.crater_max_radius = 1.0
+    cfg.terrain.crater_depth_to_diameter = 0.12
+    cfg.terrain.crater_rim_height_to_diameter = 0.025
+    cfg.terrain.traversability_slope_scale = 0.45
+    start = torch.tensor([[[-1.5, 0.0, 0.0], [-1.5, 1.8, 0.0]]])
+    target = torch.tensor([[[1.5, 0.0, 0.0], [1.5, 1.8, 0.0]]])
+
+    risk = sample_path_terrain_risk(start, target, cfg.terrain, num_samples=7)
+
+    assert risk["risk_mean"][0, 0] > risk["risk_mean"][0, 1]
+    assert risk["risk_max"][0, 0] > risk["risk_max"][0, 1]
+    assert risk["height_change_mean"][0, 0] > risk["height_change_mean"][0, 1]
 
 
 def test_height_grid_for_extent_samples_nonflat_terrain() -> None:

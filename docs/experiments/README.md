@@ -25,5 +25,6 @@ PhysX / Jackal tracking 结果是 high-fidelity validation，不等于 Isaac Lab
 | exp016 | 偏弱中档 lunar crater proxy | shared-joint MAPPO + local BC100 + comm12 | seed23 staged probe | 未通过 | shared-update 工程探针通过；BC-only 安全但过于保守，未进入 2M screen。 | [exp_016_shared_mappo_comm12.md](exp_016_shared_mappo_comm12.md) |
 | exp017 | 固定偏弱中档 lunar crater proxy | shared-joint MAPPO pure RL + comm12 | seed23 continuous 20M | 单 seed 通过 | final eval：dmax ratio 0.1318、success 0.9990、collision 0.00098、timeout 0；尚未证明多 seed 或随机地图泛化。 | [exp_017_shared_mappo_pure_rl_comm12.md](exp_017_shared_mappo_pure_rl_comm12.md) |
 | exp018 | 按 episode 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + comm12 + terrain-aware reward | seed23 continuous 20M | 未通过 | dmax 和 success 达标，但 final eval collision 0.0352、timeout 0.0088 未过 strict；作为随机地形 candidate / 安全失败分析保留。 | [exp_018_randomized_terrain_pure_rl.md](exp_018_randomized_terrain_pure_rl.md) |
+| exp019 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + 安全成功门控 + 路径级地形风险 | seed23 20M + 5 eval seeds | 未通过 | 工程链路完成；10240 checkpoint 有集合趋势但 collision 高，best checkpoint 安全但 success/timeout 很差；5 seed 均值 success 0.0143、collision 0.0801、timeout 0.9082。 | [exp_019_randomized_terrain_safe_path_risk.md](exp_019_randomized_terrain_safe_path_risk.md) |
 
 新增实验时，在这里加一行，并在本目录创建独立的 `exp_###_*.md` 文档。日期流水账放入 `docs/archive/`，不要继续堆到当前实验文档里。

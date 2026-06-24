@@ -9,6 +9,7 @@
 - `exp012` / `exp013` 作为 SKRL-MAPPO proxy CUDA 与 action-scale 诊断，不作为 strict success。
 - `exp017` 是固定地图、seed23、shared-joint MAPPO pure RL 的当前 schema strict pass 单 seed baseline。
 - `exp018` 是随机增强地形的 20M 单 seed candidate；dmax/success 达标，但 collision/timeout 未过 strict gate。
+- `exp019` 已完成随机增强地形安全/路径风险诊断；工程链路正常，但 strict 未通过，说明当前软路径风险惩罚和安全 gate 组合仍不足。
 - PhysX / Isaac Sim 作为 checkpoint 级高保真闭环评估和展示层，不进入当前主训练 loop。
 - 新训练和评估默认写入 `outputs/runs/<experiment>/<run>/`。
 
@@ -63,6 +64,25 @@ outputs/runs/exp018_randomized_terrain_pure_rl/pure_rl_seed23_20m_randomized_ter
 - 20M 后 dmax 和 success 达标。
 - collision `0.0352`、timeout `0.0088` 未通过 strict gate。
 - 下一轮优先改安全和路径级风险，而不是只放大 terrain penalty。
+
+已完成的安全/路径风险诊断是 `exp019`：
+
+```text
+outputs/runs/exp019_randomized_terrain_safe_path_risk/
+```
+
+结果：
+
+- success gate 已要求最近邻距离 `>= 0.42 m`，显式避开 `collision_distance=0.28 m`。
+- terrain reward 已新增当前点到子目标直线路径的 mean/max risk 和高度变化。
+- seed23 20M 训练、候选评估、5 轮独立 eval 和 GIF 均已完成。
+- 当前 best checkpoint 5 seed 均值：dmax ratio `0.4186`、success `0.0143`、collision `0.0801`、timeout `0.9082`，strict 未通过。
+- 10240 checkpoint 的 success 可到 `0.6201`，但 collision `0.1279`，说明后期学习出了集合趋势但安全不达标。
+
+下一轮优先方向：
+
+- 不再只放大 terrain weight；改为把 path risk 前移到子目标候选过滤、局部 planner score 或不可达路径约束。
+- 重新成套协调 success 半径、安全半径、episode 长度和 collision penalty，避免“会集合但撞车”和“安全但超时”的两极化。
 
 ## Checkpoint 复评计划
 

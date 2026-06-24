@@ -349,6 +349,52 @@ def query_terrain_features(
     return _base_features(xy, terrain_cfg, runtime)
 
 
+def sample_path_terrain_risk(
+    start_positions: torch.Tensor,
+    target_positions: torch.Tensor,
+    terrain_cfg: TerrainCfg | None = None,
+    runtime: TerrainRuntime | None = None,
+    *,
+    num_samples: int = 5,
+) -> dict[str, torch.Tensor]:
+    """Summarize terrain risk along straight paths from current rover pose to subgoals.
+
+    Returns per-rover tensors with shape ``[num_envs, num_agents]``:
+    ``risk_mean``, ``risk_max`` and ``height_change_mean``. Flat terrain returns zeros.
+    """
+    shape = start_positions.shape[:-1]
+    if _is_flat(terrain_cfg):
+        zeros = torch.zeros(shape, dtype=start_positions.dtype, device=start_positions.device)
+        return {
+            "risk_mean": zeros,
+            "risk_max": zeros,
+            "height_change_mean": zeros,
+        }
+    if num_samples <= 0:
+        raise ValueError("num_samples must be positive")
+    fractions = torch.linspace(
+        1.0 / float(num_samples),
+        1.0,
+        num_samples,
+        dtype=start_positions.dtype,
+        device=start_positions.device,
+    )
+    start_xy = start_positions[..., :2]
+    target_xy = target_positions[..., :2]
+    sample_xy = start_xy[..., None, :] + (
+        target_xy - start_xy
+    )[..., None, :] * fractions.view(*([1] * (start_xy.ndim - 1)), num_samples, 1)
+    features = query_terrain_features(sample_xy, terrain_cfg, runtime)
+    risk = (1.0 - features[..., 4]).clamp(0.0, 1.0)
+    start_height = query_height(start_xy, terrain_cfg, runtime)
+    height_change = (features[..., 0] - start_height).abs()
+    return {
+        "risk_mean": risk.mean(dim=-1),
+        "risk_max": risk.amax(dim=-1),
+        "height_change_mean": height_change.mean(dim=-1),
+    }
+
+
 def local_terrain_grid_offsets(
     *,
     device: torch.device | str,

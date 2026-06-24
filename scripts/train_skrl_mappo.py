@@ -934,6 +934,21 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
         done = info.get("done")
         if done is not None:
             _add_done_counts(telemetry_state["done_counts"], done)
+        path_terrain = info.get("path_terrain")
+        if path_terrain is not None:
+            path_metrics = {
+                "path_terrain_risk_mean": float(
+                    path_terrain["risk_mean"].detach().float().mean().cpu()
+                ),
+                "path_terrain_risk_max": float(
+                    path_terrain["risk_max"].detach().float().amax().cpu()
+                ),
+                "path_height_change_mean": float(
+                    path_terrain["height_change_mean"].detach().float().mean().cpu()
+                ),
+            }
+            telemetry_state["path_terrain"] = path_metrics
+            _accumulate_numeric_metrics(telemetry_state, "path_terrain", path_metrics)
         writer = telemetry_state.get("writer")
         interval = int(telemetry_state.get("interval", 0))
         if writer is not None and interval > 0 and telemetry_state["step"] % interval == 0:
@@ -964,6 +979,7 @@ def build_training_telemetry(
     pairwise = metrics.mean_pairwise_distance
     oracle = mean_oracle_distance
     threshold = float(env.cfg.success_thresholds.dmax)
+    nearest = metrics.nearest_neighbor_distance.amin(dim=-1)
     telemetry = {
         "run_id": run_id,
         "phase": phase,
@@ -974,8 +990,11 @@ def build_training_telemetry(
         "mean_reward": telemetry_state.get("mean_reward"),
         "episode_length": float(env.core.step_count.float().mean().detach().cpu()),
         "mean_pairwise_distance": float(metrics.mean_pairwise_distance.mean().detach().cpu()),
+        "final_nearest_neighbor_distance": float(nearest.mean().detach().cpu()),
         "mean_oracle_distance": float(mean_oracle_distance.mean().detach().cpu()),
         "success_rate": float(success_gates.instant_success.float().mean().detach().cpu()),
+        "safe_success_rate": float(success_gates.instant_success.float().mean().detach().cpu()),
+        "min_pairwise_ok_rate": float(success_gates.min_pairwise_ok.float().mean().detach().cpu()),
         "nan_flag": False,
         "checkpoint_path": str(checkpoint_path),
         "training_semantics": training_semantics,
@@ -987,6 +1006,7 @@ def build_training_telemetry(
             "dispersion": float(env.cfg.success_thresholds.dispersion),
             "speed": float(env.cfg.success_thresholds.speed),
             "hold_steps": int(env.cfg.success_thresholds.hold_steps),
+            "min_pairwise_distance": float(env.cfg.success_thresholds.min_pairwise_distance),
         },
         "peak_cuda_memory_mb": peak_cuda_memory_mb,
     }
@@ -995,8 +1015,11 @@ def build_training_telemetry(
     reward_metrics = _finalize_reward_summary(reward_metrics)
     action_metrics = dict(telemetry_state.get("action", {}))
     action_metrics.update(telemetry_state.get("action_window", {}))
+    path_metrics = dict(telemetry_state.get("path_terrain", {}))
+    path_metrics.update(telemetry_state.get("path_terrain_window", {}))
     telemetry.update(reward_metrics)
     telemetry.update(action_metrics)
+    telemetry.update(path_metrics)
     telemetry.update(telemetry_state.get("done_counts", _empty_done_counts()))
     telemetry.update(_stats("final_pairwise_distance", pairwise))
     telemetry.update(_stats("final_oracle_distance", oracle))
@@ -1582,6 +1605,7 @@ def main() -> None:
     def write_interval_telemetry(step: int) -> None:
         _snapshot_numeric_metrics(telemetry_state, "action", "action_window")
         _snapshot_numeric_metrics(telemetry_state, "reward", "reward_window")
+        _snapshot_numeric_metrics(telemetry_state, "path_terrain", "path_terrain_window")
         append_metrics_jsonl(
             telemetry_dir,
             build_training_telemetry(
@@ -1725,6 +1749,7 @@ def main() -> None:
     }
     _snapshot_numeric_metrics(telemetry_state, "action", "action_window")
     _snapshot_numeric_metrics(telemetry_state, "reward", "reward_window")
+    _snapshot_numeric_metrics(telemetry_state, "path_terrain", "path_terrain_window")
 
     candidate_evaluations: list[dict] = []
     best_candidate = candidate_paths[-1]

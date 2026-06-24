@@ -103,6 +103,23 @@ critic_state_dim
 
 当前 rover 是 proxy unicycle 状态模型。只有在 rover 资产和控制接口明确后，才应替换为真实 Isaac Sim articulation。
 
+## Success / safety gate
+
+标准成功 gate 为：
+
+```text
+dmax <= success_thresholds.dmax
+dispersion <= success_thresholds.dispersion
+all rover speeds <= success_thresholds.speed
+success_hold_count >= success_thresholds.hold_steps
+```
+
+`success_thresholds.min_pairwise_distance` 是可选安全成功门控，默认 `0.0`，保持旧实验兼容。设置为正数时，instant success 还要求全队最近邻距离不小于该值。使用该字段的配置必须满足：
+
+```text
+safety.collision_distance < success_thresholds.min_pairwise_distance < success_thresholds.dmax
+```
+
 ## Terrain reward
 
 terrain reward 可组合以下代价：
@@ -113,6 +130,9 @@ underfoot non-traversability
 decoded subgoal risk
 actual terrain speed loss
 absolute terrain height change
+straight path mean terrain risk
+straight path max terrain risk
+straight path mean height change
 ```
 
-候选子目标风险由当前 action 解码后的世界坐标落点计算；速度损失使用本步实际 terrain speed scale；高度变化使用积分前后地形高度差。新增三项在默认配置中系数均为 0，因此不会改变 exp017 及更早实验的历史语义。
+候选子目标风险由当前 action 解码后的世界坐标落点计算；速度损失使用本步实际 terrain speed scale；高度变化使用积分前后地形高度差。路径级风险沿 rover 当前点到 decoded subgoal 的直线采样 5 个点，统计 mean risk、max risk 和 mean absolute height change。新增项在默认配置中系数均为 0，因此不会改变 exp018 及更早实验的历史语义。

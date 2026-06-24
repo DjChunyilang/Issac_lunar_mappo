@@ -73,6 +73,7 @@ def evaluate_checkpoint(
     final_dmax = initial_dmax.clone()
     final_dispersion = initial_dispersion.clone()
     final_mean_speed = env.metrics.mean_speed.detach().clone()
+    final_nearest = env.metrics.nearest_neighbor_distance.amin(dim=-1).detach().clone()
     final_success_hold_count = env.success_hold_count.detach().clone()
     max_success_hold_count = env.success_hold_count.detach().clone()
     final_terrain_speed_scale = torch.ones(env.num_envs, device=env.device)
@@ -100,8 +101,14 @@ def evaluate_checkpoint(
     dmax_ok_sum = torch.tensor(0.0, device=env.device)
     dispersion_ok_sum = torch.tensor(0.0, device=env.device)
     speed_ok_sum = torch.tensor(0.0, device=env.device)
+    min_pairwise_ok_sum = torch.tensor(0.0, device=env.device)
     instant_success_sum = torch.tensor(0.0, device=env.device)
     gate_sample_count = torch.tensor(0.0, device=env.device)
+    path_risk_mean_sum = torch.tensor(0.0, device=env.device)
+    path_risk_count = torch.tensor(0.0, device=env.device)
+    path_risk_max = torch.tensor(0.0, device=env.device)
+    path_height_change_sum = torch.tensor(0.0, device=env.device)
+    path_height_change_count = torch.tensor(0.0, device=env.device)
 
     for step_id in range(steps):
         active_before = active.clone()
@@ -115,6 +122,8 @@ def evaluate_checkpoint(
         final_dmax = torch.where(active_before, metrics.dmax, final_dmax)
         final_dispersion = torch.where(active_before, metrics.dispersion, final_dispersion)
         final_mean_speed = torch.where(active_before, metrics.mean_speed, final_mean_speed)
+        nearest = metrics.nearest_neighbor_distance.amin(dim=-1)
+        final_nearest = torch.where(active_before, nearest, final_nearest)
         success_hold_count = step_output.info["success_hold_count"]
         final_success_hold_count = torch.where(active_before, success_hold_count, final_success_hold_count)
         max_success_hold_count = torch.maximum(
@@ -130,6 +139,7 @@ def evaluate_checkpoint(
         dmax_ok_sum = dmax_ok_sum + success_gates.dmax_ok[active_before].float().sum()
         dispersion_ok_sum = dispersion_ok_sum + success_gates.dispersion_ok[active_before].float().sum()
         speed_ok_sum = speed_ok_sum + success_gates.speed_ok[active_before].float().sum()
+        min_pairwise_ok_sum = min_pairwise_ok_sum + success_gates.min_pairwise_ok[active_before].float().sum()
         instant_success_sum = instant_success_sum + success_gates.instant_success[active_before].float().sum()
 
         first_done = done.done & active_before
@@ -143,7 +153,6 @@ def evaluate_checkpoint(
         )
         collision_seen = collision_seen | (done.collision & active_before)
         timeout_seen = timeout_seen | (done.timeout & active_before)
-        nearest = metrics.nearest_neighbor_distance.amin(dim=-1)
         active_nearest = nearest[active_before]
         if active_nearest.numel() > 0:
             nearest_sum = nearest_sum + active_nearest.sum()
@@ -179,6 +188,23 @@ def evaluate_checkpoint(
                     float(active_speed_scale.numel()),
                     device=env.device,
                 )
+        path_terrain = step_output.info.get("path_terrain")
+        if path_terrain is not None:
+            active_path_mean = path_terrain["risk_mean"][active_before].reshape(-1)
+            active_path_max = path_terrain["risk_max"][active_before].reshape(-1)
+            active_path_height = path_terrain["height_change_mean"][active_before].reshape(-1)
+            if active_path_mean.numel() > 0:
+                path_risk_mean_sum = path_risk_mean_sum + active_path_mean.sum()
+                path_risk_count = path_risk_count + torch.tensor(
+                    float(active_path_mean.numel()),
+                    device=env.device,
+                )
+                path_risk_max = torch.maximum(path_risk_max, active_path_max.amax())
+                path_height_change_sum = path_height_change_sum + active_path_height.sum()
+                path_height_change_count = path_height_change_count + torch.tensor(
+                    float(active_path_height.numel()),
+                    device=env.device,
+                )
         active = active & ~done.done
         if not active.any():
             break
@@ -203,6 +229,11 @@ def evaluate_checkpoint(
         max_success_hold_count.clamp(max=env.cfg.success_thresholds.hold_steps).detach().cpu(),
         minlength=env.cfg.success_thresholds.hold_steps + 1,
     )
+    final_safe = (
+        final_nearest >= float(env.cfg.success_thresholds.min_pairwise_distance)
+        if env.cfg.success_thresholds.min_pairwise_distance > 0.0
+        else torch.ones_like(success_seen, dtype=torch.bool)
+    )
     result = {
         "status": "ok",
         "backend": backend,
@@ -218,8 +249,10 @@ def evaluate_checkpoint(
         "initial_dispersion": float(initial_dispersion.mean().detach().cpu()),
         "final_dispersion": float(final_dispersion.mean().detach().cpu()),
         "final_mean_speed": float(final_mean_speed.mean().detach().cpu()),
+        "final_nearest_neighbor_distance": float(final_nearest.mean().detach().cpu()),
         "mean_reward": float((reward_sum / reward_count.clamp_min(1.0)).detach().cpu()),
         "success_rate": float(success_seen.float().mean().detach().cpu()),
+        "safe_success_rate": float((success_seen & final_safe).float().mean().detach().cpu()),
         "collision_rate": float(collision_seen.float().mean().detach().cpu()),
         "timeout_rate": float(timeout_seen.float().mean().detach().cpu()),
         "finished_rate": float((~active).float().mean().detach().cpu()),
@@ -248,7 +281,13 @@ def evaluate_checkpoint(
         "dmax_ok_rate": float((dmax_ok_sum / gate_sample_count.clamp_min(1.0)).detach().cpu()),
         "dispersion_ok_rate": float((dispersion_ok_sum / gate_sample_count.clamp_min(1.0)).detach().cpu()),
         "speed_ok_rate": float((speed_ok_sum / gate_sample_count.clamp_min(1.0)).detach().cpu()),
+        "min_pairwise_ok_rate": float((min_pairwise_ok_sum / gate_sample_count.clamp_min(1.0)).detach().cpu()),
         "instant_success_rate": float((instant_success_sum / gate_sample_count.clamp_min(1.0)).detach().cpu()),
+        "path_terrain_risk_mean": float((path_risk_mean_sum / path_risk_count.clamp_min(1.0)).detach().cpu()),
+        "path_terrain_risk_max": float(path_risk_max.detach().cpu()),
+        "path_height_change_mean": float(
+            (path_height_change_sum / path_height_change_count.clamp_min(1.0)).detach().cpu()
+        ),
         "max_success_hold_count_mean": float(max_success_hold_count.float().mean().detach().cpu()),
         "final_success_hold_count_mean": float(final_success_hold_count.float().mean().detach().cpu()),
         "hold_count_histogram": {

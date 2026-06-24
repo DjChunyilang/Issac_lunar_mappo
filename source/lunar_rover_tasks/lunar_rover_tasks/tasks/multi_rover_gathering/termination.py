@@ -30,6 +30,7 @@ class SuccessGateDiagnostics:
     dmax_ok: torch.Tensor
     dispersion_ok: torch.Tensor
     speed_ok: torch.Tensor
+    min_pairwise_ok: torch.Tensor
     instant_success: torch.Tensor
 
 
@@ -41,11 +42,17 @@ def compute_success_gates(
     dmax_ok = metrics.dmax <= thresholds.dmax
     dispersion_ok = metrics.dispersion <= thresholds.dispersion
     speed_ok = (torch.linalg.norm(velocities_xy, dim=-1) <= thresholds.speed).all(dim=-1)
-    instant_success = dmax_ok & dispersion_ok & speed_ok
+    if thresholds.min_pairwise_distance > 0.0:
+        min_pairwise = metrics.nearest_neighbor_distance.amin(dim=-1)
+        min_pairwise_ok = min_pairwise >= thresholds.min_pairwise_distance
+    else:
+        min_pairwise_ok = torch.ones_like(dmax_ok, dtype=torch.bool)
+    instant_success = dmax_ok & dispersion_ok & speed_ok & min_pairwise_ok
     return SuccessGateDiagnostics(
         dmax_ok=dmax_ok,
         dispersion_ok=dispersion_ok,
         speed_ok=speed_ok,
+        min_pairwise_ok=min_pairwise_ok,
         instant_success=instant_success,
     )
 

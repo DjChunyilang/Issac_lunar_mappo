@@ -178,6 +178,16 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     _apply_observation_values(cfg, observation)
     _apply_values(cfg.safety, safety, "safety")
     _apply_values(cfg.success_thresholds, success_thresholds, "success_thresholds")
+    if cfg.success_thresholds.min_pairwise_distance > 0.0:
+        if not (
+            cfg.safety.collision_distance
+            < cfg.success_thresholds.min_pairwise_distance
+            < cfg.success_thresholds.dmax
+        ):
+            raise ValueError(
+                "success_thresholds.min_pairwise_distance must satisfy "
+                "safety.collision_distance < min_pairwise_distance < success_thresholds.dmax."
+            )
     return cfg
 
 

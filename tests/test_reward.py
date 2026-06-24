@@ -150,6 +150,29 @@ def test_terrain_reward_penalizes_risky_subgoal_speed_loss_and_height_change() -
     assert reward[1] < reward[0]
 
 
+def test_terrain_reward_penalizes_path_risk_and_path_height_change() -> None:
+    cfg = MultiRoverGatheringEnvCfg()
+    cfg.reward_coefficients.path_terrain_mean_cost = 0.6
+    cfg.reward_coefficients.path_terrain_max_cost = 0.4
+    cfg.reward_coefficients.path_height_change_cost = 0.2
+    positions = torch.zeros(2, 4, 3)
+    underfoot = torch.tensor([[[0.0, 0.0, 0.0, 0.1, 0.9]] * 4] * 2)
+    path_risk_mean = torch.tensor([[0.05] * 4, [0.60] * 4])
+    path_risk_max = torch.tensor([[0.10] * 4, [0.90] * 4])
+    path_height = torch.tensor([[0.01] * 4, [0.30] * 4])
+
+    reward = compute_terrain_reward(
+        underfoot,
+        cfg,
+        positions,
+        path_terrain_risk_mean=path_risk_mean,
+        path_terrain_risk_max=path_risk_max,
+        path_height_change_mean=path_height,
+    )
+
+    assert reward[1] < reward[0]
+
+
 def test_reward_config_keys_match_consumed_reward_terms() -> None:
     weight_keys = {field.name for field in fields(RewardWeightsCfg)}
     term_keys = {field.name for field in fields(RewardTerms)} - {"success_hold", "total"}
@@ -166,6 +189,9 @@ def test_reward_config_keys_match_consumed_reward_terms() -> None:
         "near_distance",
         "oracle_mean_distance_progress",
         "path_length",
+        "path_height_change_cost",
+        "path_terrain_max_cost",
+        "path_terrain_mean_cost",
         "slope_cost",
         "subgoal_stagnation",
         "subgoal_terrain_cost",
