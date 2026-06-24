@@ -82,16 +82,28 @@ def compute_terrain_reward(
     terrain_features: torch.Tensor | None,
     cfg: MultiRoverGatheringEnvCfg,
     positions: torch.Tensor,
+    *,
+    subgoal_terrain_features: torch.Tensor | None = None,
+    terrain_speed_scale: torch.Tensor | None = None,
+    height_delta: torch.Tensor | None = None,
 ) -> torch.Tensor:
     coeff = cfg.reward_coefficients
-    if terrain_features is None or (coeff.slope_cost == 0.0 and coeff.terrain_cost == 0.0):
+    if terrain_features is None:
         return torch.zeros(positions.shape[0], dtype=positions.dtype, device=positions.device)
     roughness = terrain_features[..., 3]
     traversability = terrain_features[..., 4]
-    return -(
+    cost = (
         coeff.slope_cost * roughness
         + coeff.terrain_cost * (1.0 - traversability)
     ).mean(dim=-1)
+    if subgoal_terrain_features is not None and coeff.subgoal_terrain_cost != 0.0:
+        subgoal_risk = 1.0 - subgoal_terrain_features[..., 4]
+        cost = cost + coeff.subgoal_terrain_cost * subgoal_risk.mean(dim=-1)
+    if terrain_speed_scale is not None and coeff.terrain_speed_loss_cost != 0.0:
+        cost = cost + coeff.terrain_speed_loss_cost * (1.0 - terrain_speed_scale).mean(dim=-1)
+    if height_delta is not None and coeff.terrain_height_change_cost != 0.0:
+        cost = cost + coeff.terrain_height_change_cost * height_delta.abs().mean(dim=-1)
+    return -cost
 
 
 def compute_motion_reward(physical_action: torch.Tensor, cfg: MultiRoverGatheringEnvCfg) -> torch.Tensor:
@@ -127,6 +139,7 @@ def compute_terminal_reward(done: DoneFlags, cfg: MultiRoverGatheringEnvCfg) -> 
     reward = torch.where(done.success, reward + coeff.success_bonus, reward)
     fail = done.collision | done.out_of_bounds
     reward = torch.where(fail, reward - coeff.failure_penalty, reward)
+    reward = torch.where(done.truncated, reward - coeff.timeout_penalty, reward)
     return reward
 
 
@@ -142,6 +155,10 @@ def compute_reward(
     success_hold_count: torch.Tensor,
     terrain_features: torch.Tensor | None,
     cfg: MultiRoverGatheringEnvCfg,
+    *,
+    subgoal_terrain_features: torch.Tensor | None = None,
+    terrain_speed_scale: torch.Tensor | None = None,
+    height_delta: torch.Tensor | None = None,
 ) -> tuple[RewardTerms, torch.Tensor]:
     weights = cfg.reward_weights
     gather = compute_gather_reward(prev_metrics, metrics, cfg)
@@ -153,7 +170,14 @@ def compute_reward(
     )
     energy = compute_energy_reward(physical_action, cfg)
     safety = compute_safety_reward(positions, done, cfg)
-    terrain = compute_terrain_reward(terrain_features, cfg, positions)
+    terrain = compute_terrain_reward(
+        terrain_features,
+        cfg,
+        positions,
+        subgoal_terrain_features=subgoal_terrain_features,
+        terrain_speed_scale=terrain_speed_scale,
+        height_delta=height_delta,
+    )
     motion = compute_motion_reward(physical_action, cfg)
     consistency = compute_consistency_reward(physical_action, previous_physical_action, cfg)
     success_hold = compute_success_hold_reward(success_hold_count, cfg)

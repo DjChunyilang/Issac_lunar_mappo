@@ -43,6 +43,25 @@ flatten_order: x -> y -> channel
 - 网格随 rover yaw 旋转到世界坐标采样，因此策略看到的是稳定的车体系局部地形。
 - 当前网格布局固定在代码中，不开放 YAML 修改。
 
+## 地形 episode 随机化
+
+`terrain.randomize_per_reset=true` 时，每个并行环境在 episode reset 时独立重采样：
+
+```text
+translation_xy
+yaw
+phase
+amplitude_scale
+crater_radius_scale
+crater_depth_scale
+```
+
+- 地图在同一个 episode 内保持固定，不在每个 control step 跳变。
+- 只 reset 部分环境时，仅更新对应环境的 terrain runtime。
+- 地形高度、traversability、速度缩放、Actor 局部网格、Critic 摘要和可视化共用同一份 runtime。
+- 历史配置默认 `randomize_per_reset=false`，继续使用固定地图。
+- 随机化不改变 observation schema，Actor / Critic 维度仍为 `86 / 54`。
+
 ## Critic 状态
 
 形状：`(num_envs, state_dim)`。
@@ -83,3 +102,17 @@ critic_state_dim
 ## 第一阶段动力学
 
 当前 rover 是 proxy unicycle 状态模型。只有在 rover 资产和控制接口明确后，才应替换为真实 Isaac Sim articulation。
+
+## Terrain reward
+
+terrain reward 可组合以下代价：
+
+```text
+underfoot roughness
+underfoot non-traversability
+decoded subgoal risk
+actual terrain speed loss
+absolute terrain height change
+```
+
+候选子目标风险由当前 action 解码后的世界坐标落点计算；速度损失使用本步实际 terrain speed scale；高度变化使用积分前后地形高度差。新增三项在默认配置中系数均为 0，因此不会改变 exp017 及更早实验的历史语义。

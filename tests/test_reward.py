@@ -74,6 +74,25 @@ def test_terminal_reward_uses_configured_bonus_and_penalty() -> None:
     assert torch.allclose(reward, torch.tensor([3.5, -4.5]))
 
 
+def test_timeout_penalty_only_applies_to_pure_timeout_truncation() -> None:
+    cfg = MultiRoverGatheringEnvCfg()
+    cfg.reward_coefficients.failure_penalty = 4.5
+    cfg.reward_coefficients.timeout_penalty = 2.0
+    flags = DoneFlags(
+        success=torch.tensor([False, False, False]),
+        collision=torch.tensor([False, True, False]),
+        out_of_bounds=torch.tensor([False, False, True]),
+        timeout=torch.tensor([True, True, True]),
+        terminated=torch.tensor([False, True, True]),
+        truncated=torch.tensor([True, False, False]),
+        done=torch.tensor([True, True, True]),
+    )
+
+    reward = compute_terminal_reward(flags, cfg)
+
+    assert torch.allclose(reward, torch.tensor([-2.0, -4.5, -4.5]))
+
+
 def test_default_terrain_reward_is_zero_even_with_rough_features() -> None:
     cfg = MultiRoverGatheringEnvCfg()
     positions = torch.zeros(1, 4, 3)
@@ -103,6 +122,34 @@ def test_positive_terrain_coefficients_penalize_rough_low_traversability_feature
     assert reward[1] < reward[0]
 
 
+def test_terrain_reward_penalizes_risky_subgoal_speed_loss_and_height_change() -> None:
+    cfg = MultiRoverGatheringEnvCfg()
+    cfg.reward_coefficients.subgoal_terrain_cost = 0.5
+    cfg.reward_coefficients.terrain_speed_loss_cost = 0.75
+    cfg.reward_coefficients.terrain_height_change_cost = 1.25
+    positions = torch.zeros(2, 4, 3)
+    underfoot = torch.tensor([[[0.0, 0.0, 0.0, 0.1, 0.9]] * 4] * 2)
+    subgoal = torch.tensor(
+        [
+            [[0.0, 0.0, 0.0, 0.1, 0.95]] * 4,
+            [[0.0, 0.0, 0.0, 0.8, 0.20]] * 4,
+        ]
+    )
+    speed_scale = torch.tensor([[0.95] * 4, [0.30] * 4])
+    height_delta = torch.tensor([[0.01] * 4, [0.20] * 4])
+
+    reward = compute_terrain_reward(
+        underfoot,
+        cfg,
+        positions,
+        subgoal_terrain_features=subgoal,
+        terrain_speed_scale=speed_scale,
+        height_delta=height_delta,
+    )
+
+    assert reward[1] < reward[0]
+
+
 def test_reward_config_keys_match_consumed_reward_terms() -> None:
     weight_keys = {field.name for field in fields(RewardWeightsCfg)}
     term_keys = {field.name for field in fields(RewardTerms)} - {"success_hold", "total"}
@@ -121,10 +168,14 @@ def test_reward_config_keys_match_consumed_reward_terms() -> None:
         "path_length",
         "slope_cost",
         "subgoal_stagnation",
+        "subgoal_terrain_cost",
         "subgoal_turn",
         "success_bonus",
         "success_hold_step",
+        "timeout_penalty",
         "terrain_cost",
+        "terrain_height_change_cost",
+        "terrain_speed_loss_cost",
         "turn_cost",
     }
     assert {field.name for field in fields(RewardCoefficientsCfg)} == consumed_coefficients

@@ -51,3 +51,27 @@ CPU 只用于 smoke test，或 CUDA 不可用时的链路验证。
 - 不覆盖已经失败的 run；失败结果是诊断资料。
 - 独立评估没有通过 strict gate 时，不报告成功。
 - 强地形实验中，除非实验目标明确要求，否则不要为了通过而降低地形强度。
+
+## exp015 两阶段 SKRL 训练
+
+当前 GPU 有其他任务时，使用等待 PID 的单条排队命令，不终止或抢占现有进程：
+
+```bash
+mkdir -p outputs/runs/exp015_skrl_medium_soft_terrain_grid/_launcher
+
+nohup .venv_isaaclab/bin/python scripts/run_exp015_skrl_training.py \
+  --config configs/experiment/exp015_skrl_weak_warmup_medium_soft.yaml \
+  --device cuda \
+  --wait-pid 225869 \
+  --screen-timesteps 1024 \
+  --formal-timesteps 4096 \
+  > outputs/runs/exp015_skrl_medium_soft_terrain_grid/_launcher/train.log 2>&1 &
+```
+
+监控：
+
+```bash
+tail -f outputs/runs/exp015_skrl_medium_soft_terrain_grid/_launcher/train.log
+```
+
+runner 会先运行 `screen_seed23_2m`。只有趋势门槛、有限值、参数更新、terrain 权重更新和动作非退化检查全部通过，才会以全新随机初始化执行 `formal_seed23_8m`。

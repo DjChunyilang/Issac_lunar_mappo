@@ -33,8 +33,10 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.state import build_critic_sta
 from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
     build_local_terrain_grid,
     is_flat_terrain,
+    make_terrain_runtime,
     query_height,
     query_terrain_features,
+    randomize_terrain_runtime,
 )
 from lunar_rover_tasks.tasks.multi_rover_gathering.termination import (
     DoneFlags,
@@ -76,6 +78,10 @@ class MultiRoverGatheringCore:
         self.num_envs = self.cfg.simulation.num_envs
         self.n_agents = self.cfg.task.n_agents
         self.generator = seed_torch(self.cfg.seed, str(self.device))
+        self.terrain_runtime = make_terrain_runtime(
+            self.num_envs,
+            device=self.device,
+        )
         self.positions = torch.zeros(self.num_envs, self.n_agents, 3, device=self.device)
         self.yaws = torch.zeros(self.num_envs, self.n_agents, device=self.device)
         self.velocities_xy = torch.zeros(self.num_envs, self.n_agents, 2, device=self.device)
@@ -107,6 +113,7 @@ class MultiRoverGatheringCore:
             env_ids = torch.arange(self.num_envs, device=self.device)
         env_ids = env_ids.to(device=self.device, dtype=torch.long)
         count = int(env_ids.numel())
+        self.randomize_terrain(env_ids)
         base_angles = torch.linspace(0.0, 2.0 * torch.pi, self.n_agents + 1, device=self.device)[:-1]
         base = torch.stack((torch.cos(base_angles), torch.sin(base_angles)), dim=-1)
         radius = 3.0 + 1.0 * torch.rand(count, 1, 1, generator=self.generator, device=self.device)
@@ -119,7 +126,11 @@ class MultiRoverGatheringCore:
         xy = centers + radius * base[None, :, :] + jitter
         self.positions[env_ids, :, :2] = xy
         if self._terrain_dynamics_enabled:
-            terrain_features = query_terrain_features(xy, self.cfg.terrain)
+            terrain_features = query_terrain_features(
+                xy,
+                self.cfg.terrain,
+                self.terrain_runtime.subset(env_ids),
+            )
             self.positions[env_ids, :, 2] = terrain_features[..., 0]
             self.last_terrain_features[env_ids] = terrain_features
         else:
@@ -144,7 +155,12 @@ class MultiRoverGatheringCore:
 
     def get_observations(self) -> tuple[torch.Tensor, torch.Tensor]:
         metrics = compute_team_metrics(self.positions, self.velocities_xy)
-        terrain_grid = build_local_terrain_grid(self.positions, self.yaws, self.cfg.terrain)
+        terrain_grid = build_local_terrain_grid(
+            self.positions,
+            self.yaws,
+            self.cfg.terrain,
+            self.terrain_runtime,
+        )
         actor_obs = build_actor_observation(
             self.positions,
             self.yaws,
@@ -177,6 +193,15 @@ class MultiRoverGatheringCore:
         self.prev_metrics = compute_team_metrics(self.positions, self.velocities_xy)
         previous_mean_oracle = self.prev_mean_oracle_distance.clone()
         decoded = decode_action(action, self.positions, self.yaws, self.cfg.planner)
+        subgoal_terrain_features = (
+            query_terrain_features(
+                decoded.world_subgoal[..., :2],
+                self.cfg.terrain,
+                self.terrain_runtime,
+            )
+            if self._terrain_dynamics_enabled
+            else None
+        )
         trajectory = generate_trajectory(
             self.positions,
             decoded.world_subgoal,
@@ -217,6 +242,9 @@ class MultiRoverGatheringCore:
             self.success_hold_count,
             self.last_terrain_features,
             self.cfg,
+            subgoal_terrain_features=subgoal_terrain_features,
+            terrain_speed_scale=self.last_terrain_speed_scale,
+            height_delta=self.last_height_delta,
         )
         self.prev_mean_oracle_distance = mean_oracle
         self.previous_physical_action = decoded.physical
@@ -226,6 +254,7 @@ class MultiRoverGatheringCore:
         terrain_features = self.last_terrain_features.clone()
         terrain_speed_scale = self.last_terrain_speed_scale.clone()
         height_delta = self.last_height_delta.clone()
+        terrain_runtime = self.terrain_runtime.clone()
         success_hold_count = self.success_hold_count.clone()
 
         if done.done.any():
@@ -252,6 +281,7 @@ class MultiRoverGatheringCore:
                 "terrain_features": terrain_features,
                 "terrain_speed_scale": terrain_speed_scale,
                 "height_delta": height_delta,
+                "terrain_runtime": terrain_runtime,
                 "oracle_point": self.oracle_point.clone(),
             },
         )
@@ -266,6 +296,16 @@ class MultiRoverGatheringCore:
     @property
     def _terrain_dynamics_enabled(self) -> bool:
         return bool(self.cfg.terrain.dynamics_enabled) and not is_flat_terrain(self.cfg.terrain)
+
+    def randomize_terrain(self, env_ids: torch.Tensor | None = None) -> None:
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+        randomize_terrain_runtime(
+            self.terrain_runtime,
+            env_ids,
+            self.cfg.terrain,
+            generator=self.generator,
+        )
 
     def _integrate(self, control: ControlCommand) -> None:
         dt = self.cfg.simulation.planning_dt
@@ -287,7 +327,11 @@ class MultiRoverGatheringCore:
             )
             delta_xy = direction * control.linear.unsqueeze(-1) * speed_scale.unsqueeze(-1) * dt
             next_xy = old_positions[..., :2] + delta_xy
-            next_features = query_terrain_features(next_xy, self.cfg.terrain)
+            next_features = query_terrain_features(
+                next_xy,
+                self.cfg.terrain,
+                self.terrain_runtime,
+            )
             self.positions[..., :2] = next_xy
             self.positions[..., 2] = next_features[..., 0]
             self.last_terrain_features = next_features

@@ -292,6 +292,7 @@ def evaluate_actor(
 
 
 def _randomize_bc_state(env: MultiRoverGatheringCore) -> None:
+    env.randomize_terrain()
     base_angles = torch.linspace(0.0, 2.0 * torch.pi, env.n_agents + 1, device=env.device)[:-1]
     base = torch.stack((torch.cos(base_angles), torch.sin(base_angles)), dim=-1)
     radius = torch.empty(env.num_envs, 1, 1, device=env.device).uniform_(
@@ -313,7 +314,11 @@ def _randomize_bc_state(env: MultiRoverGatheringCore) -> None:
     )
     env.positions[..., :2] = centers + radius * base[None, :, :] + jitter
     if env._terrain_dynamics_enabled:
-        terrain_features = query_terrain_features(env.positions[..., :2], env.cfg.terrain)
+        terrain_features = query_terrain_features(
+            env.positions[..., :2],
+            env.cfg.terrain,
+            env.terrain_runtime,
+        )
         env.positions[..., 2] = terrain_features[..., 0]
         env.last_terrain_features = terrain_features
     else:

@@ -75,6 +75,15 @@ class TerrainCfg:
     crater_rim_height_to_diameter: float = 0.015
     crater_field_size: float = 9.0
     crater_seed: int = 11
+    randomize_per_reset: bool = False
+    random_translation_m: float = 0.0
+    random_yaw_rad: float = 0.0
+    amplitude_scale_min: float = 1.0
+    amplitude_scale_max: float = 1.0
+    crater_radius_scale_min: float = 1.0
+    crater_radius_scale_max: float = 1.0
+    crater_depth_scale_min: float = 1.0
+    crater_depth_scale_max: float = 1.0
 
 
 @dataclass(slots=True)
@@ -100,6 +109,9 @@ class RewardCoefficientsCfg:
     slope_cost: float = 0.0
     turn_cost: float = 0.05
     terrain_cost: float = 0.0
+    subgoal_terrain_cost: float = 0.0
+    terrain_speed_loss_cost: float = 0.0
+    terrain_height_change_cost: float = 0.0
     inter_agent_collision: float = 8.0
     near_distance: float = 0.5
     subgoal_turn: float = 0.05
@@ -108,6 +120,7 @@ class RewardCoefficientsCfg:
     success_hold_step: float = 0.0
     success_bonus: float = 10.0
     failure_penalty: float = 10.0
+    timeout_penalty: float = 0.0
 
 
 @dataclass(slots=True)

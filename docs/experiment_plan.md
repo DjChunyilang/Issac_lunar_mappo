@@ -7,6 +7,8 @@
 - `exp008` 保持为当前已验证的 3-seed terrain-aware proxy baseline。
 - `exp009` / `exp010` 作为 strong terrain 诊断记录，近期不继续默认扩展。
 - `exp012` / `exp013` 作为 SKRL-MAPPO proxy CUDA 与 action-scale 诊断，不作为 strict success。
+- `exp017` 是固定地图、seed23、shared-joint MAPPO pure RL 的当前 schema strict pass 单 seed baseline。
+- `exp018` 是随机增强地形的 20M 单 seed candidate；dmax/success 达标，但 collision/timeout 未过 strict gate。
 - PhysX / Isaac Sim 作为 checkpoint 级高保真闭环评估和展示层，不进入当前主训练 loop。
 - 新训练和评估默认写入 `outputs/runs/<experiment>/<run>/`。
 
@@ -35,6 +37,32 @@ outputs/runs/exp_008_terrain3d/_suite/
 - 弱 warm-start + PPO。
 - seeds `23, 31, 47` 均通过 proxy strict gate。
 - 后续改动应避免破坏该 baseline，并在需要时用 exp008 suite 做回归对照。
+
+当前 86 维局部地形网格 schema 下，`exp017` 可作为固定地图 single-seed baseline：
+
+```text
+outputs/runs/exp017_shared_mappo_pure_rl_comm12/
+```
+
+结论：
+
+- 固定偏弱中档 lunar crater proxy。
+- shared-joint MAPPO pure RL，不使用 BC。
+- seed23 final eval 通过 strict gate。
+- 不能替代 exp008 的 3-seed baseline，也不能证明随机地图泛化。
+
+随机地图主诊断是 `exp018`：
+
+```text
+outputs/runs/exp018_randomized_terrain_pure_rl/pure_rl_seed23_20m_randomized_terrain/
+```
+
+结论：
+
+- 每环境、每 episode reset 独立随机地形。
+- 20M 后 dmax 和 success 达标。
+- collision `0.0352`、timeout `0.0088` 未通过 strict gate。
+- 下一轮优先改安全和路径级风险，而不是只放大 terrain penalty。
 
 ## Checkpoint 复评计划
 

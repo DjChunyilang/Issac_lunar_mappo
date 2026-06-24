@@ -146,6 +146,33 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
         terrain.get("crater_field_size", cfg.terrain.crater_field_size)
     )
     cfg.terrain.crater_seed = int(terrain.get("crater_seed", cfg.terrain.crater_seed))
+    cfg.terrain.randomize_per_reset = bool(
+        terrain.get("randomize_per_reset", cfg.terrain.randomize_per_reset)
+    )
+    cfg.terrain.random_translation_m = float(
+        terrain.get("random_translation_m", cfg.terrain.random_translation_m)
+    )
+    cfg.terrain.random_yaw_rad = float(
+        terrain.get("random_yaw_rad", cfg.terrain.random_yaw_rad)
+    )
+    cfg.terrain.amplitude_scale_min = float(
+        terrain.get("amplitude_scale_min", cfg.terrain.amplitude_scale_min)
+    )
+    cfg.terrain.amplitude_scale_max = float(
+        terrain.get("amplitude_scale_max", cfg.terrain.amplitude_scale_max)
+    )
+    cfg.terrain.crater_radius_scale_min = float(
+        terrain.get("crater_radius_scale_min", cfg.terrain.crater_radius_scale_min)
+    )
+    cfg.terrain.crater_radius_scale_max = float(
+        terrain.get("crater_radius_scale_max", cfg.terrain.crater_radius_scale_max)
+    )
+    cfg.terrain.crater_depth_scale_min = float(
+        terrain.get("crater_depth_scale_min", cfg.terrain.crater_depth_scale_min)
+    )
+    cfg.terrain.crater_depth_scale_max = float(
+        terrain.get("crater_depth_scale_max", cfg.terrain.crater_depth_scale_max)
+    )
     _apply_values(cfg.reward_weights, reward.get("weights", {}), "reward.weights")
     _apply_values(cfg.reward_coefficients, reward.get("coefficients", {}), "reward.coefficients")
     _apply_observation_values(cfg, observation)

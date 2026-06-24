@@ -21,5 +21,9 @@ PhysX / Jackal tracking 结果是 high-fidelity validation，不等于 Isaac Lab
 | exp012 | proxy SKRL-MAPPO CUDA 诊断 | action scale warmup probe | seed7 | 未通过 | 工程链路和动作尺度诊断，不作为主结果。 | [exp_012_action_scale_warmup_probe.md](exp_012_action_scale_warmup_probe.md) |
 | exp013 | proxy SKRL-MAPPO CUDA 诊断 | action scale ablation + teacher reachability | seed7 | 未通过 | 当前 100-step 小动作配置本身几乎不可达；统一评估会写 checkpoint status。 | [exp_013_action_scale_ablation.md](exp_013_action_scale_ablation.md) |
 | exp014 | 弱 lunar crater proxy | 5×5 局部地形网格 SKRL-MAPPO probe | seed23 | 未运行 strict | CUDA 工程验收通过；只证明新观测与训练链路有效。 | [exp_014_terrain_grid_observation_probe.md](exp_014_terrain_grid_observation_probe.md) |
+| exp015 | 偏弱中档 lunar crater proxy | SKRL MAPPO + BC20，86 维地形网格 | seed23 screen | 未通过 | 工程信号正常，但 2M screen 的 dmax/success/collision/timeout 全部失败；未启动 8M。 | [exp_015_skrl_medium_soft_terrain_grid.md](exp_015_skrl_medium_soft_terrain_grid.md) |
+| exp016 | 偏弱中档 lunar crater proxy | shared-joint MAPPO + local BC100 + comm12 | seed23 staged probe | 未通过 | shared-update 工程探针通过；BC-only 安全但过于保守，未进入 2M screen。 | [exp_016_shared_mappo_comm12.md](exp_016_shared_mappo_comm12.md) |
+| exp017 | 固定偏弱中档 lunar crater proxy | shared-joint MAPPO pure RL + comm12 | seed23 continuous 20M | 单 seed 通过 | final eval：dmax ratio 0.1318、success 0.9990、collision 0.00098、timeout 0；尚未证明多 seed 或随机地图泛化。 | [exp_017_shared_mappo_pure_rl_comm12.md](exp_017_shared_mappo_pure_rl_comm12.md) |
+| exp018 | 按 episode 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + comm12 + terrain-aware reward | seed23 continuous 20M | 未通过 | dmax 和 success 达标，但 final eval collision 0.0352、timeout 0.0088 未过 strict；作为随机地形 candidate / 安全失败分析保留。 | [exp_018_randomized_terrain_pure_rl.md](exp_018_randomized_terrain_pure_rl.md) |
 
 新增实验时，在这里加一行，并在本目录创建独立的 `exp_###_*.md` 文档。日期流水账放入 `docs/archive/`，不要继续堆到当前实验文档里。

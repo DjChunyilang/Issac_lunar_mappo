@@ -1,0 +1,117 @@
+experiment:
+  name: exp017_shared_mappo_pure_rl_comm12
+  seed: 23
+  num_envs: 2048
+  device: cuda
+  rollout_steps: 32
+  output_layout: run
+  checkpoint_interval: 1024
+  telemetry_interval: 32
+  tensorboard_interval: 32
+  eval_num_envs: 1024
+  eval_steps: 220
+  eval_seed_offset: 1000
+
+simulation:
+  episode_length_s: 44.0
+  physics_dt: 0.05
+  control_decimation: 4
+
+task:
+  n_agents: 4
+
+planner:
+  rho_max: 1.2
+  beta_max: 0.78539816339
+
+low_level_control:
+  max_linear_speed: 1.0
+  max_angular_speed: 2.5
+  k_linear: 1.6
+  k_angular: 3.0
+
+observation:
+  communication_radius: 12.0
+
+safety:
+  world_xy_limit: 12.0
+  collision_distance: 0.28
+  near_distance: 0.75
+
+terrain:
+  type: lunar_crater_proxy
+  dynamics_enabled: true
+  amplitude: 0.08
+  wavelength: 2.8
+  roughness_scale: 1.0
+  traversability_slope_scale: 0.55
+  slope_speed_scale: 0.90
+  min_speed_scale: 0.30
+  crater_count: 7
+  crater_min_radius: 0.40
+  crater_max_radius: 1.20
+  crater_depth_to_diameter: 0.10
+  crater_rim_height_to_diameter: 0.020
+  crater_field_size: 9.0
+  crater_seed: 11
+
+reward:
+  weights:
+    gather: 1.0
+    oracle: 0.5
+    energy: 0.003
+    safety: 1.0
+    terrain: 0.20
+    motion: 0.005
+    consistency: 0.003
+    terminal: 1.0
+  coefficients:
+    dmax_progress: 3.4
+    dispersion_progress: 1.4
+    dmax_level: 0.05
+    dispersion_level: 0.006
+    oracle_mean_distance_progress: 2.2
+    path_length: 0.05
+    slope_cost: 0.25
+    terrain_cost: 0.25
+    turn_cost: 0.015
+    near_distance: 4.0
+    inter_agent_collision: 60.0
+    subgoal_turn: 0.015
+    subgoal_stagnation: 0.04
+    action_consistency: 0.006
+    success_hold_step: 1.0
+    success_bonus: 35.0
+    failure_penalty: 35.0
+    timeout_penalty: 15.0
+
+success_thresholds:
+  dmax: 1.25
+  dispersion: 0.30
+  speed: 0.25
+  hold_steps: 8
+
+algorithm:
+  mode: pure_rl
+  training_semantics: exp017_shared_joint_pure_rl_comm12
+  update_mode: shared_joint
+  shared_actor: true
+  centralized_critic: true
+  shared_value: true
+  initial_log_std: -1.0
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.20
+  value_clip: 0.20
+  ppo_epochs: 4
+  mini_batches: 16
+  learning_rate: 0.00012
+  max_grad_norm: 0.5
+  entropy_loss_scale: 0.002
+  entropy_loss_scale_end: 0.0005
+  entropy_schedule_timesteps: 4096
+  value_loss_coef: 0.5
+  bc_updates: 0
+  teacher_mode: null
+  teacher_stop_radius: null
+  teacher_max_rho: null

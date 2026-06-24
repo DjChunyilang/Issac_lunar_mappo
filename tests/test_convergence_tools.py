@@ -72,6 +72,15 @@ def test_cfg_from_experiment_parses_reward_control_and_success_thresholds(tmp_pa
                     "crater_rim_height_to_diameter": 0.02,
                     "crater_field_size": 8.0,
                     "crater_seed": 19,
+                    "randomize_per_reset": True,
+                    "random_translation_m": 1.5,
+                    "random_yaw_rad": 3.14,
+                    "amplitude_scale_min": 0.9,
+                    "amplitude_scale_max": 1.1,
+                    "crater_radius_scale_min": 0.85,
+                    "crater_radius_scale_max": 1.15,
+                    "crater_depth_scale_min": 0.8,
+                    "crater_depth_scale_max": 1.2,
                 },
                 "success_thresholds": {"dmax": 0.9, "hold_steps": 4},
             }
@@ -97,6 +106,15 @@ def test_cfg_from_experiment_parses_reward_control_and_success_thresholds(tmp_pa
     assert cfg.terrain.crater_rim_height_to_diameter == 0.02
     assert cfg.terrain.crater_field_size == 8.0
     assert cfg.terrain.crater_seed == 19
+    assert cfg.terrain.randomize_per_reset is True
+    assert cfg.terrain.random_translation_m == 1.5
+    assert cfg.terrain.random_yaw_rad == 3.14
+    assert cfg.terrain.amplitude_scale_min == 0.9
+    assert cfg.terrain.amplitude_scale_max == 1.1
+    assert cfg.terrain.crater_radius_scale_min == 0.85
+    assert cfg.terrain.crater_radius_scale_max == 1.15
+    assert cfg.terrain.crater_depth_scale_min == 0.8
+    assert cfg.terrain.crater_depth_scale_max == 1.2
     assert cfg.success_thresholds.dmax == 0.9
     assert cfg.success_thresholds.hold_steps == 4
 

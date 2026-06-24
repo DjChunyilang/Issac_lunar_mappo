@@ -25,6 +25,7 @@ import torch
 from _common import ROOT, cfg_from_experiment
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore
 from play import _load_policy_players
+from terrain_viz import add_height_heatmap, height_grid_for_extent, save_height_map
 
 
 def _resolve(path: str | Path) -> Path:
@@ -69,11 +70,29 @@ def _draw_frame(
     oracle_history: list[np.ndarray],
     step_index: int,
     output: Path,
+    terrain_height: np.ndarray,
+    terrain_extent: tuple[float, float, float, float],
+    terrain_range: tuple[float, float],
 ) -> None:
     xmin, xmax, ymin, ymax = _axis_limits(history, oracle_history)
     current = history[step_index]
     current_oracle = oracle_history[step_index]
-    fig, ax = plt.subplots(figsize=(6.0, 6.0), dpi=120)
+    fig, ax = plt.subplots(figsize=(6.4, 6.0), dpi=120, constrained_layout=True)
+    heatmap = add_height_heatmap(
+        ax,
+        terrain_height,
+        terrain_extent,
+        terrain_range,
+        alpha=0.72,
+        contour=True,
+    )
+    fig.colorbar(
+        heatmap,
+        ax=ax,
+        fraction=0.046,
+        pad=0.04,
+        label="height (m)",
+    )
     colors = ("#2563eb", "#dc2626", "#16a34a", "#9333ea", "#f97316", "#0891b2")
     for agent_id in range(current.shape[0]):
         trail = np.asarray([item[agent_id, :2] for item in history[: step_index + 1]])
@@ -117,9 +136,8 @@ def _draw_frame(
     ax.set_ylim(ymin, ymax)
     ax.set_aspect("equal", adjustable="box")
     ax.grid(True, alpha=0.25)
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-    fig.tight_layout()
+    ax.set_xlabel("x (m)")
+    ax.set_ylabel("y (m)")
     fig.savefig(output)
     plt.close(fig)
 
@@ -129,6 +147,8 @@ def _save_gif(
     oracle_history: list[np.ndarray],
     output: Path,
     *,
+    terrain_cfg,
+    terrain_runtime,
     capture_interval: int,
     max_frames: int,
     duration_s: float,
@@ -140,12 +160,28 @@ def _save_gif(
         sample = np.linspace(0, len(frame_indices) - 1, max_frames).round().astype(int)
         frame_indices = [frame_indices[index] for index in sample]
 
+    xmin, xmax, ymin, ymax = _axis_limits(history, oracle_history)
+    terrain_height, terrain_extent, terrain_range = height_grid_for_extent(
+        terrain_cfg,
+        np.asarray([xmin, ymin], dtype=np.float32),
+        np.asarray([xmax, ymax], dtype=np.float32),
+        resolution=180,
+        terrain_runtime=terrain_runtime,
+    )
     with tempfile.TemporaryDirectory(prefix="skrl_proxy_gif_") as tmp:
         tmp_dir = Path(tmp)
         frames = []
         for frame_id, step_index in enumerate(frame_indices):
             frame_path = tmp_dir / f"frame_{frame_id:04d}.png"
-            _draw_frame(history, oracle_history, step_index, frame_path)
+            _draw_frame(
+                history,
+                oracle_history,
+                step_index,
+                frame_path,
+                terrain_height,
+                terrain_extent,
+                terrain_range,
+            )
             frames.append(imageio.imread(frame_path))
         imageio.mimsave(output, frames, duration=duration_s)
     return len(frame_indices)
@@ -180,6 +216,7 @@ def render_rollout(
         cfg.seed = seed
 
     env = MultiRoverGatheringCore(cfg)
+    rollout_terrain_runtime = env.terrain_runtime.clone()
     checkpoint_data = torch.load(checkpoint, map_location=env.device)
     act, backend = _load_policy_players(checkpoint_data, cfg, env.device)
     actor_obs, _ = env.get_observations()
@@ -214,10 +251,26 @@ def render_rollout(
         actor_obs = out.actor_obs
 
     gif_path = _resolve(output)
+    xmin, xmax, ymin, ymax = _axis_limits(history, oracle_history)
+    terrain_height_path = (
+        _resolve(run_dir) / "figures" / "terrain_height_map.png"
+        if run_dir is not None
+        else gif_path.parent / "terrain_height_map.png"
+    )
+    save_height_map(
+        cfg.terrain,
+        np.asarray([xmin, ymin], dtype=np.float32),
+        np.asarray([xmax, ymax], dtype=np.float32),
+        terrain_height_path,
+        title="Proxy Rollout Terrain Height",
+        terrain_runtime=rollout_terrain_runtime,
+    )
     frame_count = _save_gif(
         history,
         oracle_history,
         gif_path,
+        terrain_cfg=cfg.terrain,
+        terrain_runtime=rollout_terrain_runtime,
         capture_interval=capture_interval,
         max_frames=max_frames,
         duration_s=0.12,
@@ -244,6 +297,7 @@ def render_rollout(
         "final_dmax": _dmax_xy(final_positions),
         "frame_count": frame_count,
         "gif_path": str(gif_path),
+        "terrain_height_map": str(terrain_height_path),
     }
     metrics_path = _resolve(metrics_output)
     metrics_path.write_text(json.dumps(result, indent=2), encoding="utf-8")

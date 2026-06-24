@@ -18,6 +18,10 @@
 - 动作接口固定为低维 `[rho, beta]`，再经局部子目标、直线轨迹和简化速度控制器转换为运动命令。
 - 当前 proxy 动力学是 2D/2.5D kinematic unicycle 风格状态更新；没有质量、惯量、轮地接触、打滑、悬挂或 PhysX contact。
 - `scripts/train_skrl_mappo.py` 使用 SKRL MAPPO 训练 proxy wrapper；`isaaclab-multi-agent` wrapper 只是接口层，不代表训练 loop 运行在 Isaac Sim / PhysX。
+- exp016 已启用项目侧 `shared_joint` 更新：共享 Actor/Critic 只使用一个 optimizer，每个 rollout 合并四个 rover 的 Actor 样本并只更新一次 Critic。
+- 当前 exp016 诊断配置把通信半径临时扩大到 `12 m`；这是训练诊断设置，不是最终通信约束。
+- exp017 已完成 pure RL 连续 20M 长跑并通过 seed23 独立 strict eval；这是固定地图、单 seed proxy 结果，不代表随机地图泛化或多 seed 收敛。
+- exp018 已加入每环境、每 episode reset 独立地形随机化，并把地形强度提高一档；完整测试、CPU/CUDA smoke 和随机地图渲染已通过。seed23 连续 20M 已完成，dmax 和 success 达标，但 collision / timeout 未通过 strict gate。
 
 ## Checkpoint 评估工作流
 
@@ -59,6 +63,10 @@ final_selected
 | exp012 | proxy SKRL-MAPPO CUDA 诊断 | action scale warmup probe | 未通过 | distance 有改善，但 strict gate 未通过。 |
 | exp013 | proxy SKRL-MAPPO CUDA 诊断 | action scale ablation + teacher reachability | 未通过 | 当前小动作 100-step 配置对 teacher 也几乎不可达。 |
 | exp014 | 弱 lunar crater proxy | 5×5 局部地形网格 CUDA probe | 工程验证通过；未做 strict | 新观测和训练链路有效，不能表述为策略收敛。 |
+| exp015 | 偏弱中档 lunar crater proxy | SKRL MAPPO + BC20 | 2M screen 未通过 | 工程信号正常；dmax ratio 0.818、success 0、collision 0.124、timeout 0.876，因此未启动 8M。 |
+| exp016 | 偏弱中档 lunar crater proxy | shared-joint MAPPO + local BC100 + comm12 | BC probe 未通过 | shared update 探针通过；BC-only dmax ratio 0.438、collision 0.0088、timeout 0.991，未启动 2M。 |
+| exp017 | 固定偏弱中档 lunar crater proxy | shared-joint MAPPO pure RL + comm12 | seed23 strict 通过 | final dmax ratio 0.1318、success 0.9990、collision 0.00098、timeout 0；仍是 single-seed candidate。 |
+| exp018 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + comm12 | 未通过 | seed23 20M 完成；final dmax ratio 0.1417、success 0.9609 通过，但 collision 0.0352、timeout 0.0088 未达 strict gate。 |
 
 历史完整 suite checkpoint：
 
@@ -66,7 +74,7 @@ final_selected
 outputs/runs/exp_008_terrain3d/_suite/checkpoints/
 ```
 
-这些 exp008 checkpoint 使用旧 observation schema，历史 strict 结论仍有效，但不能直接加载到当前 86 维 Actor。当前没有完成 strict 验收的新 schema checkpoint；exp014 checkpoint 仅用于工程探针。
+这些 exp008 checkpoint 使用旧 observation schema，历史 strict 结论仍有效，但不能直接加载到当前 86 维 Actor。exp017 已产生当前 schema 的单 seed strict checkpoint；exp014 checkpoint 仍仅用于工程探针。
 
 ## 结果解释边界
 
@@ -74,7 +82,8 @@ outputs/runs/exp_008_terrain3d/_suite/checkpoints/
 - exp006 / exp008 的 checkpoint 属于旧 observation schema；结果可作为历史 baseline，但不能与新 Actor 接口直接混用。
 - exp014 只通过有限值、参数更新、地形输入权重更新和动作非退化检查，不是 strict convergence pass。
 - PhysX / Jackal 结果应写成“Jackal 在 PhysX 场景中的轨迹跟踪验证结果”或“proxy checkpoint 的高保真迁移 sanity check”，不能写成“物理环境训练结果”。
-- 当前较好结果来自 weak warm-start + PPO，不能表述为 pure RL 从零严格收敛。
+- exp017 可以表述为“固定地图、seed23、proxy pure RL 从零通过 strict gate”，不能扩展为多 seed、随机地图或 PhysX 收敛。
+- exp018 可以表述为“随机增强地形下已获得稳定集合趋势和较高 success，但安全/超时 gate 未完全收敛”，不能写成随机地图 strict pass。
 - GIF、截图和 TensorBoard 曲线只能用于展示和诊断；严格结论以 `_suite/metrics/strict_acceptance.json`、`metrics/final_eval_proxy.json` 和 `metrics/checkpoint_status.json` 为准。
 
 ## Jackal 跟踪验证
@@ -119,7 +128,7 @@ outputs/runs/physx_jackal_tracking/strong_lunar_crater_final_v2/
 
 ## 下一步
 
-1. 以 exp014 schema 为基础设计正式 terrain-grid 对照实验，并运行多 seed strict suite。
-2. 保留 exp008 作为历史 proxy baseline，不把旧 checkpoint 自动迁移到新接口。
-3. 为 PhysX / Jackal 后续接入同布局 raycast / height scanner，保持 proxy 与高保真观测接口一致。
-4. 后续若高保真评估发现系统性迁移失败，再考虑 Isaac-based fine-tuning、domain randomization、真实 rover asset 或更高保真动力学模型。
+1. 围绕 exp018 的失败项做安全收敛改造：collision 从候选评估 3.0% 到独立 final eval 3.5%，仍高于 2% strict gate；timeout 已很低但仍非 0。
+2. 不优先继续放大 terrain penalty；exp018 final eval 中 terrain 已占绝对 reward 约 52%，下一步更应加入路径级风险、不可通行/陷车机制或末端聚集速度/安全约束。
+3. 保留 exp017 作为固定地图 pure RL baseline，保留 exp018 作为随机地形单 seed candidate / failure analysis，不把二者扩写为多 seed 或 PhysX 收敛。
+4. 为 PhysX / Jackal 后续接入同布局 raycast / height scanner，保持 proxy 与高保真观测接口一致。

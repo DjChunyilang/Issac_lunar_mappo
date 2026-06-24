@@ -166,6 +166,176 @@ outputs/runs/exp013_action_scale_ablation/_suite/metrics/teacher_reachability_su
 - random baseline 和 post-training deterministic eval。
 - checkpoint metadata，包括 observation schema 和 SKRL-MAPPO 语义字段。
 
+## exp016 Shared-Joint 分阶段验证
+
+运行前要求至少保留 6 GB 空闲显存：
+
+```bash
+.venv_isaaclab/bin/python scripts/run_exp016_shared_mappo_training.py \
+  --config configs/experiment/exp016_shared_mappo_comm12.yaml \
+  --minimum-free-gpu-mb 6144
+```
+
+该 runner 依次执行：
+
+1. `shared_update_probe_seed23_512k`：验证单 optimizer 和两次 joint update。
+2. `local_teacher_bc100_seed23`：保存并独立评估 BC-only checkpoint。
+3. 只有 BC probe 通过才执行 `screen_seed23_2m`。
+4. 只有 screen 通过才从随机初始化执行 `formal_seed23_8m`。
+
+机器可读总结果：
+
+```text
+outputs/runs/exp016_shared_mappo_comm12/_suite/metrics/suite_summary.json
+outputs/runs/exp016_shared_mappo_comm12/_suite/metrics/strict_acceptance.json
+```
+
+`communication_radius=12 m` 只用于当前诊断，不应直接作为最终通信系统设定。
+
+## exp017 Pure RL 连续 20M
+
+exp017 不使用 BC，也不会因为中间 gate 失败而停止。一次训练连续运行 10240 timesteps，并在 2M、8M、20M environment steps 保存和评估里程碑。
+
+启动前先运行：
+
+```bash
+.venv_isaaclab/bin/python -m pytest -q -ra
+```
+
+后台启动：
+
+```bash
+mkdir -p outputs/runs/exp017_shared_mappo_pure_rl_comm12/_launcher
+
+nohup .venv_isaaclab/bin/python scripts/run_exp017_pure_rl_long.py \
+  --config configs/experiment/exp017_shared_mappo_pure_rl_comm12.yaml \
+  --device cuda \
+  --timesteps 10240 \
+  --minimum-free-gpu-mb 6144 \
+  > outputs/runs/exp017_shared_mappo_pure_rl_comm12/_launcher/train.log 2>&1 &
+```
+
+监控：
+
+```bash
+tail -f outputs/runs/exp017_shared_mappo_pure_rl_comm12/_launcher/train.log
+```
+
+当前由用户级 transient service 托管时，也可以检查：
+
+```bash
+systemctl --user status exp017-pure-rl.service --no-pager
+```
+
+训练完成后优先读取：
+
+```text
+outputs/runs/exp017_shared_mappo_pure_rl_comm12/_suite/metrics/milestones.json
+outputs/runs/exp017_shared_mappo_pure_rl_comm12/_suite/metrics/suite_summary.json
+outputs/runs/exp017_shared_mappo_pure_rl_comm12/_suite/metrics/strict_acceptance.json
+```
+
+`pure_rl_long` 候选排序忽略 timeout，但 timeout 仍写入所有评估结果。正式 strict gate 仍要求 `timeout_rate=0`，单 seed 通过也只能记为 candidate。
+
+## exp018 随机增强地形
+
+exp018 在每个并行环境 reset 时独立重采样地图，episode 内地图保持固定。先运行专项与完整测试：
+
+```bash
+.venv_isaaclab/bin/python -m pytest -q \
+  tests/test_terrain_features.py \
+  tests/test_reward.py \
+  tests/test_exp018_training.py
+
+.venv_isaaclab/bin/python -m pytest -q -ra
+```
+
+CPU smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp018_randomized_terrain_pure_rl.yaml \
+  --device cpu \
+  --num-envs 8 \
+  --rollout-steps 4 \
+  --timesteps 8 \
+  --checkpoint-interval 4 \
+  --run-name smoke_cpu_exp018
+```
+
+CUDA shared-update smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp018_randomized_terrain_pure_rl.yaml \
+  --device cuda \
+  --num-envs 256 \
+  --rollout-steps 32 \
+  --timesteps 64 \
+  --checkpoint-interval 32 \
+  --run-name smoke_cuda_exp018
+```
+
+验收至少检查：
+
+- 不同并行环境的 terrain phase 和 transform 不完全相同；
+- reset 子集不会改变其他环境的地图；
+- Actor / Critic 仍为 `86 / 54`；
+- 一个 optimizer、每个 rollout 一次 joint update；
+- policy 参数和 terrain 输入列权重更新；
+- reward、observation 和 action 无 NaN/Inf；
+- GIF 的 height map 与 rollout 使用同一份 terrain runtime。
+
+标准 smoke 产物：
+
+```text
+outputs/runs/exp018_randomized_terrain_pure_rl/smoke_cpu_exp018/
+outputs/runs/exp018_randomized_terrain_pure_rl/smoke_cuda_exp018/
+```
+
+seed23 连续 20M 已完成。若以后重新启动同类长跑，可用用户级 transient service 或 `nohup` 托管；历史 service 名为：
+
+```bash
+systemctl --user status exp018-randomized-terrain-20m.service --no-pager
+```
+
+读取训练末尾 telemetry：
+
+```bash
+tail -n 1 \
+  outputs/runs/exp018_randomized_terrain_pure_rl/pure_rl_seed23_20m_randomized_terrain/metrics/train_metrics.jsonl
+```
+
+checkpoint 每 1024 timesteps 写入，20M run 共有 10 个候选 checkpoint：
+
+```text
+outputs/runs/exp018_randomized_terrain_pure_rl/pure_rl_seed23_20m_randomized_terrain/checkpoints/
+```
+
+快速查看候选里程碑：
+
+```bash
+jq -r '.evaluations[] | [
+  .candidate_timestep,
+  (.candidate_timestep * 2048),
+  .dmax_reduction_ratio,
+  .success_rate,
+  .collision_rate,
+  .timeout_rate
+] | @tsv' \
+  outputs/runs/exp018_randomized_terrain_pure_rl/pure_rl_seed23_20m_randomized_terrain/metrics/eval_metrics.json
+```
+
+最终结论以这些文件为准：
+
+```text
+outputs/runs/exp018_randomized_terrain_pure_rl/pure_rl_seed23_20m_randomized_terrain/metrics/final_eval_proxy.json
+outputs/runs/exp018_randomized_terrain_pure_rl/pure_rl_seed23_20m_randomized_terrain/metrics/strict_acceptance.json
+outputs/runs/exp018_randomized_terrain_pure_rl/pure_rl_seed23_20m_randomized_terrain/metrics/checkpoint_status.json
+```
+
+当前结果：20M best checkpoint 的 final eval dmax ratio `0.1417`、success `0.9609` 已达标，但 collision `0.0352` 和 timeout `0.0088` 未过 strict gate。因此 exp018 是随机地形 candidate / 安全失败分析，不是 strict pass。
+
 ## Checkpoint 统一评估
 
 训练完成后运行：

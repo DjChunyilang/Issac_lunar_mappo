@@ -21,7 +21,10 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
     build_terrain_features,
     flatten_local_terrain_grid,
     local_terrain_grid_world_points,
+    make_terrain_runtime,
     query_height,
+    query_terrain_features,
+    randomize_terrain_runtime,
     summarize_local_terrain_grid,
 )
 from terrain_viz import height_grid_for_extent
@@ -91,6 +94,67 @@ def test_procedural_terrain_features_are_finite_and_structured() -> None:
     assert torch.isfinite(grid).all()
     assert torch.all((grid[..., 1] >= 0.0) & (grid[..., 1] <= 1.0))
     assert torch.all((local[..., 4] >= 0.0) & (local[..., 4] <= 1.0))
+
+
+def test_randomized_terrain_runtime_changes_maps_per_environment_and_reset() -> None:
+    cfg = make_debug_cfg(num_envs=3, device="cpu")
+    cfg.terrain.type = "lunar_crater_proxy"
+    cfg.terrain.amplitude = 0.1
+    cfg.terrain.crater_count = 5
+    cfg.terrain.randomize_per_reset = True
+    cfg.terrain.random_translation_m = 1.5
+    cfg.terrain.random_yaw_rad = torch.pi
+    cfg.terrain.amplitude_scale_min = 0.9
+    cfg.terrain.amplitude_scale_max = 1.1
+    cfg.terrain.crater_radius_scale_min = 0.85
+    cfg.terrain.crater_radius_scale_max = 1.15
+    cfg.terrain.crater_depth_scale_min = 0.8
+    cfg.terrain.crater_depth_scale_max = 1.2
+    runtime = make_terrain_runtime(3, device="cpu")
+    generator = torch.Generator().manual_seed(123)
+    env_ids = torch.arange(3)
+
+    randomize_terrain_runtime(runtime, env_ids, cfg.terrain, generator=generator)
+    before = runtime.clone()
+    xy = torch.zeros(3, 4, 2)
+    features = query_terrain_features(xy, cfg.terrain, runtime)
+
+    assert features.shape == (3, 4, 5)
+    assert torch.isfinite(features).all()
+    assert not torch.allclose(features[0], features[1])
+    randomize_terrain_runtime(
+        runtime,
+        torch.tensor([1]),
+        cfg.terrain,
+        generator=generator,
+    )
+    assert torch.allclose(runtime.phase[0], before.phase[0])
+    assert not torch.allclose(runtime.phase[1], before.phase[1])
+    assert torch.allclose(runtime.phase[2], before.phase[2])
+
+
+def test_environment_randomizes_terrain_only_for_reset_episodes() -> None:
+    cfg = make_debug_cfg(num_envs=2, device="cpu")
+    cfg.terrain.type = "lunar_crater_proxy"
+    cfg.terrain.dynamics_enabled = True
+    cfg.terrain.amplitude = 0.1
+    cfg.terrain.crater_count = 5
+    cfg.terrain.randomize_per_reset = True
+    cfg.terrain.random_translation_m = 1.0
+    cfg.terrain.random_yaw_rad = torch.pi
+    env = MultiRoverGatheringCore(cfg)
+    before = env.terrain_runtime.clone()
+
+    env.reset(torch.tensor([0]))
+
+    assert not torch.allclose(env.terrain_runtime.phase[0], before.phase[0])
+    assert torch.allclose(env.terrain_runtime.phase[1], before.phase[1])
+    expected_height = query_height(
+        env.positions[..., :2],
+        cfg.terrain,
+        env.terrain_runtime,
+    ).squeeze(-1)
+    assert torch.allclose(env.positions[..., 2], expected_height)
 
 
 def test_local_terrain_grid_rotates_from_body_to_world_frame() -> None:
