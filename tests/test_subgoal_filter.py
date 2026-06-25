@@ -26,6 +26,27 @@ def _cfg(*, enabled: bool = True) -> MultiRoverGatheringEnvCfg:
     return cfg
 
 
+def _curriculum_cfg() -> MultiRoverGatheringEnvCfg:
+    cfg = _cfg(enabled=True)
+    cfg.planner.subgoal_filter.mode = "terrain_safe_candidate_curriculum"
+    cfg.planner.subgoal_filter.rho_scales = [1.0]
+    cfg.planner.subgoal_filter.beta_offsets_deg = [-30.0, 0.0, 30.0]
+    cfg.planner.subgoal_filter.warmup_timesteps = 2048
+    cfg.planner.subgoal_filter.ramp_timesteps = 4096
+    cfg.planner.subgoal_filter.apply_probability_end = 0.60
+    cfg.planner.subgoal_filter.score_scale_start = 0.15
+    cfg.planner.subgoal_filter.score_scale_end = 0.75
+    cfg.planner.subgoal_filter.deterministic_improvement_margin = 0.02
+    cfg.terrain.type = "lunar_crater_proxy"
+    cfg.terrain.crater_count = 1
+    cfg.terrain.crater_min_radius = 1.0
+    cfg.terrain.crater_max_radius = 1.0
+    cfg.terrain.crater_depth_to_diameter = 0.24
+    cfg.terrain.crater_rim_height_to_diameter = 0.0
+    cfg.terrain.traversability_slope_scale = 0.20
+    return cfg
+
+
 def _decode(cfg: MultiRoverGatheringEnvCfg, positions: torch.Tensor, action: torch.Tensor):
     yaws = torch.zeros(positions.shape[:2])
     return decode_action(action, positions, yaws, cfg.planner), yaws
@@ -69,7 +90,7 @@ def test_crater_crossing_selects_low_risk_side_candidate() -> None:
     cfg.terrain.crater_depth_to_diameter = 0.24
     cfg.terrain.crater_rim_height_to_diameter = 0.0
     cfg.terrain.traversability_slope_scale = 0.20
-    positions = torch.tensor([[[-1.2, 0.2, 0.0]]])
+    positions = torch.tensor([[[-1.2, 0.4, 0.0]]])
     action = torch.tensor([[[1.0, 0.0]]])
     decoded, yaws = _decode(cfg, positions, action)
 
@@ -134,3 +155,115 @@ def test_filtered_action_bounds_and_info_are_finite() -> None:
     for value in result.info.values():
         if isinstance(value, torch.Tensor) and value.is_floating_point():
             assert torch.isfinite(value).all()
+
+
+def test_curriculum_warmup_reports_scores_without_replacing_action() -> None:
+    cfg = _curriculum_cfg()
+    positions = torch.tensor([[[-1.2, 0.4, 0.0]]])
+    action = torch.tensor([[[1.0, 0.0]]])
+    decoded, yaws = _decode(cfg, positions, action)
+
+    result = apply_subgoal_filter(
+        decoded,
+        positions,
+        yaws,
+        cfg,
+        progress_timestep=0,
+        deterministic=False,
+    )
+
+    assert not result.info["applied"].any()
+    assert result.info["apply_probability"] == pytest.approx(0.0)
+    assert result.info["score_scale"] == pytest.approx(0.15)
+    assert torch.allclose(result.decoded.physical, decoded.physical)
+    assert torch.isfinite(result.info["raw_score"]).all()
+    assert torch.isfinite(result.info["suggested_score"]).all()
+
+    deterministic_result = apply_subgoal_filter(
+        decoded,
+        positions,
+        yaws,
+        cfg,
+        progress_timestep=0,
+        deterministic=True,
+    )
+    assert not deterministic_result.info["applied"].any()
+    assert torch.allclose(deterministic_result.decoded.physical, decoded.physical)
+
+
+def test_curriculum_ramp_can_apply_low_risk_candidate_deterministically() -> None:
+    cfg = _curriculum_cfg()
+    positions = torch.tensor([[[-1.2, 0.4, 0.0]]])
+    action = torch.tensor([[[1.0, 0.0]]])
+    decoded, yaws = _decode(cfg, positions, action)
+
+    result = apply_subgoal_filter(
+        decoded,
+        positions,
+        yaws,
+        cfg,
+        progress_timestep=6144,
+        deterministic=True,
+    )
+
+    assert result.info["applied"][0, 0]
+    assert result.info["deterministic_applied"][0, 0]
+    assert result.info["apply_probability"] == pytest.approx(0.60)
+    assert result.info["score_scale"] == pytest.approx(0.75)
+    assert result.info["filtered_path_terrain_risk_mean"][0, 0] < result.info[
+        "raw_path_terrain_risk_mean"
+    ][0, 0]
+
+
+def test_curriculum_deterministic_rule_is_reproducible() -> None:
+    cfg = _curriculum_cfg()
+    positions = torch.tensor([[[-1.2, 0.2, 0.0]]])
+    action = torch.tensor([[[1.0, 0.0]]])
+    decoded, yaws = _decode(cfg, positions, action)
+
+    first = apply_subgoal_filter(decoded, positions, yaws, cfg, progress_timestep=6144, deterministic=True)
+    second = apply_subgoal_filter(decoded, positions, yaws, cfg, progress_timestep=6144, deterministic=True)
+
+    assert torch.equal(first.info["candidate_index"], second.info["candidate_index"])
+    assert torch.allclose(first.decoded.physical, second.decoded.physical)
+
+
+def test_visible_neighbor_center_intent_ignores_invisible_rover() -> None:
+    cfg = _cfg(enabled=True)
+    cfg.task.n_agents = 3
+    cfg.observation.communication_radius = 2.0
+    cfg.planner.subgoal_filter.mode = "terrain_safe_candidate_curriculum"
+    cfg.planner.subgoal_filter.visible_neighbor_center_weight = 10.0
+    cfg.planner.subgoal_filter.warmup_timesteps = 0
+    cfg.planner.subgoal_filter.ramp_timesteps = 1
+    cfg.planner.subgoal_filter.apply_probability_end = 1.0
+    cfg.planner.subgoal_filter.score_scale_start = 1.0
+    cfg.planner.subgoal_filter.score_scale_end = 1.0
+    positions = torch.tensor([[[0.0, 0.0, 0.0], [0.8, 0.0, 0.0], [8.0, 0.0, 0.0]]])
+    changed = positions.clone()
+    changed[0, 2, :2] = torch.tensor([8.0, 8.0])
+    action = torch.tensor([[[0.0, 0.0], [-1.0, 0.0], [-1.0, 0.0]]])
+    decoded, yaws = _decode(cfg, positions, action)
+    changed_decoded, changed_yaws = _decode(cfg, changed, action)
+
+    result = apply_subgoal_filter(
+        decoded,
+        positions,
+        yaws,
+        cfg,
+        progress_timestep=1,
+        deterministic=True,
+    )
+    changed_result = apply_subgoal_filter(
+        changed_decoded,
+        changed,
+        changed_yaws,
+        cfg,
+        progress_timestep=1,
+        deterministic=True,
+    )
+
+    assert torch.allclose(
+        result.decoded.physical[0, 0],
+        changed_result.decoded.physical[0, 0],
+    )

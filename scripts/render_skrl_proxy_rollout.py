@@ -215,9 +215,17 @@ def render_rollout(
     if seed is not None:
         cfg.seed = seed
 
+    map_location = torch.device(cfg.simulation.device)
+    if map_location.type == "cuda" and not torch.cuda.is_available():
+        map_location = torch.device("cpu")
+    checkpoint_data = torch.load(checkpoint, map_location=map_location)
+    metadata = checkpoint_data.get("metadata", {}) if isinstance(checkpoint_data, dict) else {}
+    if cfg.planner.subgoal_filter.mode == "terrain_safe_candidate_curriculum":
+        cfg.planner.subgoal_filter.progress_timestep_override = int(metadata.get("timesteps", 0))
+        cfg.planner.subgoal_filter.deterministic_eval = True
+
     env = MultiRoverGatheringCore(cfg)
     rollout_terrain_runtime = env.terrain_runtime.clone()
-    checkpoint_data = torch.load(checkpoint, map_location=env.device)
     act, backend = _load_policy_players(checkpoint_data, cfg, env.device)
     actor_obs, _ = env.get_observations()
 

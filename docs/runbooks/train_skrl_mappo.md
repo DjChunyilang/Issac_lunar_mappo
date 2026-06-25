@@ -549,6 +549,92 @@ outputs/runs/exp020_randomized_terrain_subgoal_filter/pure_rl_seed23_20m_subgoal
 outputs/runs/exp020_randomized_terrain_subgoal_filter/_suite/metrics/
 ```
 
+## exp021：课程化/软化子目标过滤器
+
+exp021 基于 exp020，但不再从一开始强制执行最低风险候选。前 `2048` timesteps 保留 raw action，只记录 filter telemetry 和 raw-risk / deviation 辅助惩罚；之后 `4096` timesteps 内逐步提高 filter 介入概率和 score 权重。
+
+专项测试：
+
+```bash
+.venv_isaaclab/bin/python -m pytest -q \
+  tests/test_subgoal_filter.py \
+  tests/test_exp019_training.py \
+  tests/test_exp020_training.py \
+  tests/test_exp021_training.py \
+  tests/test_reward.py \
+  tests/test_termination.py
+
+.venv_isaaclab/bin/python -m pytest -q -ra
+```
+
+CPU smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp021_randomized_terrain_filter_curriculum.yaml \
+  --device cpu \
+  --num-envs 8 \
+  --rollout-steps 4 \
+  --timesteps 8 \
+  --checkpoint-interval 4 \
+  --run-name smoke_cpu_exp021 \
+  --output-layout run \
+  --selection-gate balanced_progress_long
+```
+
+CUDA smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp021_randomized_terrain_filter_curriculum.yaml \
+  --device cuda \
+  --num-envs 256 \
+  --rollout-steps 32 \
+  --timesteps 64 \
+  --checkpoint-interval 32 \
+  --eval-num-envs 256 \
+  --eval-steps 220 \
+  --run-name smoke_cuda_exp021 \
+  --output-layout run \
+  --selection-gate balanced_progress_long
+```
+
+正式 20M 长训练：
+
+```bash
+ROOT=$(pwd)
+mkdir -p outputs/runs/exp021_randomized_terrain_filter_curriculum/_launcher
+
+systemd-run --user --unit exp021-filter-curriculum-20m \
+  --same-dir \
+  --collect \
+  --property=StandardOutput=append:${ROOT}/outputs/runs/exp021_randomized_terrain_filter_curriculum/_launcher/train.log \
+  --property=StandardError=append:${ROOT}/outputs/runs/exp021_randomized_terrain_filter_curriculum/_launcher/train.log \
+  .venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+    --config configs/experiment/exp021_randomized_terrain_filter_curriculum.yaml \
+    --device cuda \
+    --timesteps 10240 \
+    --seed 23 \
+    --num-envs 2048 \
+    --output-layout run \
+    --run-name pure_rl_seed23_20m_filter_curriculum \
+    --rollout-steps 32 \
+    --checkpoint-interval 1024 \
+    --eval-num-envs 1024 \
+    --eval-steps 220 \
+    --eval-seed-offset 1000 \
+    --bc-updates 0 \
+    --selection-gate balanced_progress_long
+```
+
+监控：
+
+```bash
+tail -f outputs/runs/exp021_randomized_terrain_filter_curriculum/_launcher/train.log
+```
+
+训练完成后对 best checkpoint 做 seeds `12023–12027` 独立复验，并输出 GIF、terrain height map、训练曲线和候选曲线。不要提交 `outputs/` 下的 checkpoint、JSON、PNG、GIF 或 TensorBoard。
+
 ## Checkpoint 统一评估
 
 训练完成后运行：

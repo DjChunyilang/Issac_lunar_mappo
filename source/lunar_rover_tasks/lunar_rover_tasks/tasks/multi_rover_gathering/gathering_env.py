@@ -90,6 +90,7 @@ class MultiRoverGatheringCore:
         self.angular_velocities = torch.zeros(self.num_envs, self.n_agents, device=self.device)
         self.previous_physical_action = torch.zeros(self.num_envs, self.n_agents, 2, device=self.device)
         self.step_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.global_step_count = 0
         self.success_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.oracle_point = torch.zeros(self.num_envs, 3, device=self.device)
         self.prev_metrics = compute_team_metrics(self.positions, self.velocities_xy)
@@ -195,12 +196,21 @@ class MultiRoverGatheringCore:
         self.prev_metrics = compute_team_metrics(self.positions, self.velocities_xy)
         previous_mean_oracle = self.prev_mean_oracle_distance.clone()
         raw_decoded = decode_action(action, self.positions, self.yaws, self.cfg.planner)
+        filter_cfg = self.cfg.planner.subgoal_filter
+        filter_progress = (
+            int(filter_cfg.progress_timestep_override)
+            if int(filter_cfg.progress_timestep_override) >= 0
+            else int(self.global_step_count)
+        )
         filter_result = apply_subgoal_filter(
             raw_decoded,
             self.positions,
             self.yaws,
             self.cfg,
             self.terrain_runtime,
+            progress_timestep=filter_progress,
+            deterministic=bool(filter_cfg.deterministic_eval),
+            generator=self.generator,
         )
         decoded = filter_result.decoded
         subgoal_terrain_features = (
@@ -237,6 +247,7 @@ class MultiRoverGatheringCore:
             self.cfg.low_level_control,
         )
         self._integrate(control)
+        self.global_step_count += 1
         self.step_count += 1
 
         metrics = compute_team_metrics(self.positions, self.velocities_xy)
@@ -274,6 +285,16 @@ class MultiRoverGatheringCore:
             ),
             path_height_change_mean=(
                 path_terrain["height_change_mean"] if path_terrain is not None else None
+            ),
+            filter_raw_path_risk_mean=(
+                filter_result.info["raw_path_terrain_risk_mean"]
+                if isinstance(filter_result.info.get("raw_path_terrain_risk_mean"), torch.Tensor)
+                else None
+            ),
+            filter_deviation=(
+                filter_result.info["suggested_subgoal_deviation"]
+                if isinstance(filter_result.info.get("suggested_subgoal_deviation"), torch.Tensor)
+                else None
             ),
         )
         self.prev_mean_oracle_distance = mean_oracle

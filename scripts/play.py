@@ -67,8 +67,15 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = cfg_from_experiment(args.config)
+    map_location = torch.device(cfg.simulation.device)
+    if map_location.type == "cuda" and not torch.cuda.is_available():
+        map_location = torch.device("cpu")
+    checkpoint = torch.load(args.checkpoint, map_location=map_location)
+    metadata = checkpoint.get("metadata", {}) if isinstance(checkpoint, dict) else {}
+    if cfg.planner.subgoal_filter.mode == "terrain_safe_candidate_curriculum":
+        cfg.planner.subgoal_filter.progress_timestep_override = int(metadata.get("timesteps", 0))
+        cfg.planner.subgoal_filter.deterministic_eval = True
     env = MultiRoverGatheringCore(cfg)
-    checkpoint = torch.load(args.checkpoint, map_location=env.device)
     act, backend = _load_policy_players(checkpoint, cfg, env.device)
     actor_obs, _ = env.get_observations()
     rewards = []

@@ -89,6 +89,8 @@ def compute_terrain_reward(
     path_terrain_risk_mean: torch.Tensor | None = None,
     path_terrain_risk_max: torch.Tensor | None = None,
     path_height_change_mean: torch.Tensor | None = None,
+    filter_raw_path_risk_mean: torch.Tensor | None = None,
+    filter_deviation: torch.Tensor | None = None,
 ) -> torch.Tensor:
     coeff = cfg.reward_coefficients
     if terrain_features is None:
@@ -112,6 +114,10 @@ def compute_terrain_reward(
         cost = cost + coeff.path_terrain_max_cost * path_terrain_risk_max.amax(dim=-1)
     if path_height_change_mean is not None and coeff.path_height_change_cost != 0.0:
         cost = cost + coeff.path_height_change_cost * path_height_change_mean.mean(dim=-1)
+    if filter_raw_path_risk_mean is not None and coeff.filter_raw_path_risk_cost != 0.0:
+        cost = cost + coeff.filter_raw_path_risk_cost * filter_raw_path_risk_mean.mean(dim=-1)
+    if filter_deviation is not None and coeff.filter_deviation_cost != 0.0:
+        cost = cost + coeff.filter_deviation_cost * filter_deviation.mean(dim=-1)
     return -cost
 
 
@@ -171,6 +177,8 @@ def compute_reward(
     path_terrain_risk_mean: torch.Tensor | None = None,
     path_terrain_risk_max: torch.Tensor | None = None,
     path_height_change_mean: torch.Tensor | None = None,
+    filter_raw_path_risk_mean: torch.Tensor | None = None,
+    filter_deviation: torch.Tensor | None = None,
 ) -> tuple[RewardTerms, torch.Tensor]:
     weights = cfg.reward_weights
     gather = compute_gather_reward(prev_metrics, metrics, cfg)
@@ -192,6 +200,8 @@ def compute_reward(
         path_terrain_risk_mean=path_terrain_risk_mean,
         path_terrain_risk_max=path_terrain_risk_max,
         path_height_change_mean=path_height_change_mean,
+        filter_raw_path_risk_mean=filter_raw_path_risk_mean,
+        filter_deviation=filter_deviation,
     )
     motion = compute_motion_reward(physical_action, cfg)
     consistency = compute_consistency_reward(physical_action, previous_physical_action, cfg)

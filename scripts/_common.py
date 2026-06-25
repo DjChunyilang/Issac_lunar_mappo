@@ -113,6 +113,12 @@ def _apply_planner_values(cfg: MultiRoverGatheringEnvCfg, values: dict) -> None:
         raise ValueError("planner.subgoal_filter.beta_offsets_deg must not be empty.")
     if cfg.planner.subgoal_filter.path_samples <= 0:
         raise ValueError("planner.subgoal_filter.path_samples must be positive.")
+    if not (0.0 <= cfg.planner.subgoal_filter.apply_probability_end <= 1.0):
+        raise ValueError("planner.subgoal_filter.apply_probability_end must be in [0, 1].")
+    if cfg.planner.subgoal_filter.ramp_timesteps <= 0:
+        raise ValueError("planner.subgoal_filter.ramp_timesteps must be positive.")
+    if cfg.planner.subgoal_filter.warmup_timesteps < 0:
+        raise ValueError("planner.subgoal_filter.warmup_timesteps must be non-negative.")
 
 
 def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:

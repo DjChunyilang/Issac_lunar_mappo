@@ -64,8 +64,16 @@ def evaluate_checkpoint(
     if seed is not None:
         cfg.seed = seed
 
+    map_location = torch.device(cfg.simulation.device)
+    if map_location.type == "cuda" and not torch.cuda.is_available():
+        map_location = torch.device("cpu")
+    checkpoint_data = torch.load(checkpoint, map_location=map_location)
+    metadata = checkpoint_data.get("metadata", {}) if isinstance(checkpoint_data, dict) else {}
+    if cfg.planner.subgoal_filter.mode == "terrain_safe_candidate_curriculum":
+        cfg.planner.subgoal_filter.progress_timestep_override = int(metadata.get("timesteps", 0))
+        cfg.planner.subgoal_filter.deterministic_eval = True
+
     env = MultiRoverGatheringCore(cfg)
-    checkpoint_data = torch.load(checkpoint, map_location=env.device)
     act, backend = _load_policy_players(checkpoint_data, cfg, env.device)
     actor_obs, _ = env.get_observations()
 
@@ -116,10 +124,18 @@ def evaluate_checkpoint(
     filter_filtered_risk_sum = torch.tensor(0.0, device=env.device)
     filter_risk_reduction_sum = torch.tensor(0.0, device=env.device)
     filter_subgoal_deviation_sum = torch.tensor(0.0, device=env.device)
+    filter_suggested_subgoal_deviation_sum = torch.tensor(0.0, device=env.device)
     filter_endpoint_near_violation_sum = torch.tensor(0.0, device=env.device)
     filter_endpoint_collision_violation_sum = torch.tensor(0.0, device=env.device)
     filter_endpoint_collision_violation_count = torch.tensor(0.0, device=env.device)
     filter_candidate_index_sum = torch.tensor(0.0, device=env.device)
+    filter_deterministic_applied_sum = torch.tensor(0.0, device=env.device)
+    filter_raw_score_sum = torch.tensor(0.0, device=env.device)
+    filter_filtered_score_sum = torch.tensor(0.0, device=env.device)
+    filter_score_margin_sum = torch.tensor(0.0, device=env.device)
+    filter_apply_probability_sum = torch.tensor(0.0, device=env.device)
+    filter_score_scale_sum = torch.tensor(0.0, device=env.device)
+    filter_schedule_progress_step = 0
     filter_candidate_histogram: torch.Tensor | None = None
     filter_candidate_count = 0
 
@@ -227,9 +243,18 @@ def evaluate_checkpoint(
                 filtered_risk = action_filter["filtered_path_terrain_risk_mean"][active_before].reshape(-1)
                 risk_reduction = action_filter["path_terrain_risk_reduction"][active_before].reshape(-1)
                 subgoal_deviation = action_filter["subgoal_deviation"][active_before].reshape(-1)
+                suggested_deviation = action_filter["suggested_subgoal_deviation"][
+                    active_before
+                ].reshape(-1)
                 near_violation = action_filter["endpoint_near_violation"][active_before].reshape(-1)
                 collision_violation = action_filter["endpoint_collision_violation"][active_before].reshape(-1)
                 candidate_index = action_filter["candidate_index"][active_before].reshape(-1)
+                deterministic_applied = action_filter["deterministic_applied"][
+                    active_before
+                ].reshape(-1)
+                raw_score = action_filter["raw_score"][active_before].reshape(-1)
+                filtered_score = action_filter["filtered_score"][active_before].reshape(-1)
+                score_margin = action_filter["score_margin"][active_before].reshape(-1)
                 sample_count = torch.tensor(float(active_filter.numel()), device=env.device)
                 filter_sample_count = filter_sample_count + sample_count
                 filter_applied_sum = filter_applied_sum + active_filter.float().sum()
@@ -237,6 +262,9 @@ def evaluate_checkpoint(
                 filter_filtered_risk_sum = filter_filtered_risk_sum + filtered_risk.sum()
                 filter_risk_reduction_sum = filter_risk_reduction_sum + risk_reduction.sum()
                 filter_subgoal_deviation_sum = filter_subgoal_deviation_sum + subgoal_deviation.sum()
+                filter_suggested_subgoal_deviation_sum = (
+                    filter_suggested_subgoal_deviation_sum + suggested_deviation.sum()
+                )
                 filter_endpoint_near_violation_sum = filter_endpoint_near_violation_sum + near_violation.sum()
                 filter_endpoint_collision_violation_sum = (
                     filter_endpoint_collision_violation_sum + collision_violation.sum()
@@ -246,6 +274,22 @@ def evaluate_checkpoint(
                     + (collision_violation > 0.0).float().sum()
                 )
                 filter_candidate_index_sum = filter_candidate_index_sum + candidate_index.float().sum()
+                filter_deterministic_applied_sum = (
+                    filter_deterministic_applied_sum + deterministic_applied.float().sum()
+                )
+                filter_raw_score_sum = filter_raw_score_sum + raw_score.sum()
+                filter_filtered_score_sum = filter_filtered_score_sum + filtered_score.sum()
+                filter_score_margin_sum = filter_score_margin_sum + score_margin.sum()
+                filter_apply_probability_sum = filter_apply_probability_sum + (
+                    sample_count * float(action_filter.get("apply_probability", 0.0))
+                )
+                filter_score_scale_sum = filter_score_scale_sum + (
+                    sample_count * float(action_filter.get("score_scale", 0.0))
+                )
+                filter_schedule_progress_step = max(
+                    filter_schedule_progress_step,
+                    int(action_filter.get("schedule_progress_step", 0)),
+                )
                 step_histogram = torch.bincount(
                     candidate_index,
                     minlength=max(filter_candidate_count, 1),
@@ -357,6 +401,9 @@ def evaluate_checkpoint(
         "filter_subgoal_deviation_mean": float(
             (filter_subgoal_deviation_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
         ),
+        "filter_suggested_subgoal_deviation_mean": float(
+            (filter_suggested_subgoal_deviation_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
         "filter_endpoint_near_violation_mean": float(
             (filter_endpoint_near_violation_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
         ),
@@ -369,6 +416,25 @@ def evaluate_checkpoint(
         "filter_candidate_index_mean": float(
             (filter_candidate_index_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
         ),
+        "filter_deterministic_applied_fraction": float(
+            (filter_deterministic_applied_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_raw_score_mean": float(
+            (filter_raw_score_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_filtered_score_mean": float(
+            (filter_filtered_score_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_score_margin_mean": float(
+            (filter_score_margin_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_apply_probability_mean": float(
+            (filter_apply_probability_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_score_scale_mean": float(
+            (filter_score_scale_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_schedule_progress_step": filter_schedule_progress_step,
         "filter_candidate_index_histogram": (
             {
                 str(index): float((count / filter_candidate_histogram.sum().clamp_min(1.0)).detach().cpu())

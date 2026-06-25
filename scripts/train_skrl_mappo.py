@@ -426,6 +426,10 @@ SAFE_PROGRESS_LONG_THRESHOLDS = {
     "dmax_reduction_ratio": 0.30,
     "success_rate": 0.20,
 }
+BALANCED_PROGRESS_LONG_THRESHOLDS = {
+    "dmax_reduction_ratio": 0.30,
+    "success_rate": 0.05,
+}
 
 
 def proxy_acceptance(metrics: dict, thresholds: dict | None = None) -> dict:
@@ -570,6 +574,62 @@ def safe_progress_long_checkpoint_rank(
     )
 
 
+def balanced_progress_long_checkpoint_rank(
+    metrics: dict,
+    thresholds: dict | None = None,
+) -> tuple[int, float, float, float, float, float, int]:
+    thresholds = thresholds or BALANCED_PROGRESS_LONG_THRESHOLDS
+    if proxy_acceptance(metrics, STRICT_THRESHOLDS)["passed"]:
+        return (
+            0,
+            0.0,
+            float(metrics.get("collision_rate", float("inf"))),
+            float(metrics.get("timeout_rate", float("inf"))),
+            -float(metrics.get("success_rate", 0.0)),
+            float(metrics.get("dmax_reduction_ratio", float("inf"))),
+            -int(metrics.get("candidate_timestep", 0)),
+        )
+    has_minimum_progress = float(metrics.get("success_rate", 0.0)) >= thresholds["success_rate"]
+    if has_minimum_progress:
+        return (
+            1,
+            max(
+                0.0,
+                float(metrics.get("dmax_reduction_ratio", float("inf")))
+                / thresholds["dmax_reduction_ratio"]
+                - 1.0,
+            ),
+            float(metrics.get("collision_rate", float("inf"))),
+            float(metrics.get("timeout_rate", float("inf"))),
+            -float(metrics.get("success_rate", 0.0)),
+            float(metrics.get("dmax_reduction_ratio", float("inf"))),
+            -int(metrics.get("candidate_timestep", 0)),
+        )
+    violation = (
+        max(
+            0.0,
+            float(metrics.get("dmax_reduction_ratio", float("inf")))
+            / thresholds["dmax_reduction_ratio"]
+            - 1.0,
+        )
+        + max(
+            0.0,
+            1.0 - float(metrics.get("success_rate", 0.0)) / thresholds["success_rate"],
+        )
+        + max(0.0, float(metrics.get("collision_rate", 0.0)) / 0.02 - 1.0)
+        + float(metrics.get("timeout_rate", 0.0))
+    )
+    return (
+        2,
+        violation,
+        float(metrics.get("collision_rate", float("inf"))),
+        float(metrics.get("timeout_rate", float("inf"))),
+        -float(metrics.get("success_rate", 0.0)),
+        float(metrics.get("dmax_reduction_ratio", float("inf"))),
+        -int(metrics.get("candidate_timestep", 0)),
+    )
+
+
 def subgoal_filter_metadata(cfg) -> dict[str, Any]:
     filter_cfg = cfg.planner.subgoal_filter
     return {
@@ -586,6 +646,17 @@ def subgoal_filter_metadata(cfg) -> dict[str, Any]:
             "subgoal_terrain": float(filter_cfg.subgoal_terrain_weight),
             "endpoint_near": float(filter_cfg.endpoint_near_weight),
             "endpoint_collision": float(filter_cfg.endpoint_collision_weight),
+            "visible_neighbor_center": float(filter_cfg.visible_neighbor_center_weight),
+        },
+        "schedule": {
+            "warmup_timesteps": int(filter_cfg.warmup_timesteps),
+            "ramp_timesteps": int(filter_cfg.ramp_timesteps),
+            "apply_probability_end": float(filter_cfg.apply_probability_end),
+            "score_scale_start": float(filter_cfg.score_scale_start),
+            "score_scale_end": float(filter_cfg.score_scale_end),
+            "deterministic_improvement_margin": float(
+                filter_cfg.deterministic_improvement_margin
+            ),
         },
     }
 
@@ -1046,6 +1117,9 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
                 "filter_subgoal_deviation_mean": float(
                     action_filter["subgoal_deviation"].detach().float().mean().cpu()
                 ),
+                "filter_suggested_subgoal_deviation_mean": float(
+                    action_filter["suggested_subgoal_deviation"].detach().float().mean().cpu()
+                ),
                 "filter_endpoint_near_violation_mean": float(
                     action_filter["endpoint_near_violation"].detach().float().mean().cpu()
                 ),
@@ -1062,6 +1136,23 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
                 "filter_candidate_index_mean": float(
                     action_filter["candidate_index"].detach().float().mean().cpu()
                 ),
+                "filter_raw_score_mean": float(
+                    action_filter["raw_score"].detach().float().mean().cpu()
+                ),
+                "filter_filtered_score_mean": float(
+                    action_filter["filtered_score"].detach().float().mean().cpu()
+                ),
+                "filter_score_margin_mean": float(
+                    action_filter["score_margin"].detach().float().mean().cpu()
+                ),
+                "filter_deterministic_applied_fraction": float(
+                    action_filter["deterministic_applied"].detach().float().mean().cpu()
+                ),
+                "filter_schedule_progress_step": float(
+                    action_filter.get("schedule_progress_step", 0)
+                ),
+                "filter_apply_probability": float(action_filter.get("apply_probability", 0.0)),
+                "filter_score_scale": float(action_filter.get("score_scale", 0.0)),
             }
             histogram = action_filter.get("candidate_index_histogram")
             if isinstance(histogram, torch.Tensor):
@@ -1358,7 +1449,13 @@ def main() -> None:
     parser.add_argument("--bc-batch-size", type=int, default=None)
     parser.add_argument(
         "--selection-gate",
-        choices=("screen", "strict", "pure_rl_long", "safe_progress_long"),
+        choices=(
+            "screen",
+            "strict",
+            "pure_rl_long",
+            "safe_progress_long",
+            "balanced_progress_long",
+        ),
         default="strict",
     )
     parser.add_argument("--bc-only", action="store_true")
@@ -1787,6 +1884,7 @@ def main() -> None:
                     "phase": "ppo",
                     "update_mode": update_mode,
                     "communication_radius": cfg.observation.communication_radius,
+                    "subgoal_filter": subgoal_filter_metadata(cfg),
                     "bc_updates": bc_updates,
                     "bc_batch_size": bc_batch_size,
                     "bc_learning_rate": bc_learning_rate,
@@ -1910,6 +2008,8 @@ def main() -> None:
             if args.selection_gate == "pure_rl_long"
             else SAFE_PROGRESS_LONG_THRESHOLDS
             if args.selection_gate == "safe_progress_long"
+            else BALANCED_PROGRESS_LONG_THRESHOLDS
+            if args.selection_gate == "balanced_progress_long"
             else STRICT_THRESHOLDS
         )
         ranker = (
@@ -1917,6 +2017,8 @@ def main() -> None:
             if args.selection_gate == "pure_rl_long"
             else safe_progress_long_checkpoint_rank
             if args.selection_gate == "safe_progress_long"
+            else balanced_progress_long_checkpoint_rank
+            if args.selection_gate == "balanced_progress_long"
             else checkpoint_rank
         )
         best_evaluation = min(

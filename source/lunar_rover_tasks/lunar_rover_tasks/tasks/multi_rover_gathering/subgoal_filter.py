@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import pi
+from typing import Any
 
 import torch
 
@@ -21,7 +22,7 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
 @dataclass(slots=True)
 class SubgoalFilterResult:
     decoded: DecodedAction
-    info: dict[str, torch.Tensor | bool | int]
+    info: dict[str, Any]
 
 
 def _disabled_filter_result(decoded: DecodedAction) -> SubgoalFilterResult:
@@ -42,11 +43,21 @@ def _disabled_filter_result(decoded: DecodedAction) -> SubgoalFilterResult:
             "filtered_path_height_change_mean": zeros,
             "path_terrain_risk_reduction": zeros,
             "subgoal_deviation": zeros,
+            "suggested_subgoal_deviation": zeros,
             "endpoint_near_violation": zeros,
             "endpoint_collision_violation": zeros,
+            "raw_score": zeros,
+            "filtered_score": zeros,
+            "score_margin": zeros,
             "applied": zeros.bool(),
+            "deterministic_applied": zeros.bool(),
             "candidate_index": candidate_index,
+            "suggested_candidate_index": candidate_index,
             "candidate_index_histogram": histogram,
+            "schedule_progress_step": 0,
+            "apply_probability": 0.0,
+            "score_scale": 0.0,
+            "deterministic_applied_fraction": 0.0,
         },
     )
 
@@ -124,6 +135,57 @@ def _endpoint_safety_violations(
     return near_violation, collision_violation
 
 
+def _visible_neighbor_center_cost(
+    positions: torch.Tensor,
+    candidate_world_subgoals: torch.Tensor,
+    cfg: MultiRoverGatheringEnvCfg,
+) -> torch.Tensor:
+    n_agents = positions.shape[1]
+    if n_agents <= 1:
+        return torch.zeros(
+            candidate_world_subgoals.shape[:-1],
+            dtype=candidate_world_subgoals.dtype,
+            device=candidate_world_subgoals.device,
+        )
+    current_delta = positions[:, :, None, :2] - positions[:, None, :, :2]
+    current_distance = torch.linalg.norm(current_delta, dim=-1)
+    eye = torch.eye(n_agents, dtype=torch.bool, device=positions.device).unsqueeze(0)
+    visible = (current_distance <= float(cfg.observation.communication_radius)) & ~eye
+    weights = visible.to(dtype=positions.dtype)
+    count = weights.sum(dim=-1, keepdim=True)
+    center = torch.matmul(weights, positions[..., :2]) / count.clamp_min(1.0)
+    distance = torch.linalg.norm(candidate_world_subgoals[..., :2] - center[:, :, None, :], dim=-1)
+    normalized = distance / max(float(cfg.success_thresholds.dmax), 1.0e-6)
+    return torch.where(count > 0.0, normalized, torch.zeros_like(normalized))
+
+
+def _schedule_values(
+    cfg: MultiRoverGatheringEnvCfg,
+    progress_timestep: int | None,
+) -> tuple[int, float, float]:
+    filter_cfg = cfg.planner.subgoal_filter
+    step = max(0, int(progress_timestep or 0))
+    if filter_cfg.mode != "terrain_safe_candidate_curriculum":
+        return step, 1.0, 1.0
+
+    warmup = max(0, int(filter_cfg.warmup_timesteps))
+    ramp = max(1, int(filter_cfg.ramp_timesteps))
+    if step < warmup:
+        alpha = 0.0
+        apply_probability = 0.0
+    else:
+        alpha = min(1.0, max(0.0, (step - warmup) / float(ramp)))
+        apply_probability = alpha * float(filter_cfg.apply_probability_end)
+    score_scale = float(filter_cfg.score_scale_start) + alpha * (
+        float(filter_cfg.score_scale_end) - float(filter_cfg.score_scale_start)
+    )
+    return (
+        step,
+        max(0.0, min(1.0, apply_probability)),
+        max(0.0, score_scale),
+    )
+
+
 def _gather_candidate(values: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
     return torch.gather(
         values,
@@ -142,17 +204,29 @@ def apply_subgoal_filter(
     yaws: torch.Tensor,
     cfg: MultiRoverGatheringEnvCfg,
     runtime: TerrainRuntime | None = None,
+    *,
+    progress_timestep: int | None = None,
+    deterministic: bool | None = None,
+    generator: torch.Generator | None = None,
 ) -> SubgoalFilterResult:
     filter_cfg = cfg.planner.subgoal_filter
     if not filter_cfg.enabled:
         return _disabled_filter_result(decoded)
-    if filter_cfg.mode != "terrain_safe_candidate":
+    supported_modes = {"terrain_safe_candidate", "terrain_safe_candidate_curriculum"}
+    if filter_cfg.mode not in supported_modes:
         raise ValueError(f"Unsupported subgoal filter mode: {filter_cfg.mode}")
     if filter_cfg.path_samples <= 0:
         raise ValueError("planner.subgoal_filter.path_samples must be positive")
+    schedule_step, apply_probability, score_scale = _schedule_values(cfg, progress_timestep)
     physical_candidates, intent_deviation, raw_candidate_index = _candidate_physical_actions(
         decoded.physical,
         cfg,
+    )
+    raw_index = torch.full(
+        decoded.physical.shape[:-1],
+        int(raw_candidate_index),
+        dtype=torch.long,
+        device=decoded.physical.device,
     )
     local_candidates, world_candidates = _local_to_world_candidates(
         positions,
@@ -174,19 +248,50 @@ def apply_subgoal_filter(
         world_candidates,
         cfg,
     )
-    score = (
-        float(filter_cfg.intent_deviation_weight) * intent_deviation
-        + float(filter_cfg.path_terrain_mean_weight) * path["risk_mean"]
+    visible_center_cost = _visible_neighbor_center_cost(positions, world_candidates, cfg)
+    auxiliary_score = (
+        float(filter_cfg.path_terrain_mean_weight) * path["risk_mean"]
         + float(filter_cfg.path_terrain_max_weight) * path["risk_max"]
         + float(filter_cfg.path_height_change_weight) * path["height_change_mean"]
         + float(filter_cfg.subgoal_terrain_weight) * subgoal_risk
         + float(filter_cfg.endpoint_near_weight) * near_violation
         + float(filter_cfg.endpoint_collision_weight) * collision_violation
+        + float(filter_cfg.visible_neighbor_center_weight) * visible_center_cost
+    )
+    score = (
+        float(filter_cfg.intent_deviation_weight) * intent_deviation
+        + float(score_scale) * auxiliary_score
     )
     selected = score.argmin(dim=-1)
-    filtered_physical = _gather_candidate(physical_candidates, selected)
-    filtered_local_xy = _gather_candidate(local_candidates, selected)
-    filtered_world = _gather_candidate(world_candidates, selected)
+    raw_score = _gather_scalar(score, raw_index)
+    selected_score = _gather_scalar(score, selected)
+    score_margin = raw_score - selected_score
+    deterministic_filter = (
+        bool(filter_cfg.deterministic_eval) if deterministic is None else bool(deterministic)
+    )
+    deterministic_applied = (
+        (selected != raw_index)
+        & (score_margin >= float(filter_cfg.deterministic_improvement_margin))
+        & (apply_probability > 0.0)
+    )
+    if deterministic_filter:
+        applied = deterministic_applied
+    elif apply_probability <= 0.0:
+        applied = torch.zeros_like(deterministic_applied)
+    elif apply_probability >= 1.0:
+        applied = selected != raw_index
+    else:
+        random_values = torch.rand(
+            selected.shape,
+            dtype=decoded.physical.dtype,
+            device=decoded.physical.device,
+            generator=generator,
+        )
+        applied = (selected != raw_index) & (random_values < float(apply_probability))
+    execution_index = torch.where(applied, selected, raw_index)
+    filtered_physical = _gather_candidate(physical_candidates, execution_index)
+    filtered_local_xy = _gather_candidate(local_candidates, execution_index)
+    filtered_world = _gather_candidate(world_candidates, execution_index)
     filtered_normalized = torch.stack(
         (
             2.0 * filtered_physical[..., 0] / max(float(cfg.planner.rho_max), 1.0e-6) - 1.0,
@@ -201,16 +306,22 @@ def apply_subgoal_filter(
         runtime,
         num_samples=int(filter_cfg.path_samples),
     )
-    filtered_risk_mean = _gather_scalar(path["risk_mean"], selected)
-    filtered_risk_max = _gather_scalar(path["risk_max"], selected)
-    filtered_height_change = _gather_scalar(path["height_change_mean"], selected)
-    selected_near_violation = _gather_scalar(near_violation, selected)
-    selected_collision_violation = _gather_scalar(collision_violation, selected)
-    selected_deviation = _gather_scalar(intent_deviation, selected)
-    applied = selected != raw_candidate_index
+    filtered_risk_mean = _gather_scalar(path["risk_mean"], execution_index)
+    filtered_risk_max = _gather_scalar(path["risk_max"], execution_index)
+    filtered_height_change = _gather_scalar(path["height_change_mean"], execution_index)
+    selected_near_violation = _gather_scalar(near_violation, execution_index)
+    selected_collision_violation = _gather_scalar(collision_violation, execution_index)
+    selected_deviation = _gather_scalar(intent_deviation, execution_index)
+    suggested_deviation = _gather_scalar(intent_deviation, selected)
+    executed_score = _gather_scalar(score, execution_index)
+    suggested_risk_mean = _gather_scalar(path["risk_mean"], selected)
+    suggested_risk_max = _gather_scalar(path["risk_max"], selected)
+    suggested_height_change = _gather_scalar(path["height_change_mean"], selected)
+    suggested_near_violation = _gather_scalar(near_violation, selected)
+    suggested_collision_violation = _gather_scalar(collision_violation, selected)
     candidate_count = physical_candidates.shape[2]
     histogram = torch.bincount(
-        selected.reshape(-1),
+        execution_index.reshape(-1),
         minlength=candidate_count,
     ).to(dtype=decoded.physical.dtype)
     histogram = histogram / histogram.sum().clamp_min(1.0)
@@ -228,16 +339,35 @@ def apply_subgoal_filter(
             "raw_candidate_index": raw_candidate_index,
             "raw_path_terrain_risk_mean": raw_path["risk_mean"],
             "filtered_path_terrain_risk_mean": filtered_risk_mean,
+            "suggested_path_terrain_risk_mean": suggested_risk_mean,
             "raw_path_terrain_risk_max": raw_path["risk_max"],
             "filtered_path_terrain_risk_max": filtered_risk_max,
+            "suggested_path_terrain_risk_max": suggested_risk_max,
             "raw_path_height_change_mean": raw_path["height_change_mean"],
             "filtered_path_height_change_mean": filtered_height_change,
+            "suggested_path_height_change_mean": suggested_height_change,
             "path_terrain_risk_reduction": raw_path["risk_mean"] - filtered_risk_mean,
+            "suggested_path_terrain_risk_reduction": raw_path["risk_mean"] - suggested_risk_mean,
             "subgoal_deviation": selected_deviation,
+            "suggested_subgoal_deviation": suggested_deviation,
             "endpoint_near_violation": selected_near_violation,
             "endpoint_collision_violation": selected_collision_violation,
+            "suggested_endpoint_near_violation": suggested_near_violation,
+            "suggested_endpoint_collision_violation": suggested_collision_violation,
+            "raw_score": raw_score,
+            "filtered_score": executed_score,
+            "suggested_score": selected_score,
+            "score_margin": score_margin,
             "applied": applied,
-            "candidate_index": selected,
+            "deterministic_applied": deterministic_applied,
+            "candidate_index": execution_index,
+            "suggested_candidate_index": selected,
             "candidate_index_histogram": histogram,
+            "schedule_progress_step": schedule_step,
+            "apply_probability": float(apply_probability),
+            "score_scale": float(score_scale),
+            "deterministic_applied_fraction": float(
+                deterministic_applied.float().mean().detach().cpu()
+            ),
         },
     )

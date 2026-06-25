@@ -50,6 +50,15 @@ class SubgoalFilterCfg:
     subgoal_terrain_weight: float = 0.30
     endpoint_near_weight: float = 2.0
     endpoint_collision_weight: float = 1000.0
+    visible_neighbor_center_weight: float = 0.0
+    warmup_timesteps: int = 0
+    ramp_timesteps: int = 1
+    apply_probability_end: float = 1.0
+    score_scale_start: float = 1.0
+    score_scale_end: float = 1.0
+    deterministic_improvement_margin: float = 0.0
+    progress_timestep_override: int = -1
+    deterministic_eval: bool = False
 
 
 @dataclass(slots=True)
@@ -134,6 +143,8 @@ class RewardCoefficientsCfg:
     path_terrain_mean_cost: float = 0.0
     path_terrain_max_cost: float = 0.0
     path_height_change_cost: float = 0.0
+    filter_raw_path_risk_cost: float = 0.0
+    filter_deviation_cost: float = 0.0
     inter_agent_collision: float = 8.0
     near_distance: float = 0.5
     subgoal_turn: float = 0.05

@@ -185,6 +185,8 @@ def test_reward_config_keys_match_consumed_reward_terms() -> None:
         "dmax_level",
         "dmax_progress",
         "failure_penalty",
+        "filter_deviation_cost",
+        "filter_raw_path_risk_cost",
         "inter_agent_collision",
         "near_distance",
         "oracle_mean_distance_progress",

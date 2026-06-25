@@ -101,6 +101,31 @@ critic_state_dim
 
 `planner.subgoal_filter` 是可选 proxy planner 后处理，默认关闭。启用时，它在 Actor 输出 `[rho, beta]` 之后、轨迹生成之前，从固定候选子目标中按地形路径风险和 endpoint safety 选择 filtered subgoal。该机制不改变 Actor 输出维度、Critic 状态维度或 checkpoint schema；checkpoint metadata 会记录 filter 配置摘要。
 
+当前支持两种 mode：
+
+- `terrain_safe_candidate`：exp020 使用的 hard filter，每步执行 score 最低的候选。
+- `terrain_safe_candidate_curriculum`：exp021 使用的课程化 filter，训练时按 `warmup_timesteps` / `ramp_timesteps` 逐步提高 `apply_probability` 和 `score_scale`；评估时读取 checkpoint metadata 中的 `timesteps` 固定课程进度，并使用 deterministic rule，只有 filtered score 比 raw score 至少好 `deterministic_improvement_margin` 时才替换。
+
+`action_filter` telemetry 至少包含：
+
+```text
+raw_path_terrain_risk_mean
+filtered_path_terrain_risk_mean
+path_terrain_risk_reduction
+subgoal_deviation
+suggested_subgoal_deviation
+raw_score
+filtered_score
+score_margin
+applied
+deterministic_applied
+candidate_index
+suggested_candidate_index
+schedule_progress_step
+apply_probability
+score_scale
+```
+
 ## 第一阶段动力学
 
 当前 rover 是 proxy unicycle 状态模型。只有在 rover 资产和控制接口明确后，才应替换为真实 Isaac Sim articulation。
@@ -135,6 +160,8 @@ absolute terrain height change
 straight path mean terrain risk
 straight path max terrain risk
 straight path mean height change
+raw-action path risk auxiliary cost
+filter-deviation auxiliary cost
 ```
 
-候选子目标风险由当前 action 解码后的世界坐标落点计算；速度损失使用本步实际 terrain speed scale；高度变化使用积分前后地形高度差。路径级风险沿 rover 当前点到 decoded subgoal 的直线采样 5 个点，统计 mean risk、max risk 和 mean absolute height change。新增项在默认配置中系数均为 0，因此不会改变 exp018 及更早实验的历史语义。
+候选子目标风险由当前 action 解码后的世界坐标落点计算；速度损失使用本步实际 terrain speed scale；高度变化使用积分前后地形高度差。路径级风险沿 rover 当前点到 decoded subgoal 的直线采样 5 个点，统计 mean risk、max risk 和 mean absolute height change。filter auxiliary cost 使用 raw action 的 path risk 和 filter 建议相对 raw intent 的 deviation。新增项在默认配置中系数均为 0，因此不会改变 exp020 及更早实验的历史语义。
