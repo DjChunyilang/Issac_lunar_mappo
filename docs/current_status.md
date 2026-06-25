@@ -23,6 +23,7 @@
 - exp017 已完成 pure RL 连续 20M 长跑并通过 seed23 独立 strict eval；这是固定地图、单 seed proxy 结果，不代表随机地图泛化或多 seed 收敛。
 - exp018 已加入每环境、每 episode reset 独立地形随机化，并把地形强度提高一档；完整测试、CPU/CUDA smoke 和随机地图渲染已通过。seed23 连续 20M 已完成，dmax 和 success 达标，但 collision / timeout 未通过 strict gate。
 - exp019 已在 exp018 基础上完成两个诊断改造：success gate 新增最近邻安全间距 `0.42 m`，terrain reward 扩展到当前点到子目标的路径级风险。seed23 20M 工程链路和 5 轮独立 eval/GIF 已完成，但 strict gate 未通过。
+- exp020 已在 exp019 基础上加入 terrain/safety-aware 子目标过滤器；过滤器稳定降低路径风险，但显著抑制集合进度。seed23 20M、5 轮独立 eval/GIF 和训练曲线已完成，strict gate 未通过。
 
 ## Checkpoint 评估工作流
 
@@ -69,6 +70,7 @@ final_selected
 | exp017 | 固定偏弱中档 lunar crater proxy | shared-joint MAPPO pure RL + comm12 | seed23 strict 通过 | final dmax ratio 0.1318、success 0.9990、collision 0.00098、timeout 0；仍是 single-seed candidate。 |
 | exp018 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + comm12 | 未通过 | seed23 20M 完成；final dmax ratio 0.1417、success 0.9609 通过，但 collision 0.0352、timeout 0.0088 未达 strict gate。 |
 | exp019 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + safe success gate + path terrain risk | 未通过 | seed23 20M 完成；10240 checkpoint 有集合趋势但 collision 高，当前 best final eval success 0.0195、collision 0.0791、timeout 0.9023；5 seed 复验均值 success 0.0143、collision 0.0801、timeout 0.9082。 |
+| exp020 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + terrain/safety subgoal filter | 未通过 | seed23 20M 完成；filter 将 5 seed path risk mean 从 raw 0.3815 降到 0.3187，但 success 0、collision 0.0498、timeout 0.9506，说明过滤器过强地牺牲了集合进度。 |
 
 历史完整 suite checkpoint：
 
@@ -87,6 +89,7 @@ outputs/runs/exp_008_terrain3d/_suite/checkpoints/
 - exp017 可以表述为“固定地图、seed23、proxy pure RL 从零通过 strict gate”，不能扩展为多 seed、随机地图或 PhysX 收敛。
 - exp018 可以表述为“随机增强地形下已获得稳定集合趋势和较高 success，但安全/超时 gate 未完全收敛”，不能写成随机地图 strict pass。
 - exp019 可以表述为“成功区安全间距和路径级地形风险链路已接入并可训练/评估，但当前 reward 下策略仍在成功率、碰撞率和超时之间失衡”，不能写成安全地形策略收敛。
+- exp020 可以表述为“子目标过滤器确实降低了路径风险，但当前 hard post-processing 过强，导致探索/集合进度塌缩”，不能写成地形规避策略成功。
 - GIF、截图和 TensorBoard 曲线只能用于展示和诊断；严格结论以 `_suite/metrics/strict_acceptance.json`、`metrics/final_eval_proxy.json` 和 `metrics/checkpoint_status.json` 为准。
 
 ## Jackal 跟踪验证
@@ -131,7 +134,7 @@ outputs/runs/physx_jackal_tracking/strong_lunar_crater_final_v2/
 
 ## 下一步
 
-1. 设计 exp020 时优先处理 exp019 暴露的 reward/gate 冲突：当前 path risk 已进入训练信号，但没有形成稳定绕障行为；安全项提高后又让 best checkpoint 变成低碰撞、低成功、长超时。
-2. 保留 exp017 作为固定地图 pure RL baseline，保留 exp018 作为随机地形单 seed candidate / failure analysis，保留 exp019 作为安全成功门控和路径风险 failure analysis，不把三者扩写为多 seed 或 PhysX 收敛。
-3. 下一轮可考虑把地形从“软惩罚”升级为动作可达性/候选子目标过滤或局部路径 planner 约束，同时把成功区、安全区和 episode 长度重新成套调参。
+1. 下一轮优先让过滤器课程化或软化：不要从一开始强制低风险候选；可先用 actor raw action 训练集合，再逐步提高 filter 权重 / applied probability，或把 filter score 作为 auxiliary penalty 而非硬替换。
+2. 保留 exp017 作为固定地图 pure RL baseline，保留 exp018/exp019/exp020 作为随机地形 failure analysis，不把三者扩写为多 seed或 PhysX 收敛。
+3. 如果继续做子目标过滤，应加入“保持朝向集合中心/邻居中心”的 intent term 或最低前进约束，避免过滤器把所有动作推成安全绕行但不集合。
 4. 为 PhysX / Jackal 后续接入同布局 raycast / height scanner，保持 proxy 与高保真观测接口一致。

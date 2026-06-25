@@ -73,6 +73,48 @@ def _apply_observation_values(cfg: MultiRoverGatheringEnvCfg, values: dict) -> N
         cfg.observation.communication_radius = float(values["communication_radius"])
 
 
+def _apply_planner_values(cfg: MultiRoverGatheringEnvCfg, values: dict) -> None:
+    values = _require_mapping("planner", values)
+    supported = {"rho_max", "beta_max", "subgoal_filter"}
+    unknown = sorted(key for key in values if key not in supported)
+    if unknown:
+        unknown_keys = ", ".join(f"planner.{key}" for key in unknown)
+        raise ValueError(f"Unsupported config key(s): {unknown_keys}.")
+    cfg.planner.rho_max = float(values.get("rho_max", cfg.planner.rho_max))
+    cfg.planner.beta_max = float(values.get("beta_max", cfg.planner.beta_max))
+    filter_values = _require_mapping(
+        "planner.subgoal_filter",
+        values.get("subgoal_filter", {}),
+    )
+    filter_unknown = sorted(
+        key for key in filter_values if not hasattr(cfg.planner.subgoal_filter, key)
+    )
+    if filter_unknown:
+        unknown_keys = ", ".join(
+            f"planner.subgoal_filter.{key}" for key in filter_unknown
+        )
+        raise ValueError(f"Unsupported config key(s): {unknown_keys}.")
+    for key, value in filter_values.items():
+        current = getattr(cfg.planner.subgoal_filter, key)
+        if isinstance(current, bool):
+            converted = bool(value)
+        elif isinstance(current, int):
+            converted = int(value)
+        elif isinstance(current, float):
+            converted = float(value)
+        elif isinstance(current, list):
+            converted = [float(item) for item in value]
+        else:
+            converted = type(current)(value)
+        setattr(cfg.planner.subgoal_filter, key, converted)
+    if not cfg.planner.subgoal_filter.rho_scales:
+        raise ValueError("planner.subgoal_filter.rho_scales must not be empty.")
+    if not cfg.planner.subgoal_filter.beta_offsets_deg:
+        raise ValueError("planner.subgoal_filter.beta_offsets_deg must not be empty.")
+    if cfg.planner.subgoal_filter.path_samples <= 0:
+        raise ValueError("planner.subgoal_filter.path_samples must be positive.")
+
+
 def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     data = load_yaml(path)
     data = _require_mapping(str(path), data)
@@ -108,8 +150,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
         simulation.get("control_decimation", cfg.simulation.control_decimation)
     )
     cfg.task.n_agents = int(task.get("n_agents", cfg.task.n_agents))
-    cfg.planner.rho_max = float(planner.get("rho_max", cfg.planner.rho_max))
-    cfg.planner.beta_max = float(planner.get("beta_max", cfg.planner.beta_max))
+    _apply_planner_values(cfg, planner)
     _apply_values(cfg.low_level_control, low_level_control, "low_level_control")
     cfg.terrain.type = str(terrain.get("type", cfg.terrain.type))
     cfg.terrain.amplitude = float(terrain.get("amplitude", cfg.terrain.amplitude))

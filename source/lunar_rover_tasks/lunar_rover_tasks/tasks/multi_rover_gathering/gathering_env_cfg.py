@@ -35,11 +35,30 @@ class TaskCfg:
 
 
 @dataclass(slots=True)
+class SubgoalFilterCfg:
+    enabled: bool = False
+    mode: str = "terrain_safe_candidate"
+    rho_scales: list[float] = field(default_factory=lambda: [0.65, 1.0])
+    beta_offsets_deg: list[float] = field(
+        default_factory=lambda: [-45.0, -22.5, 0.0, 22.5, 45.0]
+    )
+    path_samples: int = 5
+    intent_deviation_weight: float = 0.35
+    path_terrain_mean_weight: float = 0.70
+    path_terrain_max_weight: float = 0.50
+    path_height_change_weight: float = 0.20
+    subgoal_terrain_weight: float = 0.30
+    endpoint_near_weight: float = 2.0
+    endpoint_collision_weight: float = 1000.0
+
+
+@dataclass(slots=True)
 class PlannerCfg:
     action_type: str = "local_subgoal_polar"
     action_dim: int = 2
     rho_max: float = 1.2
     beta_max: float = pi / 2.0
+    subgoal_filter: SubgoalFilterCfg = field(default_factory=SubgoalFilterCfg)
 
 
 @dataclass(slots=True)

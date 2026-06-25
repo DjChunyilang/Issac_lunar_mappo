@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 
 from _common import ROOT, cfg_from_experiment
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore
@@ -109,6 +110,18 @@ def evaluate_checkpoint(
     path_risk_max = torch.tensor(0.0, device=env.device)
     path_height_change_sum = torch.tensor(0.0, device=env.device)
     path_height_change_count = torch.tensor(0.0, device=env.device)
+    filter_sample_count = torch.tensor(0.0, device=env.device)
+    filter_applied_sum = torch.tensor(0.0, device=env.device)
+    filter_raw_risk_sum = torch.tensor(0.0, device=env.device)
+    filter_filtered_risk_sum = torch.tensor(0.0, device=env.device)
+    filter_risk_reduction_sum = torch.tensor(0.0, device=env.device)
+    filter_subgoal_deviation_sum = torch.tensor(0.0, device=env.device)
+    filter_endpoint_near_violation_sum = torch.tensor(0.0, device=env.device)
+    filter_endpoint_collision_violation_sum = torch.tensor(0.0, device=env.device)
+    filter_endpoint_collision_violation_count = torch.tensor(0.0, device=env.device)
+    filter_candidate_index_sum = torch.tensor(0.0, device=env.device)
+    filter_candidate_histogram: torch.Tensor | None = None
+    filter_candidate_count = 0
 
     for step_id in range(steps):
         active_before = active.clone()
@@ -205,6 +218,46 @@ def evaluate_checkpoint(
                     float(active_path_height.numel()),
                     device=env.device,
                 )
+        action_filter = step_output.info.get("action_filter")
+        if action_filter is not None:
+            active_filter = action_filter["applied"][active_before].reshape(-1)
+            if active_filter.numel() > 0:
+                filter_candidate_count = int(action_filter.get("candidate_count", 0))
+                raw_risk = action_filter["raw_path_terrain_risk_mean"][active_before].reshape(-1)
+                filtered_risk = action_filter["filtered_path_terrain_risk_mean"][active_before].reshape(-1)
+                risk_reduction = action_filter["path_terrain_risk_reduction"][active_before].reshape(-1)
+                subgoal_deviation = action_filter["subgoal_deviation"][active_before].reshape(-1)
+                near_violation = action_filter["endpoint_near_violation"][active_before].reshape(-1)
+                collision_violation = action_filter["endpoint_collision_violation"][active_before].reshape(-1)
+                candidate_index = action_filter["candidate_index"][active_before].reshape(-1)
+                sample_count = torch.tensor(float(active_filter.numel()), device=env.device)
+                filter_sample_count = filter_sample_count + sample_count
+                filter_applied_sum = filter_applied_sum + active_filter.float().sum()
+                filter_raw_risk_sum = filter_raw_risk_sum + raw_risk.sum()
+                filter_filtered_risk_sum = filter_filtered_risk_sum + filtered_risk.sum()
+                filter_risk_reduction_sum = filter_risk_reduction_sum + risk_reduction.sum()
+                filter_subgoal_deviation_sum = filter_subgoal_deviation_sum + subgoal_deviation.sum()
+                filter_endpoint_near_violation_sum = filter_endpoint_near_violation_sum + near_violation.sum()
+                filter_endpoint_collision_violation_sum = (
+                    filter_endpoint_collision_violation_sum + collision_violation.sum()
+                )
+                filter_endpoint_collision_violation_count = (
+                    filter_endpoint_collision_violation_count
+                    + (collision_violation > 0.0).float().sum()
+                )
+                filter_candidate_index_sum = filter_candidate_index_sum + candidate_index.float().sum()
+                step_histogram = torch.bincount(
+                    candidate_index,
+                    minlength=max(filter_candidate_count, 1),
+                ).to(dtype=torch.float32, device=env.device)
+                if filter_candidate_histogram is None:
+                    filter_candidate_histogram = torch.zeros_like(step_histogram)
+                if filter_candidate_histogram.numel() < step_histogram.numel():
+                    filter_candidate_histogram = F.pad(
+                        filter_candidate_histogram,
+                        (0, step_histogram.numel() - filter_candidate_histogram.numel()),
+                    )
+                filter_candidate_histogram[: step_histogram.numel()] += step_histogram
         active = active & ~done.done
         if not active.any():
             break
@@ -287,6 +340,42 @@ def evaluate_checkpoint(
         "path_terrain_risk_max": float(path_risk_max.detach().cpu()),
         "path_height_change_mean": float(
             (path_height_change_sum / path_height_change_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_candidate_count": filter_candidate_count,
+        "filter_applied_fraction": float(
+            (filter_applied_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_raw_path_terrain_risk_mean": float(
+            (filter_raw_risk_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_filtered_path_terrain_risk_mean": float(
+            (filter_filtered_risk_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_path_terrain_risk_reduction_mean": float(
+            (filter_risk_reduction_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_subgoal_deviation_mean": float(
+            (filter_subgoal_deviation_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_endpoint_near_violation_mean": float(
+            (filter_endpoint_near_violation_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_endpoint_collision_violation_mean": float(
+            (filter_endpoint_collision_violation_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_endpoint_collision_violation_fraction": float(
+            (filter_endpoint_collision_violation_count / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_candidate_index_mean": float(
+            (filter_candidate_index_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_candidate_index_histogram": (
+            {
+                str(index): float((count / filter_candidate_histogram.sum().clamp_min(1.0)).detach().cpu())
+                for index, count in enumerate(filter_candidate_histogram)
+            }
+            if filter_candidate_histogram is not None
+            else {}
         ),
         "max_success_hold_count_mean": float(max_success_hold_count.float().mean().detach().cpu()),
         "final_success_hold_count_mean": float(final_success_hold_count.float().mean().detach().cpu()),

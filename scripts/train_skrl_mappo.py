@@ -422,6 +422,10 @@ PURE_RL_LONG_THRESHOLDS = {
     "success_rate": 0.05,
     "collision_rate": 0.03,
 }
+SAFE_PROGRESS_LONG_THRESHOLDS = {
+    "dmax_reduction_ratio": 0.30,
+    "success_rate": 0.20,
+}
 
 
 def proxy_acceptance(metrics: dict, thresholds: dict | None = None) -> dict:
@@ -510,6 +514,80 @@ def pure_rl_long_checkpoint_rank(
         float(metrics.get("dmax_reduction_ratio", float("inf"))),
         -int(metrics.get("candidate_timestep", 0)),
     )
+
+
+def safe_progress_long_checkpoint_rank(
+    metrics: dict,
+    thresholds: dict | None = None,
+) -> tuple[int, float, float, float, float, float, int]:
+    thresholds = thresholds or SAFE_PROGRESS_LONG_THRESHOLDS
+    if proxy_acceptance(metrics, STRICT_THRESHOLDS)["passed"]:
+        return (
+            0,
+            0.0,
+            float(metrics.get("collision_rate", float("inf"))),
+            float(metrics.get("timeout_rate", float("inf"))),
+            -float(metrics.get("success_rate", 0.0)),
+            float(metrics.get("dmax_reduction_ratio", float("inf"))),
+            -int(metrics.get("candidate_timestep", 0)),
+        )
+    trend_pass = (
+        float(metrics["success_rate"]) >= thresholds["success_rate"]
+        and float(metrics["dmax_reduction_ratio"]) <= thresholds["dmax_reduction_ratio"]
+    )
+    if trend_pass:
+        return (
+            1,
+            0.0,
+            float(metrics.get("collision_rate", float("inf"))),
+            float(metrics.get("timeout_rate", float("inf"))),
+            -float(metrics.get("success_rate", 0.0)),
+            float(metrics.get("dmax_reduction_ratio", float("inf"))),
+            -int(metrics.get("candidate_timestep", 0)),
+        )
+    violation = (
+        max(
+            0.0,
+            float(metrics["dmax_reduction_ratio"])
+            / thresholds["dmax_reduction_ratio"]
+            - 1.0,
+        )
+        + max(
+            0.0,
+            1.0 - float(metrics["success_rate"]) / thresholds["success_rate"],
+        )
+        + max(0.0, float(metrics.get("collision_rate", 0.0)) / 0.02 - 1.0)
+        + float(metrics.get("timeout_rate", 0.0))
+    )
+    return (
+        2,
+        violation,
+        float(metrics.get("collision_rate", float("inf"))),
+        float(metrics.get("timeout_rate", float("inf"))),
+        -float(metrics.get("success_rate", 0.0)),
+        float(metrics.get("dmax_reduction_ratio", float("inf"))),
+        -int(metrics.get("candidate_timestep", 0)),
+    )
+
+
+def subgoal_filter_metadata(cfg) -> dict[str, Any]:
+    filter_cfg = cfg.planner.subgoal_filter
+    return {
+        "enabled": bool(filter_cfg.enabled),
+        "mode": str(filter_cfg.mode),
+        "rho_scales": [float(value) for value in filter_cfg.rho_scales],
+        "beta_offsets_deg": [float(value) for value in filter_cfg.beta_offsets_deg],
+        "path_samples": int(filter_cfg.path_samples),
+        "score_weights": {
+            "intent_deviation": float(filter_cfg.intent_deviation_weight),
+            "path_terrain_mean": float(filter_cfg.path_terrain_mean_weight),
+            "path_terrain_max": float(filter_cfg.path_terrain_max_weight),
+            "path_height_change": float(filter_cfg.path_height_change_weight),
+            "subgoal_terrain": float(filter_cfg.subgoal_terrain_weight),
+            "endpoint_near": float(filter_cfg.endpoint_near_weight),
+            "endpoint_collision": float(filter_cfg.endpoint_collision_weight),
+        },
+    }
 
 
 def terrain_sanity_metrics(cfg, device: torch.device | str, samples_per_axis: int = 61) -> dict:
@@ -949,6 +1027,48 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
             }
             telemetry_state["path_terrain"] = path_metrics
             _accumulate_numeric_metrics(telemetry_state, "path_terrain", path_metrics)
+        action_filter = info.get("action_filter")
+        if action_filter is not None:
+            filter_metrics = {
+                "filter_candidate_count": int(action_filter.get("candidate_count", 0)),
+                "filter_applied_fraction": float(
+                    action_filter["applied"].detach().float().mean().cpu()
+                ),
+                "filter_raw_path_terrain_risk_mean": float(
+                    action_filter["raw_path_terrain_risk_mean"].detach().float().mean().cpu()
+                ),
+                "filter_filtered_path_terrain_risk_mean": float(
+                    action_filter["filtered_path_terrain_risk_mean"].detach().float().mean().cpu()
+                ),
+                "filter_path_terrain_risk_reduction_mean": float(
+                    action_filter["path_terrain_risk_reduction"].detach().float().mean().cpu()
+                ),
+                "filter_subgoal_deviation_mean": float(
+                    action_filter["subgoal_deviation"].detach().float().mean().cpu()
+                ),
+                "filter_endpoint_near_violation_mean": float(
+                    action_filter["endpoint_near_violation"].detach().float().mean().cpu()
+                ),
+                "filter_endpoint_collision_violation_mean": float(
+                    action_filter["endpoint_collision_violation"].detach().float().mean().cpu()
+                ),
+                "filter_endpoint_collision_violation_fraction": float(
+                    (action_filter["endpoint_collision_violation"] > 0.0)
+                    .detach()
+                    .float()
+                    .mean()
+                    .cpu()
+                ),
+                "filter_candidate_index_mean": float(
+                    action_filter["candidate_index"].detach().float().mean().cpu()
+                ),
+            }
+            histogram = action_filter.get("candidate_index_histogram")
+            if isinstance(histogram, torch.Tensor):
+                for index, fraction in enumerate(histogram.detach().float().cpu().tolist()):
+                    filter_metrics[f"filter_candidate_index_{index}_fraction"] = float(fraction)
+            telemetry_state["action_filter"] = filter_metrics
+            _accumulate_numeric_metrics(telemetry_state, "action_filter", filter_metrics)
         writer = telemetry_state.get("writer")
         interval = int(telemetry_state.get("interval", 0))
         if writer is not None and interval > 0 and telemetry_state["step"] % interval == 0:
@@ -1017,9 +1137,12 @@ def build_training_telemetry(
     action_metrics.update(telemetry_state.get("action_window", {}))
     path_metrics = dict(telemetry_state.get("path_terrain", {}))
     path_metrics.update(telemetry_state.get("path_terrain_window", {}))
+    filter_metrics = dict(telemetry_state.get("action_filter", {}))
+    filter_metrics.update(telemetry_state.get("action_filter_window", {}))
     telemetry.update(reward_metrics)
     telemetry.update(action_metrics)
     telemetry.update(path_metrics)
+    telemetry.update(filter_metrics)
     telemetry.update(telemetry_state.get("done_counts", _empty_done_counts()))
     telemetry.update(_stats("final_pairwise_distance", pairwise))
     telemetry.update(_stats("final_oracle_distance", oracle))
@@ -1235,7 +1358,7 @@ def main() -> None:
     parser.add_argument("--bc-batch-size", type=int, default=None)
     parser.add_argument(
         "--selection-gate",
-        choices=("screen", "strict", "pure_rl_long"),
+        choices=("screen", "strict", "pure_rl_long", "safe_progress_long"),
         default="strict",
     )
     parser.add_argument("--bc-only", action="store_true")
@@ -1453,6 +1576,7 @@ def main() -> None:
                     "phase": "bc",
                     "update_mode": update_mode,
                     "communication_radius": cfg.observation.communication_radius,
+                    "subgoal_filter": subgoal_filter_metadata(cfg),
                     "bc_updates": bc_updates,
                     "entropy_schedule_timesteps": algo.get(
                         "entropy_schedule_timesteps"
@@ -1606,6 +1730,7 @@ def main() -> None:
         _snapshot_numeric_metrics(telemetry_state, "action", "action_window")
         _snapshot_numeric_metrics(telemetry_state, "reward", "reward_window")
         _snapshot_numeric_metrics(telemetry_state, "path_terrain", "path_terrain_window")
+        _snapshot_numeric_metrics(telemetry_state, "action_filter", "action_filter_window")
         append_metrics_jsonl(
             telemetry_dir,
             build_training_telemetry(
@@ -1750,6 +1875,7 @@ def main() -> None:
     _snapshot_numeric_metrics(telemetry_state, "action", "action_window")
     _snapshot_numeric_metrics(telemetry_state, "reward", "reward_window")
     _snapshot_numeric_metrics(telemetry_state, "path_terrain", "path_terrain_window")
+    _snapshot_numeric_metrics(telemetry_state, "action_filter", "action_filter_window")
 
     candidate_evaluations: list[dict] = []
     best_candidate = candidate_paths[-1]
@@ -1782,11 +1908,15 @@ def main() -> None:
             if args.selection_gate == "screen"
             else PURE_RL_LONG_THRESHOLDS
             if args.selection_gate == "pure_rl_long"
+            else SAFE_PROGRESS_LONG_THRESHOLDS
+            if args.selection_gate == "safe_progress_long"
             else STRICT_THRESHOLDS
         )
         ranker = (
             pure_rl_long_checkpoint_rank
             if args.selection_gate == "pure_rl_long"
+            else safe_progress_long_checkpoint_rank
+            if args.selection_gate == "safe_progress_long"
             else checkpoint_rank
         )
         best_evaluation = min(
@@ -1862,6 +1992,7 @@ def main() -> None:
         "shared_value": shared_value,
         "update_mode": update_mode,
         "communication_radius": cfg.observation.communication_radius,
+        "subgoal_filter": subgoal_filter_metadata(cfg),
         "seed": training_seed,
         "num_envs": cfg.simulation.num_envs,
         "timesteps": args.timesteps,

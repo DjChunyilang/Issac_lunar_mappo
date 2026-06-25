@@ -99,6 +99,8 @@ critic_state_dim
 - `rho in [0, rho_max]`
 - `beta in [-beta_max, beta_max]`
 
+`planner.subgoal_filter` 是可选 proxy planner 后处理，默认关闭。启用时，它在 Actor 输出 `[rho, beta]` 之后、轨迹生成之前，从固定候选子目标中按地形路径风险和 endpoint safety 选择 filtered subgoal。该机制不改变 Actor 输出维度、Critic 状态维度或 checkpoint schema；checkpoint metadata 会记录 filter 配置摘要。
+
 ## 第一阶段动力学
 
 当前 rover 是 proxy unicycle 状态模型。只有在 rover 资产和控制接口明确后，才应替换为真实 Isaac Sim articulation。

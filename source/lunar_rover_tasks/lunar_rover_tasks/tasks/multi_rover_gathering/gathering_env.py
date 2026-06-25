@@ -30,6 +30,7 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.simple_controller import (
     compute_control,
 )
 from lunar_rover_tasks.tasks.multi_rover_gathering.state import build_critic_state
+from lunar_rover_tasks.tasks.multi_rover_gathering.subgoal_filter import apply_subgoal_filter
 from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
     build_local_terrain_grid,
     is_flat_terrain,
@@ -193,7 +194,15 @@ class MultiRoverGatheringCore:
 
         self.prev_metrics = compute_team_metrics(self.positions, self.velocities_xy)
         previous_mean_oracle = self.prev_mean_oracle_distance.clone()
-        decoded = decode_action(action, self.positions, self.yaws, self.cfg.planner)
+        raw_decoded = decode_action(action, self.positions, self.yaws, self.cfg.planner)
+        filter_result = apply_subgoal_filter(
+            raw_decoded,
+            self.positions,
+            self.yaws,
+            self.cfg,
+            self.terrain_runtime,
+        )
+        decoded = filter_result.decoded
         subgoal_terrain_features = (
             query_terrain_features(
                 decoded.world_subgoal[..., :2],
@@ -280,6 +289,10 @@ class MultiRoverGatheringCore:
             if path_terrain is not None
             else None
         )
+        action_filter_snapshot = {
+            key: value.clone() if isinstance(value, torch.Tensor) else value
+            for key, value in filter_result.info.items()
+        }
         terrain_runtime = self.terrain_runtime.clone()
         success_hold_count = self.success_hold_count.clone()
 
@@ -308,6 +321,7 @@ class MultiRoverGatheringCore:
                 "terrain_speed_scale": terrain_speed_scale,
                 "height_delta": height_delta,
                 "path_terrain": path_terrain_snapshot,
+                "action_filter": action_filter_snapshot,
                 "terrain_runtime": terrain_runtime,
                 "oracle_point": self.oracle_point.clone(),
             },

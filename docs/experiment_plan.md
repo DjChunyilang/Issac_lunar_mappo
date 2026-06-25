@@ -10,6 +10,7 @@
 - `exp017` 是固定地图、seed23、shared-joint MAPPO pure RL 的当前 schema strict pass 单 seed baseline。
 - `exp018` 是随机增强地形的 20M 单 seed candidate；dmax/success 达标，但 collision/timeout 未过 strict gate。
 - `exp019` 已完成随机增强地形安全/路径风险诊断；工程链路正常，但 strict 未通过，说明当前软路径风险惩罚和安全 gate 组合仍不足。
+- `exp020` 已完成 terrain/safety-aware 子目标过滤器诊断；路径风险明显降低，但集合进度被抑制，strict 未通过。
 - PhysX / Isaac Sim 作为 checkpoint 级高保真闭环评估和展示层，不进入当前主训练 loop。
 - 新训练和评估默认写入 `outputs/runs/<experiment>/<run>/`。
 
@@ -83,6 +84,20 @@ outputs/runs/exp019_randomized_terrain_safe_path_risk/
 
 - 不再只放大 terrain weight；改为把 path risk 前移到子目标候选过滤、局部 planner score 或不可达路径约束。
 - 重新成套协调 success 半径、安全半径、episode 长度和 collision penalty，避免“会集合但撞车”和“安全但超时”的两极化。
+
+已完成的子目标过滤诊断是 `exp020`：
+
+```text
+outputs/runs/exp020_randomized_terrain_subgoal_filter/
+```
+
+结果：
+
+- actor 输出后、轨迹生成前加入 10 候选子目标过滤器，按 path risk、subgoal risk 和 endpoint safety 选择候选。
+- seed23 20M 训练、候选评估、5 轮独立 eval、GIF 和训练曲线均已完成。
+- 过滤器有效：5 seed 均值 raw path risk `0.3815`，filtered path risk `0.3187`，risk reduction `0.0628`。
+- 策略失败：5 seed 均值 dmax ratio `0.3752`、success `0.0`、collision `0.0498`、timeout `0.9506`，strict 未通过。
+- 当前结论是 hard filter 过强，牺牲了集合进度；下一轮应做课程化/软化，而不是继续增加过滤强度。
 
 ## Checkpoint 复评计划
 

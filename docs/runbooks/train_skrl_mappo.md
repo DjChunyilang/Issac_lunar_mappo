@@ -450,6 +450,105 @@ outputs/runs/exp019_randomized_terrain_safe_path_risk/pure_rl_seed23_20m_safe_pa
 outputs/runs/exp019_randomized_terrain_safe_path_risk/_suite/metrics/
 ```
 
+## exp020 地形/安全感知子目标过滤器
+
+exp020 基于 exp019，在 actor 输出 `[rho, beta]` 后、轨迹生成前启用 `planner.subgoal_filter`。专项测试：
+
+```bash
+.venv_isaaclab/bin/python -m pytest -q \
+  tests/test_subgoal_filter.py \
+  tests/test_exp020_training.py \
+  tests/test_exp019_training.py \
+  tests/test_terrain_features.py \
+  tests/test_reward.py \
+  tests/test_termination.py
+
+.venv_isaaclab/bin/python -m pytest -q -ra
+```
+
+CPU smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp020_randomized_terrain_subgoal_filter.yaml \
+  --device cpu \
+  --num-envs 8 \
+  --rollout-steps 4 \
+  --timesteps 8 \
+  --checkpoint-interval 4 \
+  --run-name smoke_cpu_exp020 \
+  --output-layout run \
+  --selection-gate safe_progress_long
+```
+
+CUDA smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp020_randomized_terrain_subgoal_filter.yaml \
+  --device cuda \
+  --num-envs 256 \
+  --rollout-steps 32 \
+  --timesteps 64 \
+  --checkpoint-interval 32 \
+  --eval-num-envs 256 \
+  --eval-steps 220 \
+  --run-name smoke_cuda_exp020 \
+  --output-layout run \
+  --selection-gate safe_progress_long
+```
+
+长训练命令：
+
+```bash
+ROOT=$(pwd)
+mkdir -p outputs/runs/exp020_randomized_terrain_subgoal_filter/_launcher
+
+systemd-run --user --unit exp020-subgoal-filter-20m \
+  --same-dir \
+  --collect \
+  --property=StandardOutput=append:${ROOT}/outputs/runs/exp020_randomized_terrain_subgoal_filter/_launcher/train.log \
+  --property=StandardError=append:${ROOT}/outputs/runs/exp020_randomized_terrain_subgoal_filter/_launcher/train.log \
+  .venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+    --config configs/experiment/exp020_randomized_terrain_subgoal_filter.yaml \
+    --device cuda \
+    --timesteps 10240 \
+    --seed 23 \
+    --num-envs 2048 \
+    --output-layout run \
+    --run-name pure_rl_seed23_20m_subgoal_filter \
+    --rollout-steps 32 \
+    --checkpoint-interval 1024 \
+    --eval-num-envs 1024 \
+    --eval-steps 220 \
+    --eval-seed-offset 1000 \
+    --bc-updates 0 \
+    --selection-gate safe_progress_long
+```
+
+训练曲线和候选评估曲线：
+
+```text
+outputs/runs/exp020_randomized_terrain_subgoal_filter/pure_rl_seed23_20m_subgoal_filter/figures/training_curves.png
+outputs/runs/exp020_randomized_terrain_subgoal_filter/pure_rl_seed23_20m_subgoal_filter/figures/candidate_eval_curves.png
+outputs/runs/exp020_randomized_terrain_subgoal_filter/_suite/figures/
+```
+
+本轮 exp020 seed23 20M 已完成，但 strict 未通过。关键结论：
+
+- 工程链路正常：`joint_update_count=320`、`optimizer_count=1`、无 NaN，terrain 输入权重更新。
+- filter 有效降低地形路径风险：5 seed raw path risk mean `0.3815`，filtered path risk mean `0.3187`。
+- 策略失败：5 seed success `0.0`、collision `0.0498`、timeout `0.9506`。
+- 结论是 hard filter 过强，导致安全绕行/徘徊而非集合；下一轮应做课程化或软约束。
+
+复验/GIF 输出：
+
+```text
+outputs/runs/exp020_randomized_terrain_subgoal_filter/pure_rl_seed23_20m_subgoal_filter/metrics/multi_eval_20260625_101520/
+outputs/runs/exp020_randomized_terrain_subgoal_filter/pure_rl_seed23_20m_subgoal_filter/videos/multi_eval_20260625_101520/
+outputs/runs/exp020_randomized_terrain_subgoal_filter/_suite/metrics/
+```
+
 ## Checkpoint 统一评估
 
 训练完成后运行：
