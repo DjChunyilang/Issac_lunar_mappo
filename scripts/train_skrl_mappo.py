@@ -430,6 +430,12 @@ BALANCED_PROGRESS_LONG_THRESHOLDS = {
     "dmax_reduction_ratio": 0.30,
     "success_rate": 0.05,
 }
+PROGRESS_PRESERVING_LONG_THRESHOLDS = {
+    "dmax_reduction_ratio": 0.30,
+    "success_rate": 0.20,
+    "collision_rate": 0.08,
+    "timeout_rate": 0.80,
+}
 
 
 def proxy_acceptance(metrics: dict, thresholds: dict | None = None) -> dict:
@@ -630,6 +636,48 @@ def balanced_progress_long_checkpoint_rank(
     )
 
 
+def progress_preserving_long_checkpoint_rank(
+    metrics: dict,
+    thresholds: dict | None = None,
+) -> tuple[int, float, float, float, float, float, int]:
+    thresholds = thresholds or PROGRESS_PRESERVING_LONG_THRESHOLDS
+    if proxy_acceptance(metrics, STRICT_THRESHOLDS)["passed"]:
+        return (
+            0,
+            0.0,
+            float(metrics.get("collision_rate", float("inf"))),
+            float(metrics.get("timeout_rate", float("inf"))),
+            -float(metrics.get("success_rate", 0.0)),
+            float(metrics.get("dmax_reduction_ratio", float("inf"))),
+            -int(metrics.get("candidate_timestep", 0)),
+        )
+    success = float(metrics.get("success_rate", 0.0))
+    dmax = float(metrics.get("dmax_reduction_ratio", float("inf")))
+    collision = float(metrics.get("collision_rate", float("inf")))
+    timeout = float(metrics.get("timeout_rate", float("inf")))
+    has_progress = (
+        success >= thresholds["success_rate"]
+        or dmax <= thresholds["dmax_reduction_ratio"]
+    )
+    progress_violation = (
+        max(0.0, dmax / thresholds["dmax_reduction_ratio"] - 1.0)
+        + max(0.0, 1.0 - success / thresholds["success_rate"])
+    )
+    safety_violation = (
+        max(0.0, collision / thresholds["collision_rate"] - 1.0)
+        + max(0.0, timeout / thresholds["timeout_rate"] - 1.0)
+    )
+    return (
+        1 if has_progress else 2,
+        progress_violation,
+        safety_violation,
+        collision,
+        timeout,
+        -success,
+        -int(metrics.get("candidate_timestep", 0)),
+    )
+
+
 def subgoal_filter_metadata(cfg) -> dict[str, Any]:
     filter_cfg = cfg.planner.subgoal_filter
     return {
@@ -649,6 +697,7 @@ def subgoal_filter_metadata(cfg) -> dict[str, Any]:
             "path_near": float(filter_cfg.path_near_weight),
             "path_collision": float(filter_cfg.path_collision_weight),
             "visible_neighbor_center": float(filter_cfg.visible_neighbor_center_weight),
+            "center_progress": float(filter_cfg.center_progress_weight),
         },
         "constraints": {
             "endpoint_safe_distance": float(filter_cfg.endpoint_safe_distance),
@@ -657,9 +706,13 @@ def subgoal_filter_metadata(cfg) -> dict[str, Any]:
             "hard_path_collision_filter": bool(filter_cfg.hard_path_collision_filter),
             "hard_center_progress_filter": bool(filter_cfg.hard_center_progress_filter),
             "center_progress_slack": float(filter_cfg.center_progress_slack),
+            "center_progress_margin": float(filter_cfg.center_progress_margin),
             "hard_constraint_penalty": float(filter_cfg.hard_constraint_penalty),
             "safety_override_after_warmup": bool(
                 filter_cfg.safety_override_after_warmup
+            ),
+            "collision_override_after_warmup": bool(
+                filter_cfg.collision_override_after_warmup
             ),
         },
         "schedule": {
@@ -1193,6 +1246,33 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
                 "filter_safety_override_fraction": float(
                     action_filter.get("safety_override_fraction", 0.0)
                 ),
+                "filter_collision_override_fraction": float(
+                    action_filter.get("collision_override_fraction", 0.0)
+                ),
+                "filter_raw_visible_center_cost_mean": float(
+                    action_filter["raw_visible_center_cost"].detach().float().mean().cpu()
+                ),
+                "filter_filtered_visible_center_cost_mean": float(
+                    action_filter["filtered_visible_center_cost"]
+                    .detach()
+                    .float()
+                    .mean()
+                    .cpu()
+                ),
+                "filter_suggested_visible_center_cost_mean": float(
+                    action_filter["suggested_visible_center_cost"]
+                    .detach()
+                    .float()
+                    .mean()
+                    .cpu()
+                ),
+                "filter_center_progress_regression_mean": float(
+                    action_filter["center_progress_regression"]
+                    .detach()
+                    .float()
+                    .mean()
+                    .cpu()
+                ),
                 "filter_candidate_index_mean": float(
                     action_filter["candidate_index"].detach().float().mean().cpu()
                 ),
@@ -1515,6 +1595,7 @@ def main() -> None:
             "pure_rl_long",
             "safe_progress_long",
             "balanced_progress_long",
+            "progress_preserving_long",
         ),
         default="strict",
     )
@@ -2070,6 +2151,8 @@ def main() -> None:
             if args.selection_gate == "safe_progress_long"
             else BALANCED_PROGRESS_LONG_THRESHOLDS
             if args.selection_gate == "balanced_progress_long"
+            else PROGRESS_PRESERVING_LONG_THRESHOLDS
+            if args.selection_gate == "progress_preserving_long"
             else STRICT_THRESHOLDS
         )
         ranker = (
@@ -2079,6 +2162,8 @@ def main() -> None:
             if args.selection_gate == "safe_progress_long"
             else balanced_progress_long_checkpoint_rank
             if args.selection_gate == "balanced_progress_long"
+            else progress_preserving_long_checkpoint_rank
+            if args.selection_gate == "progress_preserving_long"
             else checkpoint_rank
         )
         best_evaluation = min(

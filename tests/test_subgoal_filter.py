@@ -296,6 +296,35 @@ def _constrained_curriculum_cfg() -> MultiRoverGatheringEnvCfg:
     return cfg
 
 
+def _soft_progress_cfg() -> MultiRoverGatheringEnvCfg:
+    cfg = _cfg(enabled=True)
+    cfg.task.n_agents = 2
+    cfg.terrain.type = "flat_proxy"
+    cfg.planner.subgoal_filter.mode = "terrain_safe_candidate_soft_progress_curriculum"
+    cfg.planner.subgoal_filter.rho_scales = [1.0]
+    cfg.planner.subgoal_filter.beta_offsets_deg = [-45.0, 0.0, 45.0]
+    cfg.planner.subgoal_filter.intent_deviation_weight = 0.1
+    cfg.planner.subgoal_filter.endpoint_near_weight = 1.0
+    cfg.planner.subgoal_filter.endpoint_collision_weight = 500.0
+    cfg.planner.subgoal_filter.path_collision_weight = 300.0
+    cfg.planner.subgoal_filter.visible_neighbor_center_weight = 2.0
+    cfg.planner.subgoal_filter.center_progress_weight = 4.0
+    cfg.planner.subgoal_filter.endpoint_safe_distance = 0.42
+    cfg.planner.subgoal_filter.path_safe_distance = 0.32
+    cfg.planner.subgoal_filter.hard_endpoint_near_filter = False
+    cfg.planner.subgoal_filter.hard_path_collision_filter = False
+    cfg.planner.subgoal_filter.hard_center_progress_filter = False
+    cfg.planner.subgoal_filter.safety_override_after_warmup = False
+    cfg.planner.subgoal_filter.collision_override_after_warmup = True
+    cfg.planner.subgoal_filter.warmup_timesteps = 8
+    cfg.planner.subgoal_filter.ramp_timesteps = 8
+    cfg.planner.subgoal_filter.apply_probability_end = 0.0
+    cfg.planner.subgoal_filter.score_scale_start = 1.0
+    cfg.planner.subgoal_filter.score_scale_end = 1.0
+    cfg.planner.subgoal_filter.deterministic_improvement_margin = 0.0
+    return cfg
+
+
 def test_constrained_curriculum_warmup_does_not_override_unsafe_raw_action() -> None:
     cfg = _constrained_curriculum_cfg()
     positions = torch.tensor([[[0.0, 0.0, 0.0], [0.7, 0.0, 0.0]]])
@@ -341,6 +370,95 @@ def test_constrained_curriculum_safety_override_after_warmup_selects_safe_candid
     assert result.info["raw_endpoint_collision_violation"][0, 0] > 0.0
     assert result.info["candidate_feasible"][0, 0]
     assert result.info["safety_override_fraction"] > 0.0
+
+
+def test_soft_progress_warmup_reports_center_metrics_without_replacement() -> None:
+    cfg = _soft_progress_cfg()
+    positions = torch.tensor([[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]])
+    action = torch.tensor([[[0.0, 0.8], [0.0, -0.8]]])
+    decoded, yaws = _decode(cfg, positions, action)
+
+    result = apply_subgoal_filter(
+        decoded,
+        positions,
+        yaws,
+        cfg,
+        progress_timestep=0,
+        deterministic=False,
+    )
+
+    assert not result.info["applied"].any()
+    assert not result.info["collision_override"].any()
+    assert torch.allclose(result.decoded.physical, decoded.physical)
+    assert torch.isfinite(result.info["raw_visible_center_cost"]).all()
+    assert torch.isfinite(result.info["suggested_visible_center_cost"]).all()
+    assert torch.isfinite(result.info["center_progress_regression"]).all()
+
+
+def test_soft_progress_center_term_prefers_not_to_move_away_from_visible_center() -> None:
+    cfg = _soft_progress_cfg()
+    cfg.planner.subgoal_filter.apply_probability_end = 1.0
+    cfg.planner.subgoal_filter.endpoint_collision_weight = 0.0
+    cfg.planner.subgoal_filter.endpoint_near_weight = 0.0
+    cfg.planner.subgoal_filter.path_collision_weight = 0.0
+    positions = torch.tensor([[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]])
+    action = torch.tensor([[[0.0, 1.0], [0.0, -1.0]]])
+    decoded, yaws = _decode(cfg, positions, action)
+
+    result = apply_subgoal_filter(
+        decoded,
+        positions,
+        yaws,
+        cfg,
+        progress_timestep=16,
+        deterministic=True,
+    )
+
+    assert result.info["applied"][0, 0]
+    assert result.info["filtered_visible_center_cost"][0, 0] < result.info[
+        "raw_visible_center_cost"
+    ][0, 0]
+    assert result.decoded.physical[0, 0, 1].abs() < decoded.physical[0, 0, 1].abs()
+
+
+def test_soft_progress_collision_override_only_for_collision_not_near_violation() -> None:
+    cfg = _soft_progress_cfg()
+    cfg.planner.subgoal_filter.apply_probability_end = 0.0
+    positions_near_only = torch.tensor([[[0.0, 0.0, 0.0], [0.9, 0.0, 0.0]]])
+    action = torch.tensor([[[0.0, 0.0], [0.0, 0.0]]])
+    decoded, yaws = _decode(cfg, positions_near_only, action)
+
+    near_only = apply_subgoal_filter(
+        decoded,
+        positions_near_only,
+        yaws,
+        cfg,
+        progress_timestep=16,
+        deterministic=False,
+    )
+
+    assert near_only.info["raw_endpoint_near_violation"][0, 0] > 0.0
+    assert near_only.info["raw_endpoint_collision_violation"][0, 0] == pytest.approx(0.0)
+    assert not near_only.info["collision_override"][0, 0]
+    assert not near_only.info["applied"][0, 0]
+
+    positions_collision = torch.tensor([[[0.0, 0.0, 0.0], [0.7, 0.0, 0.0]]])
+    decoded, yaws = _decode(cfg, positions_collision, action)
+    collision = apply_subgoal_filter(
+        decoded,
+        positions_collision,
+        yaws,
+        cfg,
+        progress_timestep=16,
+        deterministic=False,
+    )
+
+    assert collision.info["raw_endpoint_collision_violation"][0, 0] > 0.0
+    assert collision.info["collision_override"][0, 0]
+    assert collision.info["applied"][0, 0]
+    assert collision.info["endpoint_collision_violation"][0, 0] < collision.info[
+        "raw_endpoint_collision_violation"
+    ][0, 0]
 
 
 def test_constrained_curriculum_ignores_invisible_rover_for_safety_constraints() -> None:

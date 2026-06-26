@@ -72,7 +72,11 @@ def main() -> None:
         map_location = torch.device("cpu")
     checkpoint = torch.load(args.checkpoint, map_location=map_location)
     metadata = checkpoint.get("metadata", {}) if isinstance(checkpoint, dict) else {}
-    if cfg.planner.subgoal_filter.mode == "terrain_safe_candidate_curriculum":
+    if cfg.planner.subgoal_filter.mode in {
+        "terrain_safe_candidate_curriculum",
+        "terrain_safe_candidate_constrained_curriculum",
+        "terrain_safe_candidate_soft_progress_curriculum",
+    }:
         cfg.planner.subgoal_filter.progress_timestep_override = int(metadata.get("timesteps", 0))
         cfg.planner.subgoal_filter.deterministic_eval = True
     env = MultiRoverGatheringCore(cfg)

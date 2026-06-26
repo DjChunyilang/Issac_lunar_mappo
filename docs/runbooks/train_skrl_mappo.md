@@ -759,6 +759,110 @@ outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/_suite/figures/
 
 不要提交 `outputs/` 下的 checkpoint、JSON、PNG、GIF 或 TensorBoard。
 
+## exp023 soft progress-preserving subgoal filter
+
+目的：针对 exp022 的低成功率/高 timeout，把 filter 从 hard safety shield 改回软进度保护。exp023 保留 exp021 的集合底座，只在 raw action 预测真实 collision 时允许 override，并在 score 中加入 visible-neighbor center / center-progress 软惩罚。
+
+关键配置：
+
+```text
+config: configs/experiment/exp023_randomized_terrain_soft_progress_filter.yaml
+experiment: exp023_randomized_terrain_soft_progress_filter
+run: pure_rl_seed23_20m_soft_progress_filter
+filter mode: terrain_safe_candidate_soft_progress_curriculum
+candidate_count: 28
+selection gate: progress_preserving_long
+```
+
+专项测试：
+
+```bash
+.venv_isaaclab/bin/python -m pytest -q \
+  tests/test_subgoal_filter.py \
+  tests/test_exp021_training.py \
+  tests/test_exp022_training.py \
+  tests/test_exp023_training.py
+
+.venv_isaaclab/bin/python -m pytest -q -ra
+```
+
+CPU smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp023_randomized_terrain_soft_progress_filter.yaml \
+  --device cpu \
+  --num-envs 8 \
+  --rollout-steps 4 \
+  --timesteps 8 \
+  --checkpoint-interval 4 \
+  --eval-num-envs 8 \
+  --eval-steps 16 \
+  --run-name smoke_cpu_exp023 \
+  --output-layout run \
+  --selection-gate progress_preserving_long
+```
+
+CUDA smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp023_randomized_terrain_soft_progress_filter.yaml \
+  --device cuda \
+  --num-envs 256 \
+  --rollout-steps 32 \
+  --timesteps 64 \
+  --checkpoint-interval 32 \
+  --eval-num-envs 256 \
+  --eval-steps 220 \
+  --run-name smoke_cuda_exp023 \
+  --output-layout run \
+  --selection-gate progress_preserving_long
+```
+
+正式 20M 长训练：
+
+```bash
+ROOT=$(pwd)
+mkdir -p outputs/runs/exp023_randomized_terrain_soft_progress_filter/_launcher
+
+systemd-run --user --unit exp023-soft-progress-filter-20m \
+  --same-dir \
+  --collect \
+  --property=StandardOutput=append:${ROOT}/outputs/runs/exp023_randomized_terrain_soft_progress_filter/_launcher/train.log \
+  --property=StandardError=append:${ROOT}/outputs/runs/exp023_randomized_terrain_soft_progress_filter/_launcher/train.log \
+  .venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+    --config configs/experiment/exp023_randomized_terrain_soft_progress_filter.yaml \
+    --device cuda \
+    --timesteps 10240 \
+    --seed 23 \
+    --num-envs 2048 \
+    --output-layout run \
+    --run-name pure_rl_seed23_20m_soft_progress_filter \
+    --rollout-steps 32 \
+    --checkpoint-interval 1024 \
+    --eval-num-envs 1024 \
+    --eval-steps 220 \
+    --eval-seed-offset 1000 \
+    --bc-updates 0 \
+    --selection-gate progress_preserving_long
+```
+
+监控：
+
+```bash
+tail -f outputs/runs/exp023_randomized_terrain_soft_progress_filter/_launcher/train.log
+```
+
+判读：
+
+- strict gate 不变：`dmax <= 0.20`、`success >= 0.90`、`collision <= 0.02`、`timeout = 0`。
+- 若未 strict，重点比较 exp022：success 是否显著高于 `0.0139`、timeout 是否低于 `0.9699`。
+- 同时比较 exp021：collision 是否低于 `0.1746`。
+- 重点 telemetry：`filter_applied_fraction`、`filter_collision_override_fraction`、`filter_raw_visible_center_cost_mean`、`filter_filtered_visible_center_cost_mean`、`filter_center_progress_regression_mean`。
+
+不要提交 `outputs/` 下的 checkpoint、JSON、PNG、GIF 或 TensorBoard。
+
 ## Checkpoint 统一评估
 
 训练完成后运行：

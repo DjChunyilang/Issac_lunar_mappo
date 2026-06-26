@@ -144,6 +144,14 @@ outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/
 - success 从 exp021 的 `0.6361` 降到 `0.0139`，timeout 从 `0.1967` 升到 `0.9699`，说明 constrained filter 仍过强。
 - 下一轮应转向 policy/action representation、planner projection 或 success geometry，而不是继续放大后处理权重。
 
+当前下一轮为 `exp023_randomized_terrain_soft_progress_filter`：
+
+- 仍使用 exp021/022 的 pure RL、shared-joint MAPPO、随机增强地形、`12 m` 通信半径和 20M budget。
+- filter mode 为 `terrain_safe_candidate_soft_progress_curriculum`，不再启用 hard endpoint/path safety constraint。
+- 候选 score 加入 visible-neighbor center 和 center-progress 软惩罚，避免 filter 为了安全把队形推成 standoff。
+- warmup 后仅当 raw endpoint/path 预测真实 collision 且候选能降低 collision violation 时允许 `collision_override`；near-distance violation 不触发 override。
+- checkpoint 选择使用 `progress_preserving_long`，避免再次只因 collision 低而选中 success 接近 0 的 checkpoint。
+
 ## Checkpoint 复评计划
 
 候选 checkpoint 使用统一入口：

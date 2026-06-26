@@ -72,6 +72,7 @@ def evaluate_checkpoint(
     if cfg.planner.subgoal_filter.mode in {
         "terrain_safe_candidate_curriculum",
         "terrain_safe_candidate_constrained_curriculum",
+        "terrain_safe_candidate_soft_progress_curriculum",
     }:
         cfg.planner.subgoal_filter.progress_timestep_override = int(metadata.get("timesteps", 0))
         cfg.planner.subgoal_filter.deterministic_eval = True
@@ -141,6 +142,11 @@ def evaluate_checkpoint(
     filter_candidate_feasible_sum = torch.tensor(0.0, device=env.device)
     filter_feasible_fraction_sum = torch.tensor(0.0, device=env.device)
     filter_safety_override_sum = torch.tensor(0.0, device=env.device)
+    filter_collision_override_sum = torch.tensor(0.0, device=env.device)
+    filter_raw_center_cost_sum = torch.tensor(0.0, device=env.device)
+    filter_filtered_center_cost_sum = torch.tensor(0.0, device=env.device)
+    filter_suggested_center_cost_sum = torch.tensor(0.0, device=env.device)
+    filter_center_progress_regression_sum = torch.tensor(0.0, device=env.device)
     filter_candidate_index_sum = torch.tensor(0.0, device=env.device)
     filter_deterministic_applied_sum = torch.tensor(0.0, device=env.device)
     filter_raw_score_sum = torch.tensor(0.0, device=env.device)
@@ -285,6 +291,21 @@ def evaluate_checkpoint(
                 safety_override = action_filter["safety_override"][
                     active_before
                 ].reshape(-1)
+                collision_override = action_filter["collision_override"][
+                    active_before
+                ].reshape(-1)
+                raw_center_cost = action_filter["raw_visible_center_cost"][
+                    active_before
+                ].reshape(-1)
+                filtered_center_cost = action_filter["filtered_visible_center_cost"][
+                    active_before
+                ].reshape(-1)
+                suggested_center_cost = action_filter["suggested_visible_center_cost"][
+                    active_before
+                ].reshape(-1)
+                center_progress_regression = action_filter["center_progress_regression"][
+                    active_before
+                ].reshape(-1)
                 candidate_index = action_filter["candidate_index"][active_before].reshape(-1)
                 deterministic_applied = action_filter["deterministic_applied"][
                     active_before
@@ -343,6 +364,20 @@ def evaluate_checkpoint(
                 )
                 filter_safety_override_sum = (
                     filter_safety_override_sum + safety_override.float().sum()
+                )
+                filter_collision_override_sum = (
+                    filter_collision_override_sum + collision_override.float().sum()
+                )
+                filter_raw_center_cost_sum = filter_raw_center_cost_sum + raw_center_cost.sum()
+                filter_filtered_center_cost_sum = (
+                    filter_filtered_center_cost_sum + filtered_center_cost.sum()
+                )
+                filter_suggested_center_cost_sum = (
+                    filter_suggested_center_cost_sum + suggested_center_cost.sum()
+                )
+                filter_center_progress_regression_sum = (
+                    filter_center_progress_regression_sum
+                    + center_progress_regression.sum()
                 )
                 filter_candidate_index_sum = filter_candidate_index_sum + candidate_index.float().sum()
                 filter_deterministic_applied_sum = (
@@ -518,6 +553,21 @@ def evaluate_checkpoint(
         ),
         "filter_safety_override_fraction": float(
             (filter_safety_override_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_collision_override_fraction": float(
+            (filter_collision_override_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_raw_visible_center_cost_mean": float(
+            (filter_raw_center_cost_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_filtered_visible_center_cost_mean": float(
+            (filter_filtered_center_cost_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_suggested_visible_center_cost_mean": float(
+            (filter_suggested_center_cost_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_center_progress_regression_mean": float(
+            (filter_center_progress_regression_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
         ),
         "filter_candidate_index_mean": float(
             (filter_candidate_index_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()

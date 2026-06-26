@@ -56,6 +56,13 @@ def _disabled_filter_result(decoded: DecodedAction) -> SubgoalFilterResult:
             "feasible_fraction": 1.0,
             "safety_override": zeros.bool(),
             "safety_override_fraction": 0.0,
+            "collision_override": zeros.bool(),
+            "collision_override_fraction": 0.0,
+            "raw_visible_center_cost": zeros,
+            "filtered_visible_center_cost": zeros,
+            "suggested_visible_center_cost": zeros,
+            "center_progress_regression": zeros,
+            "suggested_center_progress_regression": zeros,
             "raw_score": zeros,
             "filtered_score": zeros,
             "score_margin": zeros,
@@ -227,6 +234,7 @@ def _schedule_values(
     if filter_cfg.mode not in {
         "terrain_safe_candidate_curriculum",
         "terrain_safe_candidate_constrained_curriculum",
+        "terrain_safe_candidate_soft_progress_curriculum",
     }:
         return step, 1.0, 1.0
 
@@ -278,6 +286,7 @@ def apply_subgoal_filter(
         "terrain_safe_candidate",
         "terrain_safe_candidate_curriculum",
         "terrain_safe_candidate_constrained_curriculum",
+        "terrain_safe_candidate_soft_progress_curriculum",
     }
     if filter_cfg.mode not in supported_modes:
         raise ValueError(f"Unsupported subgoal filter mode: {filter_cfg.mode}")
@@ -321,6 +330,16 @@ def apply_subgoal_filter(
         num_samples=int(filter_cfg.path_samples),
     )
     visible_center_cost = _visible_neighbor_center_cost(positions, world_candidates, cfg)
+    current_center_cost = _visible_neighbor_center_cost(
+        positions,
+        positions[:, :, None, :],
+        cfg,
+    ).squeeze(-1)
+    center_progress_regression = torch.relu(
+        visible_center_cost
+        - current_center_cost[..., None]
+        + float(filter_cfg.center_progress_margin)
+    )
     auxiliary_score = (
         float(filter_cfg.path_terrain_mean_weight) * path["risk_mean"]
         + float(filter_cfg.path_terrain_max_weight) * path["risk_max"]
@@ -331,6 +350,7 @@ def apply_subgoal_filter(
         + float(filter_cfg.path_near_weight) * path_near_violation
         + float(filter_cfg.path_collision_weight) * path_collision_violation
         + float(filter_cfg.visible_neighbor_center_weight) * visible_center_cost
+        + float(filter_cfg.center_progress_weight) * center_progress_regression
     )
     score = (
         float(filter_cfg.intent_deviation_weight) * intent_deviation
@@ -370,6 +390,11 @@ def apply_subgoal_filter(
     raw_endpoint_collision_violation = _gather_scalar(collision_violation, raw_index)
     raw_path_near_violation = _gather_scalar(path_near_violation, raw_index)
     raw_path_collision_violation = _gather_scalar(path_collision_violation, raw_index)
+    selected_endpoint_collision_violation = _gather_scalar(collision_violation, selected)
+    selected_path_collision_violation_for_override = _gather_scalar(
+        path_collision_violation,
+        selected,
+    )
     raw_unsafe = (
         raw_endpoint_near_violation > 1.0e-6
         if filter_cfg.hard_endpoint_near_filter
@@ -383,6 +408,27 @@ def apply_subgoal_filter(
         raw_unsafe & (selected != raw_index) & has_feasible
         if safety_override
         else torch.zeros_like(raw_unsafe)
+    )
+    raw_collision_unsafe = (
+        raw_endpoint_collision_violation > 1.0e-6
+    ) | (raw_path_collision_violation > 1.0e-6)
+    selected_collision_violation_total = (
+        selected_endpoint_collision_violation
+        + selected_path_collision_violation_for_override
+    )
+    raw_collision_violation_total = (
+        raw_endpoint_collision_violation + raw_path_collision_violation
+    )
+    collision_override = (
+        bool(filter_cfg.collision_override_after_warmup)
+        and schedule_step >= int(filter_cfg.warmup_timesteps)
+    )
+    collision_override_mask = (
+        raw_collision_unsafe
+        & (selected != raw_index)
+        & (selected_collision_violation_total < raw_collision_violation_total)
+        if collision_override
+        else torch.zeros_like(raw_collision_unsafe)
     )
     deterministic_filter = (
         bool(filter_cfg.deterministic_eval) if deterministic is None else bool(deterministic)
@@ -406,7 +452,7 @@ def apply_subgoal_filter(
             generator=generator,
         )
         applied = (selected != raw_index) & (random_values < float(apply_probability))
-    applied = applied | safety_override_mask
+    applied = applied | safety_override_mask | collision_override_mask
     execution_index = torch.where(applied, selected, raw_index)
     filtered_physical = _gather_candidate(physical_candidates, execution_index)
     filtered_local_xy = _gather_candidate(local_candidates, execution_index)
@@ -442,6 +488,10 @@ def apply_subgoal_filter(
     suggested_collision_violation = _gather_scalar(collision_violation, selected)
     suggested_path_near_violation = _gather_scalar(path_near_violation, selected)
     suggested_path_collision_violation = _gather_scalar(path_collision_violation, selected)
+    selected_visible_center_cost = _gather_scalar(visible_center_cost, execution_index)
+    suggested_visible_center_cost = _gather_scalar(visible_center_cost, selected)
+    selected_center_regression = _gather_scalar(center_progress_regression, execution_index)
+    suggested_center_regression = _gather_scalar(center_progress_regression, selected)
     candidate_count = physical_candidates.shape[2]
     histogram = torch.bincount(
         execution_index.reshape(-1),
@@ -491,6 +541,15 @@ def apply_subgoal_filter(
             "safety_override_fraction": float(
                 safety_override_mask.float().mean().detach().cpu()
             ),
+            "collision_override": collision_override_mask,
+            "collision_override_fraction": float(
+                collision_override_mask.float().mean().detach().cpu()
+            ),
+            "raw_visible_center_cost": raw_center_cost,
+            "filtered_visible_center_cost": selected_visible_center_cost,
+            "suggested_visible_center_cost": suggested_visible_center_cost,
+            "center_progress_regression": selected_center_regression,
+            "suggested_center_progress_regression": suggested_center_regression,
             "raw_score": raw_score,
             "filtered_score": executed_score,
             "suggested_score": selected_score,
