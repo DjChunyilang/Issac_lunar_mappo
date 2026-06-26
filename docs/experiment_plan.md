@@ -13,6 +13,9 @@
 - `exp020` 已完成 terrain/safety-aware 子目标过滤器诊断；路径风险明显降低，但集合进度被抑制，strict 未通过。
 - `exp021` 已完成课程化/软化 filter 诊断；集合进度恢复，但 collision 显著升高，strict 未通过。
 - `exp022` 已完成 endpoint/path safety constrained curriculum filter 诊断；collision 被压到 strict 内，但 success/timeout 明显失败，说明 hard constrained post-processing 过强。
+- `exp023` 已完成 soft progress-preserving filter 诊断；恢复部分集合进度，但 collision / timeout 仍失败，说明 static endpoint/path safety 不足。
+- `exp024` 已完成 mutual path safety filter 诊断；success 提升到 `0.8398`、collision 降到 `0.0674`，但 strict 安全和 timeout 仍未达标。
+- `exp025` 已完成 dense mutual path safety filter 诊断；collision 相对 exp024 降低，但 success/timeout/安全 strict 仍未过，下一步应转向末段 hold / success-zone 稳定。
 - PhysX / Isaac Sim 作为 checkpoint 级高保真闭环评估和展示层，不进入当前主训练 loop。
 - 新训练和评估默认写入 `outputs/runs/<experiment>/<run>/`。
 
@@ -150,12 +153,28 @@ outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/
 - 和 exp022 相比，soft filter 恢复部分集合进度；和 exp021 相比，collision 更高。
 - 失败原因是 static endpoint/path safety 只看邻居当前位置，未预测可见邻居 raw path 的同步运动。
 
-当前下一轮为 `exp024_randomized_terrain_mutual_path_filter`：
+`exp024_randomized_terrain_mutual_path_filter` 已完成：
 
-- 仍使用 exp021/022/023 的 pure RL、shared-joint MAPPO、随机增强地形、`12 m` 通信半径和 20M budget。
-- filter mode 为 `terrain_safe_candidate_mutual_progress_curriculum`，不启用 hard endpoint/path safety constraint。
-- 候选 score 新增 `mutual_path_near_weight` 和 `mutual_path_collision_weight`，按相同时间采样比较本车候选路径与可见邻居 raw path。
-- checkpoint 选择沿用 `progress_preserving_long`，避免再次只因 collision 低而选中 success 接近 0 的 checkpoint。
+- post-hoc 使用 `success_progress_long` 重选 10240 checkpoint。
+- seed1023 final eval：dmax ratio `0.1397`、success `0.8398`、collision `0.0674`、timeout `0.0947`。
+- mutual path filter 明显改善 exp023 的同步路径冲突：`filter_raw_mutual_path_collision_violation_mean=0.0341`，filtered 后为 `0.000879`。
+- strict gate 仍未通过，剩余问题主要是 late-stage collision 和少量 timeout。
+
+`exp025_randomized_terrain_dense_mutual_filter` 已完成：
+
+- 仍使用 exp024 的 pure RL、shared-joint MAPPO、随机增强地形、`12 m` 通信半径和 20M budget。
+- filter mode 仍为 `terrain_safe_candidate_mutual_progress_curriculum`，不启用 exp022 式 hard endpoint/path safety constraint。
+- 把 `path_samples` 从 5 加密到 9，并把候选集合改为 `rho_scales=[0.60, 0.80, 1.0, 1.08]` × `beta_offsets_deg=[-40, -25, -12.5, 0, 12.5, 25, 40]`。
+- 适度提高 path/mutual collision 权重：`path_collision_weight=450.0`、`mutual_path_collision_weight=1200.0`。
+- checkpoint 选择使用 `success_progress_long`，避免再次选中低 collision 但低 success 的早期 checkpoint。
+- best 为 `ppo_timestep_009216.pt`；final eval：dmax ratio `0.1434`、success `0.8525`、collision `0.0449`、timeout `0.1035`。
+- 相对 exp024，success 小幅提高、collision 降低，但 timeout 未改善，strict 仍未通过。
+
+当前下一轮方向：
+
+- 不再单纯加大 path/mutual collision 权重。
+- 优先在接近 success zone 时加入速度/步长阻尼、hold-aware filter score 或轻量 planner projection。
+- 目标是解决 exp025 暴露的末段问题：`max_success_hold_count_mean≈7.22/8` 接近但不稳定，collision 多发生在 `first_collision_step_mean≈176/220` 的后段。
 
 ## Checkpoint 复评计划
 
