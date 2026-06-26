@@ -738,18 +738,23 @@ tail -f outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/_launcher/
 - strict gate 不变：`dmax <= 0.20`、`success >= 0.90`、`collision <= 0.02`、`timeout = 0`。
 - 若未 strict，重点比较 exp021：collision 是否低于 `0.1746`，success 是否仍显著高于 exp020 的 `0.0`。
 - 重点 telemetry：`filter_safety_override_fraction`、`filter_feasible_fraction`、`filter_raw_endpoint_near_violation_mean`、`filter_raw_path_collision_violation_mean`、`filter_path_collision_violation_mean`。
-- filter 仍降低路径风险：raw path risk `0.3871`，filtered path risk `0.3638`，risk reduction `0.0233`。
-- 结论是弱化/课程化 filter 能恢复集合，但不能解决 endpoint collision；下一轮应做安全/集合联合 action 或 planner 约束。
+
+本轮 exp022 seed23 20M 已完成，但 strict 未通过。关键结论：
+
+- collision 明显改善并通过 strict：5 seed mean `0.0170`，低于阈值 `0.02`，也远低于 exp021 的 `0.1746`。
+- 集合进度严重退化：5 seed mean success `0.0139`，dmax ratio `0.4719`，timeout `0.9699`。
+- filter 很强：raw path risk `0.3379` 降到 filtered path risk `0.2737`，risk reduction `0.0642`，applied fraction `0.6165`。
+- 结论是 constrained post-processing 能压碰撞，但会重新变成“安全但不集合”；下一轮应做安全/集合联合 action representation、planner projection 或 success geometry，而不是继续强化 filter 权重。
 
 复验/GIF 和曲线输出：
 
 ```text
-outputs/runs/exp021_randomized_terrain_filter_curriculum/pure_rl_seed23_20m_filter_curriculum/metrics/multi_eval_20260626_120357/
-outputs/runs/exp021_randomized_terrain_filter_curriculum/pure_rl_seed23_20m_filter_curriculum/videos/multi_eval_20260626_120357/
-outputs/runs/exp021_randomized_terrain_filter_curriculum/pure_rl_seed23_20m_filter_curriculum/figures/training_curves.png
-outputs/runs/exp021_randomized_terrain_filter_curriculum/pure_rl_seed23_20m_filter_curriculum/figures/candidate_eval_curves.png
-outputs/runs/exp021_randomized_terrain_filter_curriculum/_suite/metrics/
-outputs/runs/exp021_randomized_terrain_filter_curriculum/_suite/figures/
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/pure_rl_seed23_20m_endpoint_safety/metrics/multi_eval_20260626_153606/
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/pure_rl_seed23_20m_endpoint_safety/videos/multi_eval_20260626_153606/
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/pure_rl_seed23_20m_endpoint_safety/figures/training_curves.png
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/pure_rl_seed23_20m_endpoint_safety/figures/candidate_eval_curves.png
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/_suite/metrics/
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/_suite/figures/
 ```
 
 不要提交 `outputs/` 下的 checkpoint、JSON、PNG、GIF 或 TensorBoard。

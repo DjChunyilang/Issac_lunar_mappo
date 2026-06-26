@@ -220,7 +220,10 @@ def render_rollout(
         map_location = torch.device("cpu")
     checkpoint_data = torch.load(checkpoint, map_location=map_location)
     metadata = checkpoint_data.get("metadata", {}) if isinstance(checkpoint_data, dict) else {}
-    if cfg.planner.subgoal_filter.mode == "terrain_safe_candidate_curriculum":
+    if cfg.planner.subgoal_filter.mode in {
+        "terrain_safe_candidate_curriculum",
+        "terrain_safe_candidate_constrained_curriculum",
+    }:
         cfg.planner.subgoal_filter.progress_timestep_override = int(metadata.get("timesteps", 0))
         cfg.planner.subgoal_filter.deterministic_eval = True
 

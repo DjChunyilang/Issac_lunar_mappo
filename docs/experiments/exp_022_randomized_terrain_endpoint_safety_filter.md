@@ -80,29 +80,80 @@ timeout_rate == 0
 - timeout 是否不回到 exp020 的 `0.9506`。
 - filter telemetry 中 raw endpoint/path violation 是否被 filtered action 降低。
 
-## 工程验证计划
+## 工程验证
 
-已新增专项覆盖：
+已完成：
 
 - constrained curriculum warmup 期不覆盖 raw action。
 - warmup 后 safety override 可在 raw endpoint unsafe 时强制选择可行候选。
 - 不可见 rover 不影响单 rover safety constraint / filter 输出。
 - exp022 配置 contract、候选数、约束开关、安全 reward 和 telemetry shape。
+- 完整 `.venv_isaaclab/bin/python -m pytest -q -ra` 通过。
+- CPU smoke 和 CUDA smoke 通过。
+- CUDA smoke 确认 `optimizer_count=1`、`joint_update_count=2`、terrain 输入权重更新、动作非退化。
 
-标准验证命令：
+关键兼容修复：
 
-```bash
-.venv_isaaclab/bin/python -m pytest -q \
-  tests/test_subgoal_filter.py \
-  tests/test_exp019_training.py \
-  tests/test_exp020_training.py \
-  tests/test_exp021_training.py \
-  tests/test_exp022_training.py
+- `scripts/render_skrl_proxy_rollout.py` 已支持 `terrain_safe_candidate_constrained_curriculum` 的 checkpoint timestep metadata；否则 exp022 GIF 会用错 filter schedule progress。
 
-.venv_isaaclab/bin/python -m pytest -q -ra
+## 结果表
+
+训练、候选评估、5 轮独立 eval、GIF、height map 和曲线已完成。结果以以下机器可读文件为准：
+
+```text
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/_suite/metrics/strict_acceptance.json
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/_suite/metrics/suite_summary.json
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/_suite/metrics/multi_eval_summary.json
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/pure_rl_seed23_20m_endpoint_safety/metrics/final_eval_proxy.json
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/pure_rl_seed23_20m_endpoint_safety/metrics/eval_metrics.json
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/pure_rl_seed23_20m_endpoint_safety/metrics/multi_eval_20260626_153606/multi_eval_summary.json
 ```
 
-CPU / CUDA smoke 见 `docs/runbooks/train_skrl_mappo.md` 的 exp022 section。
+| eval | checkpoint | dmax ratio | success | collision | timeout | path risk mean | strict |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| candidate eval seed1023 | `ppo_timestep_007168.pt` | 0.4722 | 0.0137 | 0.0176 | 0.9697 | 0.2732 | 未通过 |
+| final eval seed1023 | `best.pt` | 0.4768 | 0.0244 | 0.0146 | 0.9609 | 0.2726 | 未通过 |
+| 5 seed mean `12023–12027` | `best.pt` | 0.4719 | 0.0139 | 0.0170 | 0.9699 | 0.2737 | 未通过 |
+
+5 seed filter 统计：
+
+```text
+filter_raw_path_terrain_risk_mean: 0.3379
+filter_filtered_path_terrain_risk_mean: 0.2737
+filter_path_terrain_risk_reduction_mean: 0.0642
+filter_applied_fraction: 0.6165
+filter_safety_override_fraction: 0.0247
+filter_feasible_fraction: 0.8380
+filter_path_collision_violation_fraction: 0.00029
+final_nearest_neighbor_distance: 1.3977
+min_nearest_distance: 0.2567
+```
+
+## 失败分析
+
+严格标准未通过：
+
+- `dmax_reduction_ratio=0.4719`，未达到 `<=0.20`。
+- `success_rate=0.0139`，远低于 `>=0.90`。
+- `collision_rate=0.0170`，通过 `<=0.02`。
+- `timeout_rate=0.9699`，远高于 `0`。
+
+和 exp021 对比：
+
+- collision 从 `0.1746` 降到 `0.0170`，说明 endpoint/path hard constraint 和 safety override 确实把碰撞压住了。
+- success 从 `0.6361` 降到 `0.0139`，timeout 从 `0.1967` 升到 `0.9699`，说明约束过强，策略退化为“安全但不完成集合”。
+- filtered path risk 从 exp021 的 `0.3638` 降到 `0.2737`，风险过滤非常强，但这并没有转化为可完成任务的集合行为。
+- best checkpoint 被 `safe_progress_long` 选为 `7168` timesteps；后续 checkpoint collision 继续下降，但 success 也进一步接近 0。
+
+当前判断：
+
+exp022 解决了 exp021 的碰撞问题，但重新暴露 exp020 的核心失败模式：post-processing filter / shield 一旦足够强，就会牺牲集合进度。继续只堆 filter 权重或 hard constraint 不太可能得到 strict pass。
+
+下一轮更应该把“保持集合进度”和“避免碰撞”放到同一个 action / planner 表达里，而不是把安全作为 actor 输出后的强替换。可考虑：
+
+- 分离径向集合速度和切向避障速度，允许 actor 同时表达“朝中心收缩”和“绕开邻居”。
+- 对 endpoint safety 使用软 barrier / CBF-like projection，并保留最小集合进度约束，而不是大范围替换为低风险候选。
+- 降低 filter 的 endpoint safe distance 或把 success zone 设计为环带队形，避免所有车被约束推到过大的最近邻距离。
 
 ## 长训练命令
 
@@ -143,9 +194,28 @@ tail -f outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/_launcher/
 ```text
 outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/pure_rl_seed23_20m_endpoint_safety/
 outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/_suite/metrics/
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/_suite/figures/
 outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/_launcher/train.log
 ```
 
-## 当前状态
+复验/GIF、height map 和曲线：
 
-代码、配置、专项测试和文档已准备。长训练完成前，不写 strict 结论，不提交 `outputs/` 下的 checkpoint、JSON、PNG、GIF 或 TensorBoard 产物。
+```text
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/pure_rl_seed23_20m_endpoint_safety/metrics/multi_eval_20260626_153606/
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/pure_rl_seed23_20m_endpoint_safety/videos/multi_eval_20260626_153606/
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/pure_rl_seed23_20m_endpoint_safety/figures/training_curves.png
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/pure_rl_seed23_20m_endpoint_safety/figures/candidate_eval_curves.png
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/_suite/figures/training_curves.png
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/_suite/figures/candidate_eval_curves.png
+```
+
+每个 seed 的可视化：
+
+```text
+videos/multi_eval_20260626_153606/seed<seed>/proxy_eval_rollout.gif
+videos/multi_eval_20260626_153606/seed<seed>/terrain_height_map.png
+```
+
+## 结论
+
+exp022 不能作为当前主结果，也不能写成随机地形安全策略收敛。它是一个清晰诊断：安全 constrained filter 能把 collision 压进 strict gate，但过强地牺牲集合，导致 success / timeout 严重失败。下一轮不建议继续强化 post-processing filter，应改 action representation、planner projection 或 success geometry，让安全和集合成为同一个可优化目标。
