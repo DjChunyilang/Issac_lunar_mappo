@@ -12,6 +12,7 @@
 - `exp019` 已完成随机增强地形安全/路径风险诊断；工程链路正常，但 strict 未通过，说明当前软路径风险惩罚和安全 gate 组合仍不足。
 - `exp020` 已完成 terrain/safety-aware 子目标过滤器诊断；路径风险明显降低，但集合进度被抑制，strict 未通过。
 - `exp021` 已完成课程化/软化 filter 诊断；集合进度恢复，但 collision 显著升高，strict 未通过。
+- `exp022` 正在验证 endpoint/path safety constrained curriculum filter；目标是针对 exp021 高 collision，在不牺牲集合趋势的情况下降低 endpoint/path unsafe action。
 - PhysX / Isaac Sim 作为 checkpoint 级高保真闭环评估和展示层，不进入当前主训练 loop。
 - 新训练和评估默认写入 `outputs/runs/<experiment>/<run>/`。
 
@@ -118,6 +119,27 @@ outputs/runs/exp021_randomized_terrain_filter_curriculum/
 
 - exp021 相比 exp020 恢复了集合和降低了 timeout，但 collision 明显恶化。
 - 下一步不宜继续只调 filter 强度或 terrain reward；应让 endpoint safety 更直接地参与 action/planner 或 policy loss。
+
+当前下一轮是 `exp022`：
+
+```text
+outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/
+```
+
+计划：
+
+- 保持 exp021 的 pure RL、shared-joint MAPPO、随机增强地形和 `12 m` 通信半径。
+- 子目标 filter 改为 `terrain_safe_candidate_constrained_curriculum`。
+- 候选从 10 个扩展到 28 个：`rho_scales=[0.45, 0.70, 0.90, 1.0]`，`beta_offsets_deg=[-45, -30, -15, 0, 15, 30, 45]`。
+- warmup 前仍不替换 action；warmup 后对 endpoint/path unsafe raw action 允许 safety override。
+- 加入 endpoint safety、path collision 和 visible-neighbor center progress hard constraint，避免只绕远但不集合。
+
+判读：
+
+- strict gate 不变。
+- 若未 strict，优先比较 exp021 的 collision `0.1746` 和 success `0.6361`。
+- 如果 collision 降低但 success 又接近 exp020 的 `0.0`，说明 constrained filter 仍过强。
+- 如果 success 保持但 collision 仍高，下一轮应转向 policy/action representation 层面的安全约束，而不是继续放大后处理权重。
 
 ## Checkpoint 复评计划
 

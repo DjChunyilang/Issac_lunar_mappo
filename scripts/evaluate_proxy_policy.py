@@ -69,7 +69,10 @@ def evaluate_checkpoint(
         map_location = torch.device("cpu")
     checkpoint_data = torch.load(checkpoint, map_location=map_location)
     metadata = checkpoint_data.get("metadata", {}) if isinstance(checkpoint_data, dict) else {}
-    if cfg.planner.subgoal_filter.mode == "terrain_safe_candidate_curriculum":
+    if cfg.planner.subgoal_filter.mode in {
+        "terrain_safe_candidate_curriculum",
+        "terrain_safe_candidate_constrained_curriculum",
+    }:
         cfg.planner.subgoal_filter.progress_timestep_override = int(metadata.get("timesteps", 0))
         cfg.planner.subgoal_filter.deterministic_eval = True
 
@@ -128,6 +131,16 @@ def evaluate_checkpoint(
     filter_endpoint_near_violation_sum = torch.tensor(0.0, device=env.device)
     filter_endpoint_collision_violation_sum = torch.tensor(0.0, device=env.device)
     filter_endpoint_collision_violation_count = torch.tensor(0.0, device=env.device)
+    filter_path_near_violation_sum = torch.tensor(0.0, device=env.device)
+    filter_path_collision_violation_sum = torch.tensor(0.0, device=env.device)
+    filter_path_collision_violation_count = torch.tensor(0.0, device=env.device)
+    filter_raw_endpoint_near_violation_sum = torch.tensor(0.0, device=env.device)
+    filter_raw_endpoint_collision_violation_sum = torch.tensor(0.0, device=env.device)
+    filter_raw_path_near_violation_sum = torch.tensor(0.0, device=env.device)
+    filter_raw_path_collision_violation_sum = torch.tensor(0.0, device=env.device)
+    filter_candidate_feasible_sum = torch.tensor(0.0, device=env.device)
+    filter_feasible_fraction_sum = torch.tensor(0.0, device=env.device)
+    filter_safety_override_sum = torch.tensor(0.0, device=env.device)
     filter_candidate_index_sum = torch.tensor(0.0, device=env.device)
     filter_deterministic_applied_sum = torch.tensor(0.0, device=env.device)
     filter_raw_score_sum = torch.tensor(0.0, device=env.device)
@@ -248,6 +261,30 @@ def evaluate_checkpoint(
                 ].reshape(-1)
                 near_violation = action_filter["endpoint_near_violation"][active_before].reshape(-1)
                 collision_violation = action_filter["endpoint_collision_violation"][active_before].reshape(-1)
+                path_near_violation = action_filter["path_near_violation"][
+                    active_before
+                ].reshape(-1)
+                path_collision_violation = action_filter["path_collision_violation"][
+                    active_before
+                ].reshape(-1)
+                raw_endpoint_near_violation = action_filter[
+                    "raw_endpoint_near_violation"
+                ][active_before].reshape(-1)
+                raw_endpoint_collision_violation = action_filter[
+                    "raw_endpoint_collision_violation"
+                ][active_before].reshape(-1)
+                raw_path_near_violation = action_filter["raw_path_near_violation"][
+                    active_before
+                ].reshape(-1)
+                raw_path_collision_violation = action_filter[
+                    "raw_path_collision_violation"
+                ][active_before].reshape(-1)
+                candidate_feasible = action_filter["candidate_feasible"][
+                    active_before
+                ].reshape(-1)
+                safety_override = action_filter["safety_override"][
+                    active_before
+                ].reshape(-1)
                 candidate_index = action_filter["candidate_index"][active_before].reshape(-1)
                 deterministic_applied = action_filter["deterministic_applied"][
                     active_before
@@ -272,6 +309,40 @@ def evaluate_checkpoint(
                 filter_endpoint_collision_violation_count = (
                     filter_endpoint_collision_violation_count
                     + (collision_violation > 0.0).float().sum()
+                )
+                filter_path_near_violation_sum = (
+                    filter_path_near_violation_sum + path_near_violation.sum()
+                )
+                filter_path_collision_violation_sum = (
+                    filter_path_collision_violation_sum + path_collision_violation.sum()
+                )
+                filter_path_collision_violation_count = (
+                    filter_path_collision_violation_count
+                    + (path_collision_violation > 0.0).float().sum()
+                )
+                filter_raw_endpoint_near_violation_sum = (
+                    filter_raw_endpoint_near_violation_sum
+                    + raw_endpoint_near_violation.sum()
+                )
+                filter_raw_endpoint_collision_violation_sum = (
+                    filter_raw_endpoint_collision_violation_sum
+                    + raw_endpoint_collision_violation.sum()
+                )
+                filter_raw_path_near_violation_sum = (
+                    filter_raw_path_near_violation_sum + raw_path_near_violation.sum()
+                )
+                filter_raw_path_collision_violation_sum = (
+                    filter_raw_path_collision_violation_sum
+                    + raw_path_collision_violation.sum()
+                )
+                filter_candidate_feasible_sum = (
+                    filter_candidate_feasible_sum + candidate_feasible.float().sum()
+                )
+                filter_feasible_fraction_sum = filter_feasible_fraction_sum + (
+                    sample_count * float(action_filter.get("feasible_fraction", 0.0))
+                )
+                filter_safety_override_sum = (
+                    filter_safety_override_sum + safety_override.float().sum()
                 )
                 filter_candidate_index_sum = filter_candidate_index_sum + candidate_index.float().sum()
                 filter_deterministic_applied_sum = (
@@ -412,6 +483,41 @@ def evaluate_checkpoint(
         ),
         "filter_endpoint_collision_violation_fraction": float(
             (filter_endpoint_collision_violation_count / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_path_near_violation_mean": float(
+            (filter_path_near_violation_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_path_collision_violation_mean": float(
+            (filter_path_collision_violation_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_path_collision_violation_fraction": float(
+            (filter_path_collision_violation_count / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_raw_endpoint_near_violation_mean": float(
+            (filter_raw_endpoint_near_violation_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_raw_endpoint_collision_violation_mean": float(
+            (
+                filter_raw_endpoint_collision_violation_sum
+                / filter_sample_count.clamp_min(1.0)
+            )
+            .detach()
+            .cpu()
+        ),
+        "filter_raw_path_near_violation_mean": float(
+            (filter_raw_path_near_violation_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_raw_path_collision_violation_mean": float(
+            (filter_raw_path_collision_violation_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_candidate_feasible_fraction": float(
+            (filter_candidate_feasible_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_feasible_fraction": float(
+            (filter_feasible_fraction_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_safety_override_fraction": float(
+            (filter_safety_override_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
         ),
         "filter_candidate_index_mean": float(
             (filter_candidate_index_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()

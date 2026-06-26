@@ -638,6 +638,106 @@ tail -f outputs/runs/exp021_randomized_terrain_filter_curriculum/_launcher/train
 - 课程化 filter 恢复集合进度：5 seed mean success `0.6361`，dmax ratio `0.1460`。
 - timeout 明显低于 exp020：`0.1967` vs exp020 `0.9506`。
 - 碰撞成为主失败项：collision `0.1746`，远高于 strict `0.02`，也高于 exp020 `0.0498`。
+
+## exp022 endpoint/path safety constrained curriculum filter
+
+目的：保留 exp021 的集合趋势，同时在 Actor 输出后、轨迹生成前加入更直接的 endpoint/path safety constraint，针对 exp021 的高 collision 失败模式。
+
+关键配置：
+
+```text
+config: configs/experiment/exp022_randomized_terrain_endpoint_safety_filter.yaml
+experiment: exp022_randomized_terrain_endpoint_safety_filter
+run: pure_rl_seed23_20m_endpoint_safety
+filter mode: terrain_safe_candidate_constrained_curriculum
+candidate_count: 28
+selection gate: safe_progress_long
+```
+
+专项测试：
+
+```bash
+.venv_isaaclab/bin/python -m pytest -q \
+  tests/test_subgoal_filter.py \
+  tests/test_exp019_training.py \
+  tests/test_exp020_training.py \
+  tests/test_exp021_training.py \
+  tests/test_exp022_training.py
+
+.venv_isaaclab/bin/python -m pytest -q -ra
+```
+
+CPU smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp022_randomized_terrain_endpoint_safety_filter.yaml \
+  --device cpu \
+  --num-envs 8 \
+  --rollout-steps 4 \
+  --timesteps 8 \
+  --checkpoint-interval 4 \
+  --run-name smoke_cpu_exp022 \
+  --output-layout run \
+  --selection-gate safe_progress_long
+```
+
+CUDA smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp022_randomized_terrain_endpoint_safety_filter.yaml \
+  --device cuda \
+  --num-envs 256 \
+  --rollout-steps 32 \
+  --timesteps 64 \
+  --checkpoint-interval 32 \
+  --eval-num-envs 256 \
+  --eval-steps 220 \
+  --run-name smoke_cuda_exp022 \
+  --output-layout run \
+  --selection-gate safe_progress_long
+```
+
+正式 20M 长训练：
+
+```bash
+ROOT=$(pwd)
+mkdir -p outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/_launcher
+
+systemd-run --user --unit exp022-endpoint-safety-20m \
+  --same-dir \
+  --collect \
+  --property=StandardOutput=append:${ROOT}/outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/_launcher/train.log \
+  --property=StandardError=append:${ROOT}/outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/_launcher/train.log \
+  .venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+    --config configs/experiment/exp022_randomized_terrain_endpoint_safety_filter.yaml \
+    --device cuda \
+    --timesteps 10240 \
+    --seed 23 \
+    --num-envs 2048 \
+    --output-layout run \
+    --run-name pure_rl_seed23_20m_endpoint_safety \
+    --rollout-steps 32 \
+    --checkpoint-interval 1024 \
+    --eval-num-envs 1024 \
+    --eval-steps 220 \
+    --eval-seed-offset 1000 \
+    --bc-updates 0 \
+    --selection-gate safe_progress_long
+```
+
+监控：
+
+```bash
+tail -f outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/_launcher/train.log
+```
+
+判读：
+
+- strict gate 不变：`dmax <= 0.20`、`success >= 0.90`、`collision <= 0.02`、`timeout = 0`。
+- 若未 strict，重点比较 exp021：collision 是否低于 `0.1746`，success 是否仍显著高于 exp020 的 `0.0`。
+- 重点 telemetry：`filter_safety_override_fraction`、`filter_feasible_fraction`、`filter_raw_endpoint_near_violation_mean`、`filter_raw_path_collision_violation_mean`、`filter_path_collision_violation_mean`。
 - filter 仍降低路径风险：raw path risk `0.3871`，filtered path risk `0.3638`，risk reduction `0.0233`。
 - 结论是弱化/课程化 filter 能恢复集合，但不能解决 endpoint collision；下一轮应做安全/集合联合 action 或 planner 约束。
 

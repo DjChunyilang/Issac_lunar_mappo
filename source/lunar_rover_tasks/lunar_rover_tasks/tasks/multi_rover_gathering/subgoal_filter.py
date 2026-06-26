@@ -46,6 +46,16 @@ def _disabled_filter_result(decoded: DecodedAction) -> SubgoalFilterResult:
             "suggested_subgoal_deviation": zeros,
             "endpoint_near_violation": zeros,
             "endpoint_collision_violation": zeros,
+            "path_near_violation": zeros,
+            "path_collision_violation": zeros,
+            "raw_endpoint_near_violation": zeros,
+            "raw_endpoint_collision_violation": zeros,
+            "raw_path_near_violation": zeros,
+            "raw_path_collision_violation": zeros,
+            "candidate_feasible": zeros.bool(),
+            "feasible_fraction": 1.0,
+            "safety_override": zeros.bool(),
+            "safety_override_fraction": 0.0,
             "raw_score": zeros,
             "filtered_score": zeros,
             "score_margin": zeros,
@@ -128,7 +138,56 @@ def _endpoint_safety_violations(
     )
     candidate_distance = torch.linalg.norm(candidate_delta, dim=-1)
     nearest_visible = candidate_distance.masked_fill(~visible[:, :, None, :], float("inf")).amin(dim=-1)
-    near_threshold = max(float(cfg.success_thresholds.min_pairwise_distance), 1.0e-6)
+    near_threshold = float(cfg.planner.subgoal_filter.endpoint_safe_distance)
+    if near_threshold <= 0.0:
+        near_threshold = float(cfg.success_thresholds.min_pairwise_distance)
+    near_threshold = max(near_threshold, 1.0e-6)
+    collision_threshold = max(float(cfg.safety.collision_distance), 1.0e-6)
+    near_violation = torch.relu(near_threshold - nearest_visible) / near_threshold
+    collision_violation = torch.relu(collision_threshold - nearest_visible) / collision_threshold
+    return near_violation, collision_violation
+
+
+def _path_safety_violations(
+    positions: torch.Tensor,
+    candidate_world_subgoals: torch.Tensor,
+    cfg: MultiRoverGatheringEnvCfg,
+    *,
+    num_samples: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    n_agents = positions.shape[1]
+    if n_agents <= 1:
+        zeros = torch.zeros(
+            candidate_world_subgoals.shape[:-1],
+            dtype=candidate_world_subgoals.dtype,
+            device=candidate_world_subgoals.device,
+        )
+        return zeros, zeros
+    current_delta = positions[:, :, None, :2] - positions[:, None, :, :2]
+    current_distance = torch.linalg.norm(current_delta, dim=-1)
+    eye = torch.eye(n_agents, dtype=torch.bool, device=positions.device).unsqueeze(0)
+    visible = (current_distance <= float(cfg.observation.communication_radius)) & ~eye
+
+    samples = max(2, int(num_samples))
+    t = torch.linspace(
+        1.0 / float(samples),
+        1.0,
+        samples,
+        dtype=positions.dtype,
+        device=positions.device,
+    )
+    start = positions[:, :, None, None, :2]
+    end = candidate_world_subgoals[..., None, :2]
+    path_xy = start + (end - start) * t.view(1, 1, 1, samples, 1)
+    delta = path_xy[..., None, :] - positions[:, None, None, None, :, :2]
+    distance = torch.linalg.norm(delta, dim=-1)
+    visible_mask = visible[:, :, None, None, :]
+    nearest_visible = distance.masked_fill(~visible_mask, float("inf")).amin(dim=(-1, -2))
+
+    near_threshold = float(cfg.planner.subgoal_filter.path_safe_distance)
+    if near_threshold <= 0.0:
+        near_threshold = float(cfg.success_thresholds.min_pairwise_distance)
+    near_threshold = max(near_threshold, 1.0e-6)
     collision_threshold = max(float(cfg.safety.collision_distance), 1.0e-6)
     near_violation = torch.relu(near_threshold - nearest_visible) / near_threshold
     collision_violation = torch.relu(collision_threshold - nearest_visible) / collision_threshold
@@ -165,7 +224,10 @@ def _schedule_values(
 ) -> tuple[int, float, float]:
     filter_cfg = cfg.planner.subgoal_filter
     step = max(0, int(progress_timestep or 0))
-    if filter_cfg.mode != "terrain_safe_candidate_curriculum":
+    if filter_cfg.mode not in {
+        "terrain_safe_candidate_curriculum",
+        "terrain_safe_candidate_constrained_curriculum",
+    }:
         return step, 1.0, 1.0
 
     warmup = max(0, int(filter_cfg.warmup_timesteps))
@@ -212,7 +274,11 @@ def apply_subgoal_filter(
     filter_cfg = cfg.planner.subgoal_filter
     if not filter_cfg.enabled:
         return _disabled_filter_result(decoded)
-    supported_modes = {"terrain_safe_candidate", "terrain_safe_candidate_curriculum"}
+    supported_modes = {
+        "terrain_safe_candidate",
+        "terrain_safe_candidate_curriculum",
+        "terrain_safe_candidate_constrained_curriculum",
+    }
     if filter_cfg.mode not in supported_modes:
         raise ValueError(f"Unsupported subgoal filter mode: {filter_cfg.mode}")
     if filter_cfg.path_samples <= 0:
@@ -248,6 +314,12 @@ def apply_subgoal_filter(
         world_candidates,
         cfg,
     )
+    path_near_violation, path_collision_violation = _path_safety_violations(
+        positions,
+        world_candidates,
+        cfg,
+        num_samples=int(filter_cfg.path_samples),
+    )
     visible_center_cost = _visible_neighbor_center_cost(positions, world_candidates, cfg)
     auxiliary_score = (
         float(filter_cfg.path_terrain_mean_weight) * path["risk_mean"]
@@ -256,16 +328,62 @@ def apply_subgoal_filter(
         + float(filter_cfg.subgoal_terrain_weight) * subgoal_risk
         + float(filter_cfg.endpoint_near_weight) * near_violation
         + float(filter_cfg.endpoint_collision_weight) * collision_violation
+        + float(filter_cfg.path_near_weight) * path_near_violation
+        + float(filter_cfg.path_collision_weight) * path_collision_violation
         + float(filter_cfg.visible_neighbor_center_weight) * visible_center_cost
     )
     score = (
         float(filter_cfg.intent_deviation_weight) * intent_deviation
         + float(score_scale) * auxiliary_score
     )
-    selected = score.argmin(dim=-1)
+    raw_center_cost = _gather_scalar(
+        visible_center_cost,
+        torch.full(
+            decoded.physical.shape[:-1],
+            int(raw_candidate_index),
+            dtype=torch.long,
+            device=decoded.physical.device,
+        ),
+    )
+    feasible = torch.ones_like(score, dtype=torch.bool)
+    if filter_cfg.hard_endpoint_near_filter:
+        feasible = feasible & (near_violation <= 1.0e-6)
+    if filter_cfg.hard_path_collision_filter:
+        feasible = feasible & (path_collision_violation <= 1.0e-6)
+    if filter_cfg.hard_center_progress_filter:
+        feasible = feasible & (
+            visible_center_cost
+            <= raw_center_cost[..., None] + float(filter_cfg.center_progress_slack)
+        )
+    constrained_score = torch.where(
+        feasible,
+        score,
+        score + float(filter_cfg.hard_constraint_penalty),
+    )
+    constrained_selected = constrained_score.argmin(dim=-1)
+    has_feasible = feasible.any(dim=-1)
+    selected = torch.where(has_feasible, constrained_selected, score.argmin(dim=-1))
     raw_score = _gather_scalar(score, raw_index)
     selected_score = _gather_scalar(score, selected)
     score_margin = raw_score - selected_score
+    raw_endpoint_near_violation = _gather_scalar(near_violation, raw_index)
+    raw_endpoint_collision_violation = _gather_scalar(collision_violation, raw_index)
+    raw_path_near_violation = _gather_scalar(path_near_violation, raw_index)
+    raw_path_collision_violation = _gather_scalar(path_collision_violation, raw_index)
+    raw_unsafe = (
+        raw_endpoint_near_violation > 1.0e-6
+        if filter_cfg.hard_endpoint_near_filter
+        else raw_endpoint_collision_violation > 1.0e-6
+    ) | (raw_path_collision_violation > 1.0e-6)
+    safety_override = (
+        bool(filter_cfg.safety_override_after_warmup)
+        and schedule_step >= int(filter_cfg.warmup_timesteps)
+    )
+    safety_override_mask = (
+        raw_unsafe & (selected != raw_index) & has_feasible
+        if safety_override
+        else torch.zeros_like(raw_unsafe)
+    )
     deterministic_filter = (
         bool(filter_cfg.deterministic_eval) if deterministic is None else bool(deterministic)
     )
@@ -288,6 +406,7 @@ def apply_subgoal_filter(
             generator=generator,
         )
         applied = (selected != raw_index) & (random_values < float(apply_probability))
+    applied = applied | safety_override_mask
     execution_index = torch.where(applied, selected, raw_index)
     filtered_physical = _gather_candidate(physical_candidates, execution_index)
     filtered_local_xy = _gather_candidate(local_candidates, execution_index)
@@ -311,6 +430,8 @@ def apply_subgoal_filter(
     filtered_height_change = _gather_scalar(path["height_change_mean"], execution_index)
     selected_near_violation = _gather_scalar(near_violation, execution_index)
     selected_collision_violation = _gather_scalar(collision_violation, execution_index)
+    selected_path_near_violation = _gather_scalar(path_near_violation, execution_index)
+    selected_path_collision_violation = _gather_scalar(path_collision_violation, execution_index)
     selected_deviation = _gather_scalar(intent_deviation, execution_index)
     suggested_deviation = _gather_scalar(intent_deviation, selected)
     executed_score = _gather_scalar(score, execution_index)
@@ -319,6 +440,8 @@ def apply_subgoal_filter(
     suggested_height_change = _gather_scalar(path["height_change_mean"], selected)
     suggested_near_violation = _gather_scalar(near_violation, selected)
     suggested_collision_violation = _gather_scalar(collision_violation, selected)
+    suggested_path_near_violation = _gather_scalar(path_near_violation, selected)
+    suggested_path_collision_violation = _gather_scalar(path_collision_violation, selected)
     candidate_count = physical_candidates.shape[2]
     histogram = torch.bincount(
         execution_index.reshape(-1),
@@ -352,8 +475,22 @@ def apply_subgoal_filter(
             "suggested_subgoal_deviation": suggested_deviation,
             "endpoint_near_violation": selected_near_violation,
             "endpoint_collision_violation": selected_collision_violation,
+            "path_near_violation": selected_path_near_violation,
+            "path_collision_violation": selected_path_collision_violation,
+            "raw_endpoint_near_violation": raw_endpoint_near_violation,
+            "raw_endpoint_collision_violation": raw_endpoint_collision_violation,
+            "raw_path_near_violation": raw_path_near_violation,
+            "raw_path_collision_violation": raw_path_collision_violation,
             "suggested_endpoint_near_violation": suggested_near_violation,
             "suggested_endpoint_collision_violation": suggested_collision_violation,
+            "suggested_path_near_violation": suggested_path_near_violation,
+            "suggested_path_collision_violation": suggested_path_collision_violation,
+            "candidate_feasible": _gather_scalar(feasible.float(), execution_index).bool(),
+            "feasible_fraction": float(feasible.float().mean().detach().cpu()),
+            "safety_override": safety_override_mask,
+            "safety_override_fraction": float(
+                safety_override_mask.float().mean().detach().cpu()
+            ),
             "raw_score": raw_score,
             "filtered_score": executed_score,
             "suggested_score": selected_score,

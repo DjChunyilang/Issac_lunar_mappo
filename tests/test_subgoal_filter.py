@@ -267,3 +267,109 @@ def test_visible_neighbor_center_intent_ignores_invisible_rover() -> None:
         result.decoded.physical[0, 0],
         changed_result.decoded.physical[0, 0],
     )
+
+
+def _constrained_curriculum_cfg() -> MultiRoverGatheringEnvCfg:
+    cfg = _cfg(enabled=True)
+    cfg.task.n_agents = 2
+    cfg.terrain.type = "flat_proxy"
+    cfg.planner.subgoal_filter.mode = "terrain_safe_candidate_constrained_curriculum"
+    cfg.planner.subgoal_filter.rho_scales = [1.0]
+    cfg.planner.subgoal_filter.beta_offsets_deg = [-45.0, 0.0, 45.0]
+    cfg.planner.subgoal_filter.intent_deviation_weight = 0.1
+    cfg.planner.subgoal_filter.endpoint_near_weight = 10.0
+    cfg.planner.subgoal_filter.endpoint_collision_weight = 2000.0
+    cfg.planner.subgoal_filter.path_collision_weight = 2000.0
+    cfg.planner.subgoal_filter.visible_neighbor_center_weight = 0.2
+    cfg.planner.subgoal_filter.endpoint_safe_distance = 0.50
+    cfg.planner.subgoal_filter.path_safe_distance = 0.42
+    cfg.planner.subgoal_filter.hard_endpoint_near_filter = True
+    cfg.planner.subgoal_filter.hard_path_collision_filter = True
+    cfg.planner.subgoal_filter.hard_center_progress_filter = True
+    cfg.planner.subgoal_filter.center_progress_slack = 0.45
+    cfg.planner.subgoal_filter.safety_override_after_warmup = True
+    cfg.planner.subgoal_filter.warmup_timesteps = 8
+    cfg.planner.subgoal_filter.ramp_timesteps = 8
+    cfg.planner.subgoal_filter.apply_probability_end = 0.0
+    cfg.planner.subgoal_filter.score_scale_start = 1.0
+    cfg.planner.subgoal_filter.score_scale_end = 1.0
+    return cfg
+
+
+def test_constrained_curriculum_warmup_does_not_override_unsafe_raw_action() -> None:
+    cfg = _constrained_curriculum_cfg()
+    positions = torch.tensor([[[0.0, 0.0, 0.0], [0.7, 0.0, 0.0]]])
+    action = torch.tensor([[[0.0, 0.0], [0.0, 0.0]]])
+    decoded, yaws = _decode(cfg, positions, action)
+
+    result = apply_subgoal_filter(
+        decoded,
+        positions,
+        yaws,
+        cfg,
+        progress_timestep=0,
+        deterministic=False,
+    )
+
+    assert not result.info["applied"][0, 0]
+    assert not result.info["safety_override"][0, 0]
+    assert torch.allclose(result.decoded.physical[0, 0], decoded.physical[0, 0])
+    assert result.info["raw_endpoint_near_violation"][0, 0] > 0.0
+    assert result.info["feasible_fraction"] > 0.0
+
+
+def test_constrained_curriculum_safety_override_after_warmup_selects_safe_candidate() -> None:
+    cfg = _constrained_curriculum_cfg()
+    positions = torch.tensor([[[0.0, 0.0, 0.0], [0.7, 0.0, 0.0]]])
+    action = torch.tensor([[[0.0, 0.0], [0.0, 0.0]]])
+    decoded, yaws = _decode(cfg, positions, action)
+
+    result = apply_subgoal_filter(
+        decoded,
+        positions,
+        yaws,
+        cfg,
+        progress_timestep=8,
+        deterministic=False,
+    )
+
+    assert result.info["safety_override"][0, 0]
+    assert result.info["applied"][0, 0]
+    assert int(result.info["candidate_index"][0, 0]) != int(result.info["raw_candidate_index"])
+    assert result.info["endpoint_near_violation"][0, 0] == pytest.approx(0.0)
+    assert result.info["path_collision_violation"][0, 0] == pytest.approx(0.0)
+    assert result.info["raw_endpoint_collision_violation"][0, 0] > 0.0
+    assert result.info["candidate_feasible"][0, 0]
+    assert result.info["safety_override_fraction"] > 0.0
+
+
+def test_constrained_curriculum_ignores_invisible_rover_for_safety_constraints() -> None:
+    cfg = _constrained_curriculum_cfg()
+    cfg.task.n_agents = 3
+    cfg.observation.communication_radius = 1.2
+    positions = torch.tensor([[[0.0, 0.0, 0.0], [0.7, 0.0, 0.0], [8.0, 0.0, 0.0]]])
+    changed = positions.clone()
+    changed[0, 2, :2] = torch.tensor([8.0, 8.0])
+    action = torch.tensor([[[0.0, 0.0], [0.0, 0.0], [-1.0, 0.0]]])
+    decoded, yaws = _decode(cfg, positions, action)
+    changed_decoded, changed_yaws = _decode(cfg, changed, action)
+
+    result = apply_subgoal_filter(
+        decoded,
+        positions,
+        yaws,
+        cfg,
+        progress_timestep=8,
+        deterministic=False,
+    )
+    changed_result = apply_subgoal_filter(
+        changed_decoded,
+        changed,
+        changed_yaws,
+        cfg,
+        progress_timestep=8,
+        deterministic=False,
+    )
+
+    assert torch.allclose(result.decoded.physical[0, 0], changed_result.decoded.physical[0, 0])
+    assert torch.equal(result.info["candidate_index"][0, 0], changed_result.info["candidate_index"][0, 0])

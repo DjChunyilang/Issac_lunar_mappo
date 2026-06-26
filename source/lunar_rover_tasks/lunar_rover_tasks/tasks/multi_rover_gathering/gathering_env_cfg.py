@@ -50,7 +50,17 @@ class SubgoalFilterCfg:
     subgoal_terrain_weight: float = 0.30
     endpoint_near_weight: float = 2.0
     endpoint_collision_weight: float = 1000.0
+    path_near_weight: float = 0.0
+    path_collision_weight: float = 0.0
     visible_neighbor_center_weight: float = 0.0
+    endpoint_safe_distance: float = 0.0
+    path_safe_distance: float = 0.0
+    hard_endpoint_near_filter: bool = False
+    hard_path_collision_filter: bool = False
+    hard_center_progress_filter: bool = False
+    center_progress_slack: float = 0.0
+    hard_constraint_penalty: float = 10000.0
+    safety_override_after_warmup: bool = False
     warmup_timesteps: int = 0
     ramp_timesteps: int = 1
     apply_probability_end: float = 1.0

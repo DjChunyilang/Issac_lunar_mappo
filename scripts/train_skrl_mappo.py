@@ -646,7 +646,21 @@ def subgoal_filter_metadata(cfg) -> dict[str, Any]:
             "subgoal_terrain": float(filter_cfg.subgoal_terrain_weight),
             "endpoint_near": float(filter_cfg.endpoint_near_weight),
             "endpoint_collision": float(filter_cfg.endpoint_collision_weight),
+            "path_near": float(filter_cfg.path_near_weight),
+            "path_collision": float(filter_cfg.path_collision_weight),
             "visible_neighbor_center": float(filter_cfg.visible_neighbor_center_weight),
+        },
+        "constraints": {
+            "endpoint_safe_distance": float(filter_cfg.endpoint_safe_distance),
+            "path_safe_distance": float(filter_cfg.path_safe_distance),
+            "hard_endpoint_near_filter": bool(filter_cfg.hard_endpoint_near_filter),
+            "hard_path_collision_filter": bool(filter_cfg.hard_path_collision_filter),
+            "hard_center_progress_filter": bool(filter_cfg.hard_center_progress_filter),
+            "center_progress_slack": float(filter_cfg.center_progress_slack),
+            "hard_constraint_penalty": float(filter_cfg.hard_constraint_penalty),
+            "safety_override_after_warmup": bool(
+                filter_cfg.safety_override_after_warmup
+            ),
         },
         "schedule": {
             "warmup_timesteps": int(filter_cfg.warmup_timesteps),
@@ -1132,6 +1146,52 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
                     .float()
                     .mean()
                     .cpu()
+                ),
+                "filter_path_near_violation_mean": float(
+                    action_filter["path_near_violation"].detach().float().mean().cpu()
+                ),
+                "filter_path_collision_violation_mean": float(
+                    action_filter["path_collision_violation"].detach().float().mean().cpu()
+                ),
+                "filter_path_collision_violation_fraction": float(
+                    (action_filter["path_collision_violation"] > 0.0)
+                    .detach()
+                    .float()
+                    .mean()
+                    .cpu()
+                ),
+                "filter_raw_endpoint_near_violation_mean": float(
+                    action_filter["raw_endpoint_near_violation"]
+                    .detach()
+                    .float()
+                    .mean()
+                    .cpu()
+                ),
+                "filter_raw_endpoint_collision_violation_mean": float(
+                    action_filter["raw_endpoint_collision_violation"]
+                    .detach()
+                    .float()
+                    .mean()
+                    .cpu()
+                ),
+                "filter_raw_path_near_violation_mean": float(
+                    action_filter["raw_path_near_violation"].detach().float().mean().cpu()
+                ),
+                "filter_raw_path_collision_violation_mean": float(
+                    action_filter["raw_path_collision_violation"]
+                    .detach()
+                    .float()
+                    .mean()
+                    .cpu()
+                ),
+                "filter_candidate_feasible_fraction": float(
+                    action_filter["candidate_feasible"].detach().float().mean().cpu()
+                ),
+                "filter_feasible_fraction": float(
+                    action_filter.get("feasible_fraction", 0.0)
+                ),
+                "filter_safety_override_fraction": float(
+                    action_filter.get("safety_override_fraction", 0.0)
                 ),
                 "filter_candidate_index_mean": float(
                     action_filter["candidate_index"].detach().float().mean().cpu()
