@@ -189,8 +189,60 @@ systemd-run --user --unit exp023-soft-progress-filter-20m \
 监控：
 
 ```bash
-tail -f outputs/runs/exp023_randomized_terrain_soft_progress_filter/_launcher/train.log
+ tail -f outputs/runs/exp023_randomized_terrain_soft_progress_filter/_launcher/train.log
 ```
+
+## 结果表
+
+seed23 20M 训练、候选评估和 final eval 已完成。结果以以下机器可读文件为准：
+
+```text
+outputs/runs/exp023_randomized_terrain_soft_progress_filter/pure_rl_seed23_20m_soft_progress_filter/metrics/strict_acceptance.json
+outputs/runs/exp023_randomized_terrain_soft_progress_filter/pure_rl_seed23_20m_soft_progress_filter/metrics/summary.json
+outputs/runs/exp023_randomized_terrain_soft_progress_filter/pure_rl_seed23_20m_soft_progress_filter/metrics/final_eval_proxy.json
+outputs/runs/exp023_randomized_terrain_soft_progress_filter/pure_rl_seed23_20m_soft_progress_filter/metrics/eval_metrics.json
+```
+
+| eval | checkpoint | dmax ratio | success | collision | timeout | filter applied | strict |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| best candidate eval seed1023 | `ppo_timestep_010240.pt` | 0.1772 | 0.3164 | 0.2246 | 0.4658 | 0.0798 | 未通过 |
+| final eval seed1023 | `best.pt` | 0.1789 | 0.3027 | 0.2295 | 0.4717 | 0.0805 | 未通过 |
+
+关键 filter telemetry：
+
+```text
+filter_raw_path_terrain_risk_mean: 0.4024
+filter_filtered_path_terrain_risk_mean: 0.4006
+filter_collision_override_fraction: 0.0335
+filter_raw_endpoint_collision_violation_mean: 0.00462
+filter_endpoint_collision_violation_mean: 0.000005
+filter_raw_path_collision_violation_mean: 0.01086
+filter_path_collision_violation_mean: 0.000356
+filter_raw_visible_center_cost_mean: 1.3194
+filter_filtered_visible_center_cost_mean: 1.3111
+first_collision_step_mean: 183.2 / 220
+```
+
+## 失败分析
+
+strict gate 未通过：
+
+- `dmax_reduction_ratio=0.1789`，通过 `<=0.20`。
+- `success_rate=0.3027`，未达到 `>=0.90`。
+- `collision_rate=0.2295`，远高于 `<=0.02`。
+- `timeout_rate=0.4717`，远高于 `0`。
+
+和 exp022 对比：
+
+- success 从 `0.0139` 回升到 `0.3027`，说明 soft progress filter 缓解了 exp022 的安全 standoff。
+- filter applied fraction 从 exp022 的 `0.6165` 降到 `0.0805`，不再大规模接管 actor。
+- collision 从 exp022 的 `0.0170` 升到 `0.2295`，安全失败严重。
+
+当前判断：
+
+exp023 没有复现 exp022 的强接管问题，但它暴露了 filter 的另一个盲点：endpoint/path safety 只把候选路径与“邻居当前位置”比较，未预测可见邻居也同时移动。final eval 中 endpoint/path collision violation 已接近 0，但真实 rollout 的 `first_collision_step_mean≈183`，说明很多碰撞发生在接近集合/hold 的动态相向运动阶段。
+
+下一轮 exp024 应加入 mutual path safety：用可见邻居的 raw subgoal path 作为动态障碍，对候选路径进行同时间采样比较，仍不使用 oracle，也不恢复 exp022 的 hard constraint。
 
 ## 产物路径
 

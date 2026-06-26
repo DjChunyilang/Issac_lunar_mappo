@@ -325,6 +325,24 @@ def _soft_progress_cfg() -> MultiRoverGatheringEnvCfg:
     return cfg
 
 
+def _mutual_progress_cfg() -> MultiRoverGatheringEnvCfg:
+    cfg = _soft_progress_cfg()
+    cfg.planner.subgoal_filter.mode = "terrain_safe_candidate_mutual_progress_curriculum"
+    cfg.planner.beta_max = math.pi / 2.0
+    cfg.planner.subgoal_filter.rho_scales = [1.0]
+    cfg.planner.subgoal_filter.beta_offsets_deg = [-60.0, 0.0, 60.0]
+    cfg.planner.subgoal_filter.endpoint_near_weight = 0.0
+    cfg.planner.subgoal_filter.endpoint_collision_weight = 0.0
+    cfg.planner.subgoal_filter.path_near_weight = 0.0
+    cfg.planner.subgoal_filter.path_collision_weight = 0.0
+    cfg.planner.subgoal_filter.mutual_path_near_weight = 0.0
+    cfg.planner.subgoal_filter.mutual_path_collision_weight = 1000.0
+    cfg.planner.subgoal_filter.visible_neighbor_center_weight = 0.0
+    cfg.planner.subgoal_filter.center_progress_weight = 0.0
+    cfg.planner.subgoal_filter.apply_probability_end = 1.0
+    return cfg
+
+
 def test_constrained_curriculum_warmup_does_not_override_unsafe_raw_action() -> None:
     cfg = _constrained_curriculum_cfg()
     positions = torch.tensor([[[0.0, 0.0, 0.0], [0.7, 0.0, 0.0]]])
@@ -459,6 +477,69 @@ def test_soft_progress_collision_override_only_for_collision_not_near_violation(
     assert collision.info["endpoint_collision_violation"][0, 0] < collision.info[
         "raw_endpoint_collision_violation"
     ][0, 0]
+
+
+def test_mutual_path_filter_detects_head_on_dynamic_path_conflict() -> None:
+    cfg = _mutual_progress_cfg()
+    positions = torch.tensor([[[-0.6, 0.0, 0.0], [0.6, 0.0, 0.0]]])
+    yaws = torch.tensor([[0.0, math.pi]])
+    action = torch.tensor([[[0.0, 0.0], [0.0, 0.0]]])
+    decoded = decode_action(action, positions, yaws, cfg.planner)
+
+    result = apply_subgoal_filter(
+        decoded,
+        positions,
+        yaws,
+        cfg,
+        progress_timestep=16,
+        deterministic=True,
+    )
+
+    assert result.info["raw_path_collision_violation"][0, 0] == pytest.approx(0.0)
+    assert result.info["raw_mutual_path_collision_violation"][0, 0] > 0.0
+    assert result.info["applied"][0, 0]
+    assert int(result.info["candidate_index"][0, 0]) != int(result.info["raw_candidate_index"])
+    assert result.info["mutual_path_collision_violation"][0, 0] < result.info[
+        "raw_mutual_path_collision_violation"
+    ][0, 0]
+
+
+def test_mutual_path_filter_ignores_invisible_rover_raw_path() -> None:
+    cfg = _mutual_progress_cfg()
+    cfg.task.n_agents = 3
+    cfg.observation.communication_radius = 1.5
+    positions = torch.tensor(
+        [[[-0.6, 0.0, 0.0], [0.6, 0.0, 0.0], [8.0, 0.0, 0.0]]]
+    )
+    changed = positions.clone()
+    changed[0, 2, :2] = torch.tensor([8.0, 8.0])
+    yaws = torch.tensor([[0.0, math.pi, math.pi]])
+    changed_yaws = yaws.clone()
+    action = torch.tensor([[[0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]])
+    decoded = decode_action(action, positions, yaws, cfg.planner)
+    changed_decoded = decode_action(action, changed, changed_yaws, cfg.planner)
+
+    result = apply_subgoal_filter(
+        decoded,
+        positions,
+        yaws,
+        cfg,
+        progress_timestep=16,
+        deterministic=True,
+    )
+    changed_result = apply_subgoal_filter(
+        changed_decoded,
+        changed,
+        changed_yaws,
+        cfg,
+        progress_timestep=16,
+        deterministic=True,
+    )
+
+    assert torch.allclose(
+        result.decoded.physical[0, 0],
+        changed_result.decoded.physical[0, 0],
+    )
 
 
 def test_constrained_curriculum_ignores_invisible_rover_for_safety_constraints() -> None:

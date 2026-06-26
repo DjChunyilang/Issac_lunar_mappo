@@ -144,13 +144,18 @@ outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/
 - success 从 exp021 的 `0.6361` 降到 `0.0139`，timeout 从 `0.1967` 升到 `0.9699`，说明 constrained filter 仍过强。
 - 下一轮应转向 policy/action representation、planner projection 或 success geometry，而不是继续放大后处理权重。
 
-当前下一轮为 `exp023_randomized_terrain_soft_progress_filter`：
+`exp023_randomized_terrain_soft_progress_filter` 已完成：
 
-- 仍使用 exp021/022 的 pure RL、shared-joint MAPPO、随机增强地形、`12 m` 通信半径和 20M budget。
-- filter mode 为 `terrain_safe_candidate_soft_progress_curriculum`，不再启用 hard endpoint/path safety constraint。
-- 候选 score 加入 visible-neighbor center 和 center-progress 软惩罚，避免 filter 为了安全把队形推成 standoff。
-- warmup 后仅当 raw endpoint/path 预测真实 collision 且候选能降低 collision violation 时允许 `collision_override`；near-distance violation 不触发 override。
-- checkpoint 选择使用 `progress_preserving_long`，避免再次只因 collision 低而选中 success 接近 0 的 checkpoint。
+- dmax ratio `0.1789` 通过，但 success `0.3027`、collision `0.2295`、timeout `0.4717` 未通过 strict。
+- 和 exp022 相比，soft filter 恢复部分集合进度；和 exp021 相比，collision 更高。
+- 失败原因是 static endpoint/path safety 只看邻居当前位置，未预测可见邻居 raw path 的同步运动。
+
+当前下一轮为 `exp024_randomized_terrain_mutual_path_filter`：
+
+- 仍使用 exp021/022/023 的 pure RL、shared-joint MAPPO、随机增强地形、`12 m` 通信半径和 20M budget。
+- filter mode 为 `terrain_safe_candidate_mutual_progress_curriculum`，不启用 hard endpoint/path safety constraint。
+- 候选 score 新增 `mutual_path_near_weight` 和 `mutual_path_collision_weight`，按相同时间采样比较本车候选路径与可见邻居 raw path。
+- checkpoint 选择沿用 `progress_preserving_long`，避免再次只因 collision 低而选中 success 接近 0 的 checkpoint。
 
 ## Checkpoint 复评计划
 

@@ -696,6 +696,8 @@ def subgoal_filter_metadata(cfg) -> dict[str, Any]:
             "endpoint_collision": float(filter_cfg.endpoint_collision_weight),
             "path_near": float(filter_cfg.path_near_weight),
             "path_collision": float(filter_cfg.path_collision_weight),
+            "mutual_path_near": float(filter_cfg.mutual_path_near_weight),
+            "mutual_path_collision": float(filter_cfg.mutual_path_collision_weight),
             "visible_neighbor_center": float(filter_cfg.visible_neighbor_center_weight),
             "center_progress": float(filter_cfg.center_progress_weight),
         },
@@ -1213,6 +1215,27 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
                     .mean()
                     .cpu()
                 ),
+                "filter_mutual_path_near_violation_mean": float(
+                    action_filter["mutual_path_near_violation"]
+                    .detach()
+                    .float()
+                    .mean()
+                    .cpu()
+                ),
+                "filter_mutual_path_collision_violation_mean": float(
+                    action_filter["mutual_path_collision_violation"]
+                    .detach()
+                    .float()
+                    .mean()
+                    .cpu()
+                ),
+                "filter_mutual_path_collision_violation_fraction": float(
+                    (action_filter["mutual_path_collision_violation"] > 0.0)
+                    .detach()
+                    .float()
+                    .mean()
+                    .cpu()
+                ),
                 "filter_raw_endpoint_near_violation_mean": float(
                     action_filter["raw_endpoint_near_violation"]
                     .detach()
@@ -1232,6 +1255,20 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
                 ),
                 "filter_raw_path_collision_violation_mean": float(
                     action_filter["raw_path_collision_violation"]
+                    .detach()
+                    .float()
+                    .mean()
+                    .cpu()
+                ),
+                "filter_raw_mutual_path_near_violation_mean": float(
+                    action_filter["raw_mutual_path_near_violation"]
+                    .detach()
+                    .float()
+                    .mean()
+                    .cpu()
+                ),
+                "filter_raw_mutual_path_collision_violation_mean": float(
+                    action_filter["raw_mutual_path_collision_violation"]
                     .detach()
                     .float()
                     .mean()

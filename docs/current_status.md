@@ -26,7 +26,8 @@
 - exp020 已在 exp019 基础上加入 terrain/safety-aware 子目标过滤器；过滤器稳定降低路径风险，但显著抑制集合进度。seed23 20M、5 轮独立 eval/GIF 和训练曲线已完成，strict gate 未通过。
 - exp021 已完成 exp020 的课程化/软化 filter 迭代：前期保留 raw action，后期逐步增加 filter 介入概率和 score 权重，并加入 raw-risk / filter-deviation 辅助惩罚。seed23 20M、5 轮独立 eval、GIF、height map 和训练曲线已完成，strict gate 未通过。
 - exp022 已完成 endpoint/path safety constrained curriculum filter 迭代：collision 被压到 strict 内，但集合进度塌缩，5 seed mean success `0.0139`、timeout `0.9699`，strict 未通过。
-- exp023 已开始 soft progress-preserving filter 迭代：保留 exp021 的集合底座，移除 exp022 hard safety constraint / near-distance override，仅在预测真实碰撞时允许 collision override，并在 filter score 中显式惩罚远离可见邻居中心；完整 pytest、CPU smoke、CUDA smoke 已通过，seed23 20M 长训已作为 `exp023-soft-progress-filter-20m.service` 启动。
+- exp023 已完成 soft progress-preserving filter 迭代：success 从 exp022 的 `0.0139` 回升到 `0.3027`，但 collision `0.2295`、timeout `0.4717`，strict 未通过；失败原因是 static endpoint/path safety 未预测可见邻居同步运动。
+- exp024 已开始 mutual path safety filter 迭代：在 exp023 基础上把可见邻居 raw subgoal path 作为动态障碍，按相同时间采样比较候选路径；完整 pytest、CPU smoke、CUDA smoke 已通过，seed23 20M 长训已作为 `exp024-mutual-path-filter-20m.service` 启动。
 
 ## Checkpoint 评估工作流
 
@@ -76,7 +77,8 @@ final_selected
 | exp020 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + terrain/safety subgoal filter | 未通过 | seed23 20M 完成；filter 将 5 seed path risk mean 从 raw 0.3815 降到 0.3187，但 success 0、collision 0.0498、timeout 0.9506，说明过滤器过强地牺牲了集合进度。 |
 | exp021 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + curriculum terrain/safety subgoal filter | 未通过 | 课程化 filter 恢复集合进度：5 seed mean success 0.6361、dmax ratio 0.1460、timeout 0.1967，filtered path risk 0.3638；但 collision 0.1746，远高于 strict 0.02。 |
 | exp022 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + endpoint/path safety constrained curriculum filter | 未通过 | 5 seed mean：dmax ratio 0.4719、success 0.0139、collision 0.0170、timeout 0.9699；说明 constrained filter 可压住碰撞，但过强地牺牲集合进度。 |
-| exp023 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + soft progress-preserving subgoal filter | 运行中 | 针对 exp022 成功率塌缩：降低 filter 介入概率和安全权重，保留 visible-neighbor center / center progress 软约束，只对 raw collision 做 override；使用 `progress_preserving_long` 选 checkpoint。 |
+| exp023 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + soft progress-preserving subgoal filter | 未通过 | seed23 final eval：dmax ratio 0.1789、success 0.3027、collision 0.2295、timeout 0.4717；缓解 exp022 standoff，但 static filter 未处理同步运动碰撞。 |
+| exp024 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + mutual path safety subgoal filter | 运行中 | 在 exp023 基础上新增 mutual path safety：候选路径与可见邻居 raw path 同时间采样比较；不改变 86/54 接口，不恢复 hard safety constraint。 |
 
 历史完整 suite checkpoint：
 
@@ -98,7 +100,8 @@ outputs/runs/exp_008_terrain3d/_suite/checkpoints/
 - exp020 可以表述为“子目标过滤器确实降低了路径风险，但当前 hard post-processing 过强，导致探索/集合进度塌缩”，不能写成地形规避策略成功。
 - exp021 可以表述为“课程化 filter 恢复了集合趋势，但碰撞率显著过高”，不能写成随机地形 strict pass 或安全策略成功。
 - exp022 可以表述为“endpoint/path safety constrained filter 把 collision 压到 strict 内，但 success/timeout 严重失败”，不能写成随机地形安全策略收敛。
-- exp023 在训练完成前只能表述为“soft progress-preserving filter 修复假设/工程验证”，不能写成随机地形安全策略改善或收敛。
+- exp023 可以表述为“soft progress filter 缓解了 exp022 的 standoff，但 collision/timeout 仍严重失败”，不能写成随机地形安全策略改善或收敛。
+- exp024 在训练完成前只能表述为“mutual path safety filter 修复假设/工程验证”，不能写成随机地形安全策略改善或收敛。
 - GIF、截图和 TensorBoard 曲线只能用于展示和诊断；严格结论以 `_suite/metrics/strict_acceptance.json`、`metrics/final_eval_proxy.json` 和 `metrics/checkpoint_status.json` 为准。
 
 ## Jackal 跟踪验证
@@ -143,7 +146,7 @@ outputs/runs/physx_jackal_tracking/strong_lunar_crater_final_v2/
 
 ## 下一步
 
-1. 当前进行 exp023：用 soft progress-preserving filter 验证是否能在不产生 exp022 安全 standoff 的情况下压低 exp021 的碰撞率。
+1. 当前进行 exp024：补上 exp023 static filter 的动态路径盲点，验证 mutual path safety 是否能降低 late-stage collision，同时保留 exp023 恢复的集合进度。
 2. 保留 exp017 作为固定地图 pure RL baseline，保留 exp018/exp019/exp020/exp021/exp022 作为随机地形 failure analysis，不把它们扩写为多 seed 或 PhysX 收敛。
-3. 如果 exp023 仍失败，下一步应转向 action representation / planner projection / success geometry，而不是继续加大 post-processing filter 权重。
+3. 如果 exp024 仍失败，下一步应转向 action representation / planner projection / success geometry，而不是继续加大 post-processing filter 权重。
 4. 为 PhysX / Jackal 后续接入同布局 raycast / height scanner，保持 proxy 与高保真观测接口一致。

@@ -52,6 +52,8 @@ class SubgoalFilterCfg:
     endpoint_collision_weight: float = 1000.0
     path_near_weight: float = 0.0
     path_collision_weight: float = 0.0
+    mutual_path_near_weight: float = 0.0
+    mutual_path_collision_weight: float = 0.0
     visible_neighbor_center_weight: float = 0.0
     center_progress_weight: float = 0.0
     center_progress_margin: float = 0.0

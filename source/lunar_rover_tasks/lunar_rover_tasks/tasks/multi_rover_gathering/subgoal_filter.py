@@ -48,10 +48,14 @@ def _disabled_filter_result(decoded: DecodedAction) -> SubgoalFilterResult:
             "endpoint_collision_violation": zeros,
             "path_near_violation": zeros,
             "path_collision_violation": zeros,
+            "mutual_path_near_violation": zeros,
+            "mutual_path_collision_violation": zeros,
             "raw_endpoint_near_violation": zeros,
             "raw_endpoint_collision_violation": zeros,
             "raw_path_near_violation": zeros,
             "raw_path_collision_violation": zeros,
+            "raw_mutual_path_near_violation": zeros,
+            "raw_mutual_path_collision_violation": zeros,
             "candidate_feasible": zeros.bool(),
             "feasible_fraction": 1.0,
             "safety_override": zeros.bool(),
@@ -201,6 +205,64 @@ def _path_safety_violations(
     return near_violation, collision_violation
 
 
+def _mutual_path_safety_violations(
+    positions: torch.Tensor,
+    candidate_world_subgoals: torch.Tensor,
+    raw_world_subgoals: torch.Tensor,
+    cfg: MultiRoverGatheringEnvCfg,
+    *,
+    num_samples: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    n_agents = positions.shape[1]
+    if n_agents <= 1:
+        zeros = torch.zeros(
+            candidate_world_subgoals.shape[:-1],
+            dtype=candidate_world_subgoals.dtype,
+            device=candidate_world_subgoals.device,
+        )
+        return zeros, zeros
+    current_delta = positions[:, :, None, :2] - positions[:, None, :, :2]
+    current_distance = torch.linalg.norm(current_delta, dim=-1)
+    eye = torch.eye(n_agents, dtype=torch.bool, device=positions.device).unsqueeze(0)
+    visible = (current_distance <= float(cfg.observation.communication_radius)) & ~eye
+
+    samples = max(2, int(num_samples))
+    t = torch.linspace(
+        1.0 / float(samples),
+        1.0,
+        samples,
+        dtype=positions.dtype,
+        device=positions.device,
+    )
+    candidate_start = positions[:, :, None, None, :2]
+    candidate_end = candidate_world_subgoals[..., None, :2]
+    candidate_path = candidate_start + (candidate_end - candidate_start) * t.view(
+        1,
+        1,
+        1,
+        samples,
+        1,
+    )
+
+    raw_start = positions[:, :, None, :2]
+    raw_end = raw_world_subgoals[:, :, None, :2]
+    raw_path = raw_start + (raw_end - raw_start) * t.view(1, 1, samples, 1)
+    raw_path_by_sample = raw_path.permute(0, 2, 1, 3)
+    delta = candidate_path[..., None, :] - raw_path_by_sample[:, None, None, :, :, :]
+    distance = torch.linalg.norm(delta, dim=-1)
+    visible_mask = visible[:, :, None, None, :]
+    nearest_visible = distance.masked_fill(~visible_mask, float("inf")).amin(dim=(-1, -2))
+
+    near_threshold = float(cfg.planner.subgoal_filter.path_safe_distance)
+    if near_threshold <= 0.0:
+        near_threshold = float(cfg.success_thresholds.min_pairwise_distance)
+    near_threshold = max(near_threshold, 1.0e-6)
+    collision_threshold = max(float(cfg.safety.collision_distance), 1.0e-6)
+    near_violation = torch.relu(near_threshold - nearest_visible) / near_threshold
+    collision_violation = torch.relu(collision_threshold - nearest_visible) / collision_threshold
+    return near_violation, collision_violation
+
+
 def _visible_neighbor_center_cost(
     positions: torch.Tensor,
     candidate_world_subgoals: torch.Tensor,
@@ -235,6 +297,7 @@ def _schedule_values(
         "terrain_safe_candidate_curriculum",
         "terrain_safe_candidate_constrained_curriculum",
         "terrain_safe_candidate_soft_progress_curriculum",
+        "terrain_safe_candidate_mutual_progress_curriculum",
     }:
         return step, 1.0, 1.0
 
@@ -287,6 +350,7 @@ def apply_subgoal_filter(
         "terrain_safe_candidate_curriculum",
         "terrain_safe_candidate_constrained_curriculum",
         "terrain_safe_candidate_soft_progress_curriculum",
+        "terrain_safe_candidate_mutual_progress_curriculum",
     }
     if filter_cfg.mode not in supported_modes:
         raise ValueError(f"Unsupported subgoal filter mode: {filter_cfg.mode}")
@@ -329,6 +393,13 @@ def apply_subgoal_filter(
         cfg,
         num_samples=int(filter_cfg.path_samples),
     )
+    mutual_path_near_violation, mutual_path_collision_violation = _mutual_path_safety_violations(
+        positions,
+        world_candidates,
+        decoded.world_subgoal,
+        cfg,
+        num_samples=int(filter_cfg.path_samples),
+    )
     visible_center_cost = _visible_neighbor_center_cost(positions, world_candidates, cfg)
     current_center_cost = _visible_neighbor_center_cost(
         positions,
@@ -349,6 +420,8 @@ def apply_subgoal_filter(
         + float(filter_cfg.endpoint_collision_weight) * collision_violation
         + float(filter_cfg.path_near_weight) * path_near_violation
         + float(filter_cfg.path_collision_weight) * path_collision_violation
+        + float(filter_cfg.mutual_path_near_weight) * mutual_path_near_violation
+        + float(filter_cfg.mutual_path_collision_weight) * mutual_path_collision_violation
         + float(filter_cfg.visible_neighbor_center_weight) * visible_center_cost
         + float(filter_cfg.center_progress_weight) * center_progress_regression
     )
@@ -390,9 +463,18 @@ def apply_subgoal_filter(
     raw_endpoint_collision_violation = _gather_scalar(collision_violation, raw_index)
     raw_path_near_violation = _gather_scalar(path_near_violation, raw_index)
     raw_path_collision_violation = _gather_scalar(path_collision_violation, raw_index)
+    raw_mutual_path_near_violation = _gather_scalar(mutual_path_near_violation, raw_index)
+    raw_mutual_path_collision_violation = _gather_scalar(
+        mutual_path_collision_violation,
+        raw_index,
+    )
     selected_endpoint_collision_violation = _gather_scalar(collision_violation, selected)
     selected_path_collision_violation_for_override = _gather_scalar(
         path_collision_violation,
+        selected,
+    )
+    selected_mutual_collision_violation_for_override = _gather_scalar(
+        mutual_path_collision_violation,
         selected,
     )
     raw_unsafe = (
@@ -411,13 +493,18 @@ def apply_subgoal_filter(
     )
     raw_collision_unsafe = (
         raw_endpoint_collision_violation > 1.0e-6
-    ) | (raw_path_collision_violation > 1.0e-6)
+    ) | (raw_path_collision_violation > 1.0e-6) | (
+        raw_mutual_path_collision_violation > 1.0e-6
+    )
     selected_collision_violation_total = (
         selected_endpoint_collision_violation
         + selected_path_collision_violation_for_override
+        + selected_mutual_collision_violation_for_override
     )
     raw_collision_violation_total = (
-        raw_endpoint_collision_violation + raw_path_collision_violation
+        raw_endpoint_collision_violation
+        + raw_path_collision_violation
+        + raw_mutual_path_collision_violation
     )
     collision_override = (
         bool(filter_cfg.collision_override_after_warmup)
@@ -478,6 +565,14 @@ def apply_subgoal_filter(
     selected_collision_violation = _gather_scalar(collision_violation, execution_index)
     selected_path_near_violation = _gather_scalar(path_near_violation, execution_index)
     selected_path_collision_violation = _gather_scalar(path_collision_violation, execution_index)
+    selected_mutual_path_near_violation = _gather_scalar(
+        mutual_path_near_violation,
+        execution_index,
+    )
+    selected_mutual_path_collision_violation = _gather_scalar(
+        mutual_path_collision_violation,
+        execution_index,
+    )
     selected_deviation = _gather_scalar(intent_deviation, execution_index)
     suggested_deviation = _gather_scalar(intent_deviation, selected)
     executed_score = _gather_scalar(score, execution_index)
@@ -488,6 +583,14 @@ def apply_subgoal_filter(
     suggested_collision_violation = _gather_scalar(collision_violation, selected)
     suggested_path_near_violation = _gather_scalar(path_near_violation, selected)
     suggested_path_collision_violation = _gather_scalar(path_collision_violation, selected)
+    suggested_mutual_path_near_violation = _gather_scalar(
+        mutual_path_near_violation,
+        selected,
+    )
+    suggested_mutual_path_collision_violation = _gather_scalar(
+        mutual_path_collision_violation,
+        selected,
+    )
     selected_visible_center_cost = _gather_scalar(visible_center_cost, execution_index)
     suggested_visible_center_cost = _gather_scalar(visible_center_cost, selected)
     selected_center_regression = _gather_scalar(center_progress_regression, execution_index)
@@ -527,14 +630,20 @@ def apply_subgoal_filter(
             "endpoint_collision_violation": selected_collision_violation,
             "path_near_violation": selected_path_near_violation,
             "path_collision_violation": selected_path_collision_violation,
+            "mutual_path_near_violation": selected_mutual_path_near_violation,
+            "mutual_path_collision_violation": selected_mutual_path_collision_violation,
             "raw_endpoint_near_violation": raw_endpoint_near_violation,
             "raw_endpoint_collision_violation": raw_endpoint_collision_violation,
             "raw_path_near_violation": raw_path_near_violation,
             "raw_path_collision_violation": raw_path_collision_violation,
+            "raw_mutual_path_near_violation": raw_mutual_path_near_violation,
+            "raw_mutual_path_collision_violation": raw_mutual_path_collision_violation,
             "suggested_endpoint_near_violation": suggested_near_violation,
             "suggested_endpoint_collision_violation": suggested_collision_violation,
             "suggested_path_near_violation": suggested_path_near_violation,
             "suggested_path_collision_violation": suggested_path_collision_violation,
+            "suggested_mutual_path_near_violation": suggested_mutual_path_near_violation,
+            "suggested_mutual_path_collision_violation": suggested_mutual_path_collision_violation,
             "candidate_feasible": _gather_scalar(feasible.float(), execution_index).bool(),
             "feasible_fraction": float(feasible.float().mean().detach().cpu()),
             "safety_override": safety_override_mask,

@@ -101,12 +101,13 @@ critic_state_dim
 
 `planner.subgoal_filter` 是可选 proxy planner 后处理，默认关闭。启用时，它在 Actor 输出 `[rho, beta]` 之后、轨迹生成之前，从固定候选子目标中按地形路径风险和 endpoint safety 选择 filtered subgoal。该机制不改变 Actor 输出维度、Critic 状态维度或 checkpoint schema；checkpoint metadata 会记录 filter 配置摘要。
 
-当前支持四种 mode：
+当前支持五种 mode：
 
 - `terrain_safe_candidate`：exp020 使用的 hard filter，每步执行 score 最低的候选。
 - `terrain_safe_candidate_curriculum`：exp021 使用的课程化 filter，训练时按 `warmup_timesteps` / `ramp_timesteps` 逐步提高 `apply_probability` 和 `score_scale`；评估时读取 checkpoint metadata 中的 `timesteps` 固定课程进度，并使用 deterministic rule，只有 filtered score 比 raw score 至少好 `deterministic_improvement_margin` 时才替换。
 - `terrain_safe_candidate_constrained_curriculum`：exp022 使用的课程化安全约束 filter，在 exp021 课程 schedule 基础上加入 endpoint/path safety constraint、visible-neighbor center progress constraint 和 warmup 后 safety override；仍只使用通信半径内可见邻居，不使用 oracle。
 - `terrain_safe_candidate_soft_progress_curriculum`：exp023 使用的软进度保护 filter，保留课程 schedule，但移除 hard safety constraint 和 near-distance override；score 中加入 visible-neighbor center / center-progress 软惩罚，只在 raw endpoint/path 预测碰撞且候选可降低碰撞违反时允许 collision override。
+- `terrain_safe_candidate_mutual_progress_curriculum`：exp024 使用的 mutual path safety filter，在 exp023 基础上把可见邻居 raw subgoal path 作为动态障碍，按相同时间采样比较候选路径与邻居 raw path；仍不使用不可见 rover 或 oracle。
 
 `action_filter` telemetry 至少包含：
 
@@ -125,10 +126,14 @@ endpoint_near_violation
 endpoint_collision_violation
 path_near_violation
 path_collision_violation
+mutual_path_near_violation
+mutual_path_collision_violation
 raw_endpoint_near_violation
 raw_endpoint_collision_violation
 raw_path_near_violation
 raw_path_collision_violation
+raw_mutual_path_near_violation
+raw_mutual_path_collision_violation
 candidate_feasible
 feasible_fraction
 safety_override
