@@ -23,7 +23,7 @@ run_id: pure_rl_seed23_20m_mutual_path_filter
 - 通信半径 `12 m`，Actor / Critic 接口仍为 `86 / 54`。
 - 2048 CUDA envs，rollout 32，连续 `10240` timesteps，即约 20.97M env steps。
 - checkpoint interval `1024` timesteps。
-- 候选选择沿用 `progress_preserving_long`。
+- 长训时原始候选选择使用 `progress_preserving_long`；训练后发现该 gate 过度偏好早期低 collision checkpoint，因此新增并 post-hoc 使用 `success_progress_long` 重选 best。
 
 mutual path filter：
 
@@ -162,7 +162,7 @@ systemd-run --user --unit exp024-mutual-path-filter-20m \
     --eval-steps 220 \
     --eval-seed-offset 1000 \
     --bc-updates 0 \
-    --selection-gate progress_preserving_long
+    --selection-gate success_progress_long
 ```
 
 监控：
@@ -170,6 +170,54 @@ systemd-run --user --unit exp024-mutual-path-filter-20m \
 ```bash
 tail -f outputs/runs/exp024_randomized_terrain_mutual_path_filter/_launcher/train.log
 ```
+
+## 结果表
+
+seed23 20M 训练、候选评估、post-hoc checkpoint reselection 和 final eval 已完成。结果以以下机器可读文件为准：
+
+```text
+outputs/runs/exp024_randomized_terrain_mutual_path_filter/pure_rl_seed23_20m_mutual_path_filter/metrics/strict_acceptance.json
+outputs/runs/exp024_randomized_terrain_mutual_path_filter/pure_rl_seed23_20m_mutual_path_filter/metrics/summary.json
+outputs/runs/exp024_randomized_terrain_mutual_path_filter/pure_rl_seed23_20m_mutual_path_filter/metrics/final_eval_proxy.json
+outputs/runs/exp024_randomized_terrain_mutual_path_filter/pure_rl_seed23_20m_mutual_path_filter/metrics/eval_metrics.json
+```
+
+| eval | checkpoint | dmax ratio | success | collision | timeout | filter applied | strict |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| original best by `progress_preserving_long` | `ppo_timestep_002048.pt` | 0.2116 | 0.2402 | 0.0381 | 0.7266 | 0.1130 | 未通过 |
+| best candidate by `success_progress_long` | `ppo_timestep_010240.pt` | 0.1397 | 0.8398 | 0.0674 | 0.0947 | 0.2605 | 未通过 |
+| final eval seed1023 | `best.pt` = `ppo_timestep_010240.pt` | 0.1397 | 0.8398 | 0.0674 | 0.0947 | 0.2605 | 未通过 |
+
+关键 telemetry：
+
+```text
+filter_raw_mutual_path_collision_violation_mean: 0.0341
+filter_mutual_path_collision_violation_mean: 0.000879
+filter_raw_path_collision_violation_mean: 0.0294
+filter_path_collision_violation_mean: 0.00172
+filter_collision_override_fraction: 0.1803
+first_collision_step_mean: 174.6 / 220
+```
+
+## 失败分析
+
+strict gate 未通过：
+
+- `dmax_reduction_ratio=0.1397`，通过 `<=0.20`。
+- `success_rate=0.8398`，低于 `>=0.90`。
+- `collision_rate=0.0674`，高于 `<=0.02`。
+- `timeout_rate=0.0947`，高于 `0`。
+
+和 exp023 对比：
+
+- success 从 `0.3027` 提升到 `0.8398`。
+- collision 从 `0.2295` 降到 `0.0674`。
+- timeout 从 `0.4717` 降到 `0.0947`。
+- mutual path violation 被明显压低，说明动态路径建模有效。
+
+当前判断：
+
+exp024 是最近几轮最接近 strict 的随机地形结果，但仍不是 pass。剩余失败主要是 late-stage collision 和少量 timeout；此时不宜恢复 exp022 hard constraint，因为 exp024 已证明软 mutual path 能保留集合进度。下一轮应在 exp024 基础上做末段速度/hold 稳定或 success-zone safety shaping，目标是把 collision 从 `0.0674` 压到 `<=0.02`，同时保住 success。
 
 ## 产物路径
 

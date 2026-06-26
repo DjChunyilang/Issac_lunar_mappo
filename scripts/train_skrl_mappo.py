@@ -436,6 +436,12 @@ PROGRESS_PRESERVING_LONG_THRESHOLDS = {
     "collision_rate": 0.08,
     "timeout_rate": 0.80,
 }
+SUCCESS_PROGRESS_LONG_THRESHOLDS = {
+    "dmax_reduction_ratio": 0.20,
+    "success_rate": 0.50,
+    "collision_rate": 0.10,
+    "timeout_rate": 0.20,
+}
 
 
 def proxy_acceptance(metrics: dict, thresholds: dict | None = None) -> dict:
@@ -669,6 +675,59 @@ def progress_preserving_long_checkpoint_rank(
     )
     return (
         1 if has_progress else 2,
+        progress_violation,
+        safety_violation,
+        collision,
+        timeout,
+        -success,
+        -int(metrics.get("candidate_timestep", 0)),
+    )
+
+
+def success_progress_long_checkpoint_rank(
+    metrics: dict,
+    thresholds: dict | None = None,
+) -> tuple[int, float, float, float, float, float, int]:
+    thresholds = thresholds or SUCCESS_PROGRESS_LONG_THRESHOLDS
+    if proxy_acceptance(metrics, STRICT_THRESHOLDS)["passed"]:
+        return (
+            0,
+            0.0,
+            float(metrics.get("collision_rate", float("inf"))),
+            float(metrics.get("timeout_rate", float("inf"))),
+            -float(metrics.get("success_rate", 0.0)),
+            float(metrics.get("dmax_reduction_ratio", float("inf"))),
+            -int(metrics.get("candidate_timestep", 0)),
+        )
+    success = float(metrics.get("success_rate", 0.0))
+    dmax = float(metrics.get("dmax_reduction_ratio", float("inf")))
+    collision = float(metrics.get("collision_rate", float("inf")))
+    timeout = float(metrics.get("timeout_rate", float("inf")))
+    strong_progress = (
+        success >= thresholds["success_rate"]
+        and dmax <= thresholds["dmax_reduction_ratio"]
+    )
+    moderate_progress = success >= 0.20 or dmax <= 0.30
+    progress_violation = (
+        max(0.0, dmax / thresholds["dmax_reduction_ratio"] - 1.0)
+        + max(0.0, 1.0 - success / thresholds["success_rate"])
+    )
+    safety_violation = (
+        max(0.0, collision / thresholds["collision_rate"] - 1.0)
+        + max(0.0, timeout / thresholds["timeout_rate"] - 1.0)
+    )
+    if strong_progress:
+        return (
+            1,
+            safety_violation,
+            -success,
+            collision,
+            timeout,
+            dmax,
+            -int(metrics.get("candidate_timestep", 0)),
+        )
+    return (
+        2 if moderate_progress else 3,
         progress_violation,
         safety_violation,
         collision,
@@ -1633,6 +1692,7 @@ def main() -> None:
             "safe_progress_long",
             "balanced_progress_long",
             "progress_preserving_long",
+            "success_progress_long",
         ),
         default="strict",
     )
@@ -2190,6 +2250,8 @@ def main() -> None:
             if args.selection_gate == "balanced_progress_long"
             else PROGRESS_PRESERVING_LONG_THRESHOLDS
             if args.selection_gate == "progress_preserving_long"
+            else SUCCESS_PROGRESS_LONG_THRESHOLDS
+            if args.selection_gate == "success_progress_long"
             else STRICT_THRESHOLDS
         )
         ranker = (
@@ -2201,6 +2263,8 @@ def main() -> None:
             if args.selection_gate == "balanced_progress_long"
             else progress_preserving_long_checkpoint_rank
             if args.selection_gate == "progress_preserving_long"
+            else success_progress_long_checkpoint_rank
+            if args.selection_gate == "success_progress_long"
             else checkpoint_rank
         )
         best_evaluation = min(

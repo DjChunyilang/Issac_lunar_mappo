@@ -15,6 +15,7 @@ from _common import cfg_from_experiment, load_yaml  # noqa: E402
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import (  # noqa: E402
     MultiRoverGatheringCore,
 )
+from train_skrl_mappo import success_progress_long_checkpoint_rank  # noqa: E402
 
 
 CONFIG = ROOT / "configs/experiment/exp024_randomized_terrain_mutual_path_filter.yaml"
@@ -90,3 +91,48 @@ def test_exp024_eval_progress_sets_mutual_filter_schedule() -> None:
     assert action_filter["score_scale"] == pytest.approx(0.60)
     assert "raw_mutual_path_collision_violation" in action_filter
     assert "mutual_path_collision_violation" in action_filter
+
+
+def test_success_progress_long_prefers_high_success_late_candidate() -> None:
+    early_safe = {
+        "candidate_timestep": 2048,
+        "dmax_reduction_ratio": 0.2116,
+        "success_rate": 0.2402,
+        "collision_rate": 0.0381,
+        "timeout_rate": 0.7266,
+    }
+    late_progress = {
+        "candidate_timestep": 10240,
+        "dmax_reduction_ratio": 0.1397,
+        "success_rate": 0.8398,
+        "collision_rate": 0.0674,
+        "timeout_rate": 0.0947,
+    }
+
+    best = min(
+        [early_safe, late_progress],
+        key=success_progress_long_checkpoint_rank,
+    )
+
+    assert best is late_progress
+
+
+def test_success_progress_long_strict_pass_still_wins() -> None:
+    strict_pass = {
+        "candidate_timestep": 2048,
+        "dmax_reduction_ratio": 0.19,
+        "success_rate": 0.91,
+        "collision_rate": 0.01,
+        "timeout_rate": 0.0,
+    }
+    late_progress = {
+        "candidate_timestep": 10240,
+        "dmax_reduction_ratio": 0.14,
+        "success_rate": 0.84,
+        "collision_rate": 0.067,
+        "timeout_rate": 0.095,
+    }
+
+    best = min([late_progress, strict_pass], key=success_progress_long_checkpoint_rank)
+
+    assert best is strict_pass

@@ -771,8 +771,12 @@ experiment: exp023_randomized_terrain_soft_progress_filter
 run: pure_rl_seed23_20m_soft_progress_filter
 filter mode: terrain_safe_candidate_soft_progress_curriculum
 candidate_count: 28
-selection gate: progress_preserving_long
+selection gate: success_progress_long
 ```
+
+exp024 训练后新增 `success_progress_long`，用于同类 mutual path 实验的后续默认选择：strict 优先；未 strict 时优先保留 success/dmax 已有明显进展的 checkpoint，再比较 collision / timeout，避免再次选中早期低成功 checkpoint。
+
+exp024 训练后已新增 `success_progress_long`，用于同类 mutual path 实验的后续默认选择：strict 优先；未 strict 时优先保留 success/dmax 已有明显进展的 checkpoint，再比较 collision / timeout。
 
 专项测试：
 
@@ -800,7 +804,7 @@ CPU smoke：
   --eval-steps 16 \
   --run-name smoke_cpu_exp023 \
   --output-layout run \
-  --selection-gate progress_preserving_long
+  --selection-gate success_progress_long
 ```
 
 CUDA smoke：
@@ -817,7 +821,7 @@ CUDA smoke：
   --eval-steps 220 \
   --run-name smoke_cuda_exp023 \
   --output-layout run \
-  --selection-gate progress_preserving_long
+  --selection-gate success_progress_long
 ```
 
 正式 20M 长训练：
@@ -845,7 +849,7 @@ systemd-run --user --unit exp023-soft-progress-filter-20m \
     --eval-steps 220 \
     --eval-seed-offset 1000 \
     --bc-updates 0 \
-    --selection-gate progress_preserving_long
+    --selection-gate success_progress_long
 ```
 
 监控：
@@ -903,7 +907,7 @@ CPU smoke：
   --eval-steps 16 \
   --run-name smoke_cpu_exp024 \
   --output-layout run \
-  --selection-gate progress_preserving_long
+  --selection-gate success_progress_long
 ```
 
 CUDA smoke：
@@ -920,7 +924,7 @@ CUDA smoke：
   --eval-steps 220 \
   --run-name smoke_cuda_exp024 \
   --output-layout run \
-  --selection-gate progress_preserving_long
+  --selection-gate success_progress_long
 ```
 
 正式 20M 长训练：
@@ -948,7 +952,7 @@ systemd-run --user --unit exp024-mutual-path-filter-20m \
     --eval-steps 220 \
     --eval-seed-offset 1000 \
     --bc-updates 0 \
-    --selection-gate progress_preserving_long
+    --selection-gate success_progress_long
 ```
 
 监控：
