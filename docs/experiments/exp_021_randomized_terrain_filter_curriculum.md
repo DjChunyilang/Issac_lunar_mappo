@@ -66,18 +66,36 @@ timeout_rate == 0
 
 ## 结果表
 
-训练正在运行，尚未完成。结果以以下机器可读文件为准：
+训练、候选评估、5 轮独立 eval、GIF、height map 和曲线已完成。结果以以下机器可读文件为准：
 
 ```text
 outputs/runs/exp021_randomized_terrain_filter_curriculum/_suite/metrics/strict_acceptance.json
 outputs/runs/exp021_randomized_terrain_filter_curriculum/_suite/metrics/suite_summary.json
 outputs/runs/exp021_randomized_terrain_filter_curriculum/pure_rl_seed23_20m_filter_curriculum/metrics/final_eval_proxy.json
 outputs/runs/exp021_randomized_terrain_filter_curriculum/pure_rl_seed23_20m_filter_curriculum/metrics/eval_metrics.json
+outputs/runs/exp021_randomized_terrain_filter_curriculum/pure_rl_seed23_20m_filter_curriculum/metrics/multi_eval_20260626_120357/multi_eval_summary.json
+```
+
+| eval | checkpoint | dmax ratio | success | collision | timeout | path risk mean | strict |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| candidate eval seed1023 | `ppo_timestep_010240.pt` | 0.1444 | 0.6621 | 0.1602 | 0.1826 | 0.3626 | 未通过 |
+| final eval seed1023 | `best.pt` | 0.1434 | 0.6396 | 0.1885 | 0.1797 | 0.3615 | 未通过 |
+| 5 seed mean `12023–12027` | `best.pt` | 0.1460 | 0.6361 | 0.1746 | 0.1967 | 0.3638 | 未通过 |
+
+5 seed filter 统计：
+
+```text
+filter_raw_path_terrain_risk_mean: 0.3871
+filter_filtered_path_terrain_risk_mean: 0.3638
+filter_path_terrain_risk_reduction_mean: 0.0233
+filter_applied_fraction: 0.2185
+final_nearest_neighbor_distance: 0.5106
+min_nearest_distance: 0.2244
 ```
 
 ## 失败分析
 
-待训练和独立复验完成后填写。当前已完成工程验证：
+工程验证：
 
 - exp021 专项测试通过。
 - 完整 `.venv_isaaclab/bin/python -m pytest -q -ra` 通过。
@@ -85,13 +103,23 @@ outputs/runs/exp021_randomized_terrain_filter_curriculum/pure_rl_seed23_20m_filt
 - CUDA smoke 确认 `optimizer_count=1`、`joint_update_count=2`、terrain 输入权重更新、动作非退化。
 - warmup checkpoint 的 deterministic eval 不替换 action，`filter_applied_fraction=0`。
 
-后续重点对比：
+严格标准未通过：
 
-- `success_rate` 是否从 exp020 的 0 恢复；
-- `collision_rate` 是否低于 exp020 后期高碰撞 checkpoint；
-- `timeout_rate` 是否低于 exp020 的安全徘徊状态；
-- `filter_applied_fraction` 是否符合课程预期；
-- `filter_raw_path_terrain_risk_mean`、`filter_filtered_path_terrain_risk_mean` 和 `filter_path_terrain_risk_reduction_mean` 是否仍显示地形风险收益。
+- `dmax_reduction_ratio=0.1460` 通过。
+- `success_rate=0.6361` 未达到 `0.90`。
+- `collision_rate=0.1746` 远高于 `0.02`。
+- `timeout_rate=0.1967` 未达到 `0`。
+
+和 exp020 对比：
+
+- success 从 `0.0` 恢复到 `0.6361`，说明课程化/软化 filter 确实恢复了集合学习。
+- timeout 从 `0.9506` 降到 `0.1967`，不再是纯安全徘徊。
+- collision 从 `0.0498` 升到 `0.1746`，成为最主要失败项。
+- filtered path risk `0.3638` 低于 exp019 的约 `0.387`，但高于 exp020 的 `0.3187`；这符合“弱化 filter 换回集合进度”的预期。
+
+当前判断：
+
+exp021 解决了 exp020 的“安全但不集合”问题，但重新暴露出 exp019 后期的“会集合但撞车”问题。也就是说，post-processing filter 的强弱本身不是最终答案：强 filter 会牺牲集合，弱/课程化 filter 会恢复集合但不能控制多车近距离碰撞。
 
 ## 产物路径
 
@@ -101,19 +129,25 @@ outputs/runs/exp021_randomized_terrain_filter_curriculum/_suite/metrics/
 outputs/runs/exp021_randomized_terrain_filter_curriculum/_launcher/train.log
 ```
 
-训练完成后复验/GIF 计划写入：
+复验/GIF、height map 和曲线：
 
 ```text
-outputs/runs/exp021_randomized_terrain_filter_curriculum/pure_rl_seed23_20m_filter_curriculum/metrics/multi_eval_<timestamp>/
-outputs/runs/exp021_randomized_terrain_filter_curriculum/pure_rl_seed23_20m_filter_curriculum/videos/multi_eval_<timestamp>/
+outputs/runs/exp021_randomized_terrain_filter_curriculum/pure_rl_seed23_20m_filter_curriculum/metrics/multi_eval_20260626_120357/
+outputs/runs/exp021_randomized_terrain_filter_curriculum/pure_rl_seed23_20m_filter_curriculum/videos/multi_eval_20260626_120357/
 outputs/runs/exp021_randomized_terrain_filter_curriculum/pure_rl_seed23_20m_filter_curriculum/figures/training_curves.png
 outputs/runs/exp021_randomized_terrain_filter_curriculum/pure_rl_seed23_20m_filter_curriculum/figures/candidate_eval_curves.png
+outputs/runs/exp021_randomized_terrain_filter_curriculum/_suite/figures/training_curves.png
+outputs/runs/exp021_randomized_terrain_filter_curriculum/_suite/figures/candidate_eval_curves.png
 ```
 
 ## 结论
 
-待训练完成后填写。当前只能表述为“exp021 是针对 exp020 hard filter 过强问题的课程化验证实验”。
+exp021 不能作为当前主结果，也不能写成随机地形收敛。它是一个重要诊断：课程化 filter 成功恢复了集合进度，但碰撞率显著过高。下一轮不应继续只调 filter 强度或 terrain reward，而应把“集合成功动作”和“多车安全间距”更强地耦合到 action representation、局部 planner 或终止/约束设计中。
 
 ## 下一步
 
-若 exp021 恢复 success 但 collision 仍高，下一轮优先做安全/集合联合 action representation 或 endpoint conflict-aware policy loss；若 exp021 仍 success 很低，说明 post-processing 类 filter 可能不适合作为主修复路径，应回到 action 表达、episode curriculum 或局部目标生成器结构。
+下一轮优先做安全/集合联合 action representation 或 endpoint conflict-aware policy loss。具体方向：
+
+- 在 action / planner 层显式预测 endpoint pairwise distance，而不是只在 reward 后验惩罚碰撞。
+- 对候选子目标加入“集合进度下限 + endpoint 安全”联合约束，避免为了集合直接穿越邻车。
+- 考虑把多车相对位姿的安全边界做成 differentiable auxiliary loss 或 shield，而不是只用 episode 终止惩罚。

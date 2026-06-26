@@ -11,7 +11,7 @@
 - `exp018` 是随机增强地形的 20M 单 seed candidate；dmax/success 达标，但 collision/timeout 未过 strict gate。
 - `exp019` 已完成随机增强地形安全/路径风险诊断；工程链路正常，但 strict 未通过，说明当前软路径风险惩罚和安全 gate 组合仍不足。
 - `exp020` 已完成 terrain/safety-aware 子目标过滤器诊断；路径风险明显降低，但集合进度被抑制，strict 未通过。
-- `exp021` 是当前运行中的下一轮：把 exp020 hard filter 改为晚介入、低概率、保留集合意图的课程化 filter，并加入 raw-risk / filter-deviation 辅助惩罚。
+- `exp021` 已完成课程化/软化 filter 诊断；集合进度恢复，但 collision 显著升高，strict 未通过。
 - PhysX / Isaac Sim 作为 checkpoint 级高保真闭环评估和展示层，不进入当前主训练 loop。
 - 新训练和评估默认写入 `outputs/runs/<experiment>/<run>/`。
 
@@ -100,24 +100,24 @@ outputs/runs/exp020_randomized_terrain_subgoal_filter/
 - 策略失败：5 seed 均值 dmax ratio `0.3752`、success `0.0`、collision `0.0498`、timeout `0.9506`，strict 未通过。
 - 当前结论是 hard filter 过强，牺牲了集合进度；下一轮应做课程化/软化，而不是继续增加过滤强度。
 
-当前运行中的下一轮是 `exp021`：
+已完成的课程化 filter 诊断是 `exp021`：
 
 ```text
 outputs/runs/exp021_randomized_terrain_filter_curriculum/
 ```
 
-计划：
+结果：
 
 - 保持 exp020 的 pure RL、shared-joint MAPPO、随机增强地形和 `12 m` 通信半径。
-- 课程化 filter 前 `2048` timesteps 不替换 action，只记录 telemetry 和辅助惩罚。
-- 后续 `4096` timesteps 内把 `apply_probability` 从 `0.0` 线性升到 `0.60`，把 `score_scale` 从 `0.15` 升到 `0.75`。
-- 候选集合弱化为 `rho_scales=[0.85, 1.0]` 与 `beta_offsets_deg=[-30, -15, 0, 15, 30]`，并加入 visible-neighbor center intent。
-- 使用 `balanced_progress_long` 选 best，避免再次选中 success≈0 的“安全但不集合”checkpoint。
+- 课程化 filter 前 `2048` timesteps 不替换 action，后续 `4096` timesteps 内把 `apply_probability` 从 `0.0` 线性升到 `0.60`，把 `score_scale` 从 `0.15` 升到 `0.75`。
+- seed23 20M 训练、候选评估、5 轮独立 eval、GIF 和训练曲线已完成。
+- 5 seed mean：dmax ratio `0.1460`、success `0.6361`、collision `0.1746`、timeout `0.1967`。
+- filter 仍降低路径风险：raw path risk `0.3871`，filtered path risk `0.3638`，risk reduction `0.0233`。
 
 判读：
 
-- strict gate 仍按标准 dmax/success/collision/timeout。
-- 若未 strict，也至少要比 exp020 恢复集合：success 高于 `0.0`，collision 目标低于 `0.0498`，timeout 目标低于 `0.9506`。
+- exp021 相比 exp020 恢复了集合和降低了 timeout，但 collision 明显恶化。
+- 下一步不宜继续只调 filter 强度或 terrain reward；应让 endpoint safety 更直接地参与 action/planner 或 policy loss。
 
 ## Checkpoint 复评计划
 

@@ -633,7 +633,26 @@ systemd-run --user --unit exp021-filter-curriculum-20m \
 tail -f outputs/runs/exp021_randomized_terrain_filter_curriculum/_launcher/train.log
 ```
 
-训练完成后对 best checkpoint 做 seeds `12023–12027` 独立复验，并输出 GIF、terrain height map、训练曲线和候选曲线。不要提交 `outputs/` 下的 checkpoint、JSON、PNG、GIF 或 TensorBoard。
+本轮 exp021 seed23 20M 已完成，但 strict 未通过。关键结论：
+
+- 课程化 filter 恢复集合进度：5 seed mean success `0.6361`，dmax ratio `0.1460`。
+- timeout 明显低于 exp020：`0.1967` vs exp020 `0.9506`。
+- 碰撞成为主失败项：collision `0.1746`，远高于 strict `0.02`，也高于 exp020 `0.0498`。
+- filter 仍降低路径风险：raw path risk `0.3871`，filtered path risk `0.3638`，risk reduction `0.0233`。
+- 结论是弱化/课程化 filter 能恢复集合，但不能解决 endpoint collision；下一轮应做安全/集合联合 action 或 planner 约束。
+
+复验/GIF 和曲线输出：
+
+```text
+outputs/runs/exp021_randomized_terrain_filter_curriculum/pure_rl_seed23_20m_filter_curriculum/metrics/multi_eval_20260626_120357/
+outputs/runs/exp021_randomized_terrain_filter_curriculum/pure_rl_seed23_20m_filter_curriculum/videos/multi_eval_20260626_120357/
+outputs/runs/exp021_randomized_terrain_filter_curriculum/pure_rl_seed23_20m_filter_curriculum/figures/training_curves.png
+outputs/runs/exp021_randomized_terrain_filter_curriculum/pure_rl_seed23_20m_filter_curriculum/figures/candidate_eval_curves.png
+outputs/runs/exp021_randomized_terrain_filter_curriculum/_suite/metrics/
+outputs/runs/exp021_randomized_terrain_filter_curriculum/_suite/figures/
+```
+
+不要提交 `outputs/` 下的 checkpoint、JSON、PNG、GIF 或 TensorBoard。
 
 ## Checkpoint 统一评估
 
