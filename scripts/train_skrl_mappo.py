@@ -480,15 +480,18 @@ def checkpoint_rank(
 ) -> tuple[bool, float, float, float, float, float]:
     thresholds = thresholds or STRICT_THRESHOLDS
     strict_pass = proxy_acceptance(metrics, thresholds)["passed"]
+    timeout = float(metrics["timeout_rate"])
+    timeout_threshold = float(thresholds["timeout_rate"])
+    timeout_violation = (
+        timeout
+        if timeout_threshold == 0.0
+        else max(0.0, timeout / max(timeout_threshold, 1.0e-6) - 1.0)
+    )
     violation = (
         max(0.0, float(metrics["dmax_reduction_ratio"]) / thresholds["dmax_reduction_ratio"] - 1.0)
         + max(0.0, 1.0 - float(metrics["success_rate"]) / thresholds["success_rate"])
         + max(0.0, float(metrics["collision_rate"]) / thresholds["collision_rate"] - 1.0)
-        + (
-            0.0
-            if thresholds["timeout_rate"] == 0.0 and float(metrics["timeout_rate"]) == 0.0
-            else float(metrics["timeout_rate"]) / max(thresholds["timeout_rate"], 1.0e-6)
-        )
+        + timeout_violation
     )
     return (
         not strict_pass,
@@ -759,6 +762,8 @@ def subgoal_filter_metadata(cfg) -> dict[str, Any]:
             "mutual_path_collision": float(filter_cfg.mutual_path_collision_weight),
             "visible_neighbor_center": float(filter_cfg.visible_neighbor_center_weight),
             "center_progress": float(filter_cfg.center_progress_weight),
+            "hold_zone_rho": float(filter_cfg.hold_zone_rho_weight),
+            "hold_zone_spacing": float(filter_cfg.hold_zone_spacing_weight),
         },
         "constraints": {
             "endpoint_safe_distance": float(filter_cfg.endpoint_safe_distance),
@@ -775,6 +780,14 @@ def subgoal_filter_metadata(cfg) -> dict[str, Any]:
             "collision_override_after_warmup": bool(
                 filter_cfg.collision_override_after_warmup
             ),
+            "hold_zone_override_after_warmup": bool(
+                filter_cfg.hold_zone_override_after_warmup
+            ),
+            "hold_zone_dmax_multiplier": float(filter_cfg.hold_zone_dmax_multiplier),
+            "hold_zone_dispersion_multiplier": float(
+                filter_cfg.hold_zone_dispersion_multiplier
+            ),
+            "hold_zone_pairwise_distance": float(filter_cfg.hold_zone_pairwise_distance),
         },
         "schedule": {
             "warmup_timesteps": int(filter_cfg.warmup_timesteps),
@@ -786,6 +799,33 @@ def subgoal_filter_metadata(cfg) -> dict[str, Any]:
                 filter_cfg.deterministic_improvement_margin
             ),
         },
+    }
+
+
+def control_safety_metadata(cfg) -> dict[str, Any]:
+    control_cfg = cfg.low_level_control
+    return {
+        "safety_projection_enabled": bool(control_cfg.safety_projection_enabled),
+        "projection_activation_distance": float(control_cfg.projection_activation_distance),
+        "projection_stop_distance": float(control_cfg.projection_stop_distance),
+        "projection_horizon_s": float(control_cfg.projection_horizon_s),
+        "projection_strength": float(control_cfg.projection_strength),
+        "projection_min_linear_scale": float(control_cfg.projection_min_linear_scale),
+        "projection_damp_nonclosing_near": bool(
+            control_cfg.projection_damp_nonclosing_near
+        ),
+        "projection_directional_agent_scale": bool(
+            control_cfg.projection_directional_agent_scale
+        ),
+        "projection_directional_agent_scale_mode": str(
+            control_cfg.projection_directional_agent_scale_mode
+        ),
+        "success_zone_damping_enabled": bool(control_cfg.success_zone_damping_enabled),
+        "success_zone_dmax_multiplier": float(control_cfg.success_zone_dmax_multiplier),
+        "success_zone_dispersion_multiplier": float(
+            control_cfg.success_zone_dispersion_multiplier
+        ),
+        "success_zone_linear_scale": float(control_cfg.success_zone_linear_scale),
     }
 
 
@@ -1369,6 +1409,29 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
                     .mean()
                     .cpu()
                 ),
+                "filter_hold_zone_activation_mean": float(
+                    action_filter["hold_zone_activation"].detach().float().mean().cpu()
+                ),
+                "filter_hold_zone_rho_cost_mean": float(
+                    action_filter["hold_zone_rho_cost"].detach().float().mean().cpu()
+                ),
+                "filter_hold_zone_spacing_violation_mean": float(
+                    action_filter["hold_zone_spacing_violation"]
+                    .detach()
+                    .float()
+                    .mean()
+                    .cpu()
+                ),
+                "filter_raw_hold_zone_rho_cost_mean": float(
+                    action_filter["raw_hold_zone_rho_cost"].detach().float().mean().cpu()
+                ),
+                "filter_raw_hold_zone_spacing_violation_mean": float(
+                    action_filter["raw_hold_zone_spacing_violation"]
+                    .detach()
+                    .float()
+                    .mean()
+                    .cpu()
+                ),
                 "filter_candidate_index_mean": float(
                     action_filter["candidate_index"].detach().float().mean().cpu()
                 ),
@@ -1396,6 +1459,31 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
                     filter_metrics[f"filter_candidate_index_{index}_fraction"] = float(fraction)
             telemetry_state["action_filter"] = filter_metrics
             _accumulate_numeric_metrics(telemetry_state, "action_filter", filter_metrics)
+        control_safety = info.get("control_safety")
+        if control_safety is not None:
+            safety_metrics = {
+                "control_safety_enabled": float(bool(control_safety.get("enabled", False))),
+                "control_safety_applied_fraction": float(
+                    control_safety["applied"].detach().float().mean().cpu()
+                ),
+                "control_safety_linear_scale_mean": float(
+                    control_safety["linear_scale"].detach().float().mean().cpu()
+                ),
+                "control_safety_linear_scale_min": float(
+                    control_safety["linear_scale"].detach().float().amin().cpu()
+                ),
+                "control_safety_pairwise_risk_mean": float(
+                    control_safety["pairwise_risk"].detach().float().mean().cpu()
+                ),
+                "control_safety_predicted_nearest_mean": float(
+                    control_safety["predicted_nearest_distance"].detach().float().mean().cpu()
+                ),
+                "control_safety_success_zone_fraction": float(
+                    control_safety["success_zone_active"].detach().float().mean().cpu()
+                ),
+            }
+            telemetry_state["control_safety"] = safety_metrics
+            _accumulate_numeric_metrics(telemetry_state, "control_safety", safety_metrics)
         writer = telemetry_state.get("writer")
         interval = int(telemetry_state.get("interval", 0))
         if writer is not None and interval > 0 and telemetry_state["step"] % interval == 0:
@@ -1466,10 +1554,13 @@ def build_training_telemetry(
     path_metrics.update(telemetry_state.get("path_terrain_window", {}))
     filter_metrics = dict(telemetry_state.get("action_filter", {}))
     filter_metrics.update(telemetry_state.get("action_filter_window", {}))
+    control_safety_metrics = dict(telemetry_state.get("control_safety", {}))
+    control_safety_metrics.update(telemetry_state.get("control_safety_window", {}))
     telemetry.update(reward_metrics)
     telemetry.update(action_metrics)
     telemetry.update(path_metrics)
     telemetry.update(filter_metrics)
+    telemetry.update(control_safety_metrics)
     telemetry.update(telemetry_state.get("done_counts", _empty_done_counts()))
     telemetry.update(_stats("final_pairwise_distance", pairwise))
     telemetry.update(_stats("final_oracle_distance", oracle))
@@ -1912,6 +2003,7 @@ def main() -> None:
                     "update_mode": update_mode,
                     "communication_radius": cfg.observation.communication_radius,
                     "subgoal_filter": subgoal_filter_metadata(cfg),
+                    "control_safety": control_safety_metadata(cfg),
                     "bc_updates": bc_updates,
                     "entropy_schedule_timesteps": algo.get(
                         "entropy_schedule_timesteps"
@@ -2066,6 +2158,7 @@ def main() -> None:
         _snapshot_numeric_metrics(telemetry_state, "reward", "reward_window")
         _snapshot_numeric_metrics(telemetry_state, "path_terrain", "path_terrain_window")
         _snapshot_numeric_metrics(telemetry_state, "action_filter", "action_filter_window")
+        _snapshot_numeric_metrics(telemetry_state, "control_safety", "control_safety_window")
         append_metrics_jsonl(
             telemetry_dir,
             build_training_telemetry(
@@ -2123,6 +2216,7 @@ def main() -> None:
                     "update_mode": update_mode,
                     "communication_radius": cfg.observation.communication_radius,
                     "subgoal_filter": subgoal_filter_metadata(cfg),
+                    "control_safety": control_safety_metadata(cfg),
                     "bc_updates": bc_updates,
                     "bc_batch_size": bc_batch_size,
                     "bc_learning_rate": bc_learning_rate,
@@ -2212,6 +2306,7 @@ def main() -> None:
     _snapshot_numeric_metrics(telemetry_state, "reward", "reward_window")
     _snapshot_numeric_metrics(telemetry_state, "path_terrain", "path_terrain_window")
     _snapshot_numeric_metrics(telemetry_state, "action_filter", "action_filter_window")
+    _snapshot_numeric_metrics(telemetry_state, "control_safety", "control_safety_window")
 
     candidate_evaluations: list[dict] = []
     best_candidate = candidate_paths[-1]
@@ -2341,6 +2436,7 @@ def main() -> None:
         "update_mode": update_mode,
         "communication_radius": cfg.observation.communication_radius,
         "subgoal_filter": subgoal_filter_metadata(cfg),
+        "control_safety": control_safety_metadata(cfg),
         "seed": training_seed,
         "num_envs": cfg.simulation.num_envs,
         "timesteps": args.timesteps,

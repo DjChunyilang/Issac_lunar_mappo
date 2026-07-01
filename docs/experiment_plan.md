@@ -15,7 +15,18 @@
 - `exp022` 已完成 endpoint/path safety constrained curriculum filter 诊断；collision 被压到 strict 内，但 success/timeout 明显失败，说明 hard constrained post-processing 过强。
 - `exp023` 已完成 soft progress-preserving filter 诊断；恢复部分集合进度，但 collision / timeout 仍失败，说明 static endpoint/path safety 不足。
 - `exp024` 已完成 mutual path safety filter 诊断；success 提升到 `0.8398`、collision 降到 `0.0674`，但 strict 安全和 timeout 仍未达标。
-- `exp025` 已完成 dense mutual path safety filter 诊断；collision 相对 exp024 降低，但 success/timeout/安全 strict 仍未过，下一步应转向末段 hold / success-zone 稳定。
+- `exp025` 已完成 dense mutual path safety filter 诊断；collision 相对 exp024 降低，但 success/timeout/安全 strict 仍未过。
+- `exp026` / `exp027` 已完成 hold-zone filter 诊断；过早介入会压制集合，严格晚介入也未优于 exp025。
+- `exp028` 已完成 hold reward 诊断；success/timeout 改善，是 exp026–029 中最好结果，但 collision 仍未过 strict。
+- `exp029` 已完成 stronger safety 诊断；继续加 safety reward/filter 权重导致 success/timeout/collision 全面退化。
+- `exp030` 已完成低层 control safety projection 诊断；collision 降低但 success/timeout 退化。
+- `exp031` / `exp032` 已完成投影强度和 closing-only 条件诊断；简单调弱不够，closing-only 略改善但仍未达标。
+- `exp033` / `exp034` 已完成 directional scale / mask 诊断；directional mask 是更有效方向，但 collision 仍超 strict。
+- `exp035` / `exp036` 已完成 directional mask buffer 与 hold/timeout shaping；success/collision 已同时达标，剩余瓶颈转为 timeout。
+- `exp037` 已完成 260-step episode/eval 诊断；timeout 降低但 collision 反弹，说明问题不是单纯时间预算。
+- `exp038` 已完成 success-zone stabilizer + 320-step episode/eval；当前随机地形最佳候选，success/collision 已过 strict，仅 timeout `0.0107` 未过。
+- `exp039` / `exp040` 已完成 exp038 checkpoint 诊断复评；hard near 与 stronger soft hold 都不建议长训。
+- `exp041` 已完成 hold-zone override 诊断和 CPU/CUDA smoke；在 exp038 best 上略优，是下一轮长训候选。
 - PhysX / Isaac Sim 作为 checkpoint 级高保真闭环评估和展示层，不进入当前主训练 loop。
 - 新训练和评估默认写入 `outputs/runs/<experiment>/<run>/`。
 
@@ -170,11 +181,98 @@ outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/
 - best 为 `ppo_timestep_009216.pt`；final eval：dmax ratio `0.1434`、success `0.8525`、collision `0.0449`、timeout `0.1035`。
 - 相对 exp024，success 小幅提高、collision 降低，但 timeout 未改善，strict 仍未通过。
 
+`exp026_randomized_terrain_hold_stable_filter` 已完成：
+
+- final eval：dmax ratio `0.1474`、success `0.7529`、collision `0.0615`、timeout `0.1865`。
+- `filter_hold_zone_activation_mean=0.1731`，说明 hold-zone cost 参与了决策，但介入过早/过宽，反而压制集合。
+
+`exp027_randomized_terrain_strict_hold_filter` 已完成：
+
+- final eval：dmax ratio `0.1464`、success `0.8418`、collision `0.0498`、timeout `0.1123`。
+- 严格 hold-zone trigger 避免 exp026 的明显退化，但未优于 exp025。
+
+`exp028_randomized_terrain_hold_reward` 已完成：
+
+- final eval：dmax ratio `0.1415`、success `0.8691`、collision `0.0469`、timeout `0.0889`。
+- `max_success_hold_count_mean=7.3633/8`，是 exp026–029 中最好结果。
+- post-hoc 把 deterministic filter margin 降到 `0.0` 后 collision 升到 `0.0576`，说明 eval filter margin 不是主要瓶颈。
+
+`exp029_randomized_terrain_hold_reward_safe` 已完成：
+
+- final eval：dmax ratio `0.1439`、success `0.8262`、collision `0.0557`、timeout `0.1221`。
+- 加强 safety reward/filter 权重没有压低真实碰撞，反而牺牲 success/timeout。
+
+`exp030_randomized_terrain_control_safety` 已完成：
+
+- 回到 exp028 主体，在低层控制中加入相对速度 safety projection 和 success-zone damping。
+- final eval：dmax ratio `0.1528`、success `0.8330`、collision `0.0313`、timeout `0.1357`。
+- 候选 `ppo_timestep_010240.pt` eval collision `0.0234`，接近 strict `0.02`，说明动态控制投影方向有效。
+- 但 success/timeout 明显退化，`control_safety_applied_fraction=0.1610`、`linear_scale_min=0.25`，说明当前投影触发过早/过强。
+
+`exp031_randomized_terrain_narrow_control_safety` 已完成：
+
+- final eval：dmax ratio `0.1448`、success `0.8105`、collision `0.0449`、timeout `0.1455`。
+- 简单缩小投影范围和降低强度没有恢复 success/timeout，也丢失 exp030 的安全收益。
+
+`exp032_randomized_terrain_closing_control_safety` 已完成：
+
+- final eval：dmax ratio `0.1495`、success `0.8379`、collision `0.0361`、timeout `0.1279`。
+- closing-only 投影条件比 exp031 略好，但仍没有回到 exp028/exp030 的综合水平。
+
+`exp033_randomized_terrain_directional_control_safety` 已完成：
+
+- final eval：dmax ratio `0.1436`、success `0.8154`、collision `0.0488`、timeout `0.1387`。
+- directional agent-scale 没有带来安全收益，说明连续缩放仍然过粗。
+
+`exp034_randomized_terrain_directional_mask_control_safety` 已完成：
+
+- final eval：dmax ratio `0.1491`、success `0.8828`、collision `0.0361`、timeout `0.0840`。
+- directional mask 明显恢复 success/timeout，但 collision 仍未达 strict。
+
+`exp035_randomized_terrain_directional_mask_buffer` 已完成：
+
+- final eval：dmax ratio `0.1519`、success `0.9072`、collision `0.0127`、timeout `0.0811`。
+- success 和 collision 首次同时通过 strict 门槛，剩余瓶颈转为 timeout/hold。
+
+`exp036_randomized_terrain_directional_mask_timeout_hold` 已完成：
+
+- final eval：dmax ratio `0.1523`、success `0.9336`、collision `0.0088`、timeout `0.0586`。
+- stronger hold/timeout shaping 继续改善 timeout，但不能把 timeout 降到 0。
+
+`exp037_randomized_terrain_directional_mask_timeout260` 已完成：
+
+- final eval：dmax ratio `0.1517`、success `0.9238`、collision `0.0352`、timeout `0.0410`。
+- 延长 episode/eval 到 260 steps 能降低 timeout，但也给末段碰撞更多暴露机会，collision 反弹。
+
+`exp038_randomized_terrain_success_zone_stabilizer` 已完成：
+
+- 修正 strict rank 后重选 `ppo_timestep_009216.pt` 为 `best.pt`。
+- final eval：dmax ratio `0.1590`、success `0.9756`、collision `0.0137`、timeout `0.0107`。
+- dmax/success/collision 均达 strict，唯一失败项是 timeout。
+- timeout 子集主要卡在最近邻安全间距：final nearest mean 约 `0.400 m`，低于 `success_thresholds.min_pairwise_distance=0.42 m`，不是整体 dmax/dispersion 不可达。
+
+`exp039_randomized_terrain_hard_near_stabilizer` 已完成诊断复评：
+
+- 在 exp038 best 上使用 exp039 配置 eval：success `0.9424`、collision `0.0254`、timeout `0.0322`。
+- hard near stabilizer 差于 exp038，不建议按原样长训。
+
+`exp040_randomized_terrain_soft_hold_stabilizer` 已完成诊断复评：
+
+- 在 exp038 best 上使用 exp040 配置 eval：success `0.9658`、collision `0.0186`、timeout `0.0166`。
+- collision 仍可过 strict，但 timeout 差于 exp038，不建议按原样长训。
+
+`exp041_randomized_terrain_hold_zone_override` 已完成诊断复评和 smoke：
+
+- 在 exp038 best 上使用 exp041 配置 eval：success `0.9795`、collision `0.0107`、timeout `0.0098`。
+- CPU/CUDA smoke 已通过。
+- 结果略优于 exp038，但仍只是 checkpoint 复评；下一步应从随机初始化执行 exp041 长训。
+
 当前下一轮方向：
 
-- 不再单纯加大 path/mutual collision 权重。
-- 优先在接近 success zone 时加入速度/步长阻尼、hold-aware filter score 或轻量 planner projection。
-- 目标是解决 exp025 暴露的末段问题：`max_success_hold_count_mean≈7.22/8` 接近但不稳定，collision 多发生在 `first_collision_step_mean≈176/220` 的后段。
+- 以 exp038 作为当前随机地形最佳综合 candidate。
+- 不再全局加硬 near/hold filter；exp039/exp040 已说明会退化。
+- 下一轮优先启动 exp041 从头长训，验证 hold-zone override 是否能在不破坏 success/collision 的前提下消除最后 `~1%` timeout。
+- 如果 exp041 长训仍只剩少量 timeout，应继续做更细粒度的末端 pairwise spacing controller，而不是扩大全局安全惩罚。
 
 ## Checkpoint 复评计划
 

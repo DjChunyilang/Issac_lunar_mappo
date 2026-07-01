@@ -21,6 +21,7 @@ from run_exp017_pure_rl_long import (  # noqa: E402
 )
 from shared_policy_mappo import scheduled_entropy_scale  # noqa: E402
 from train_skrl_mappo import (  # noqa: E402
+    checkpoint_rank,
     checkpoint_teacher_metadata,
     pure_rl_long_acceptance,
     pure_rl_long_checkpoint_rank,
@@ -89,6 +90,17 @@ def test_exp017_rank_prefers_later_checkpoint_on_exact_tie() -> None:
     late = _evaluation(4096)
 
     assert pure_rl_long_checkpoint_rank(late) < pure_rl_long_checkpoint_rank(early)
+
+
+def test_strict_rank_does_not_let_zero_timeout_threshold_hide_collision() -> None:
+    collision_safe = _evaluation(9216, timeout=0.0107)
+    collision_safe["success_rate"] = 0.9756
+    collision_safe["collision_rate"] = 0.0137
+    collision_over = _evaluation(10240, timeout=0.0088)
+    collision_over["success_rate"] = 0.9697
+    collision_over["collision_rate"] = 0.0215
+
+    assert checkpoint_rank(collision_safe) < checkpoint_rank(collision_over)
 
 
 def test_exp017_milestones_map_to_expected_env_steps() -> None:

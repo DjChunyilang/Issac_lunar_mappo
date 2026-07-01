@@ -1076,6 +1076,345 @@ tail -f outputs/runs/exp025_randomized_terrain_dense_mutual_filter/_launcher/tra
 
 不要提交 `outputs/` 下的 checkpoint、JSON、PNG、GIF 或 TensorBoard。
 
+## exp026 hold-stable subgoal filter
+
+目的：针对 exp025 的末段 hold 不稳定，不再继续单纯增加 path/mutual collision 权重；在接近 success gate 时启用 hold-zone rho / spacing cost，偏好短步长和更大的 endpoint spacing buffer。
+
+关键配置：
+
+```text
+config: configs/experiment/exp026_randomized_terrain_hold_stable_filter.yaml
+experiment: exp026_randomized_terrain_hold_stable_filter
+run: pure_rl_seed23_20m_hold_stable_filter
+filter mode: terrain_safe_candidate_hold_progress_curriculum
+candidate_count: 28
+path_samples: 9
+selection gate: success_progress_long
+```
+
+专项测试：
+
+```bash
+.venv_isaaclab/bin/python -m pytest -q \
+  tests/test_subgoal_filter.py \
+  tests/test_exp026_training.py
+
+.venv_isaaclab/bin/python -m pytest -q -ra
+```
+
+CPU smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp026_randomized_terrain_hold_stable_filter.yaml \
+  --device cpu \
+  --num-envs 8 \
+  --rollout-steps 4 \
+  --timesteps 8 \
+  --checkpoint-interval 4 \
+  --eval-num-envs 8 \
+  --eval-steps 16 \
+  --run-name smoke_cpu_exp026 \
+  --output-layout run \
+  --selection-gate success_progress_long
+```
+
+CUDA smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp026_randomized_terrain_hold_stable_filter.yaml \
+  --device cuda \
+  --num-envs 256 \
+  --rollout-steps 32 \
+  --timesteps 64 \
+  --checkpoint-interval 32 \
+  --eval-num-envs 256 \
+  --eval-steps 220 \
+  --run-name smoke_cuda_exp026 \
+  --output-layout run \
+  --selection-gate success_progress_long
+```
+
+正式 20M 长训练：
+
+```bash
+ROOT=$(pwd)
+mkdir -p outputs/runs/exp026_randomized_terrain_hold_stable_filter/_launcher
+
+systemd-run --user --unit exp026-hold-stable-filter-20m \
+  --same-dir \
+  --collect \
+  --property=StandardOutput=append:${ROOT}/outputs/runs/exp026_randomized_terrain_hold_stable_filter/_launcher/train.log \
+  --property=StandardError=append:${ROOT}/outputs/runs/exp026_randomized_terrain_hold_stable_filter/_launcher/train.log \
+  .venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+    --config configs/experiment/exp026_randomized_terrain_hold_stable_filter.yaml \
+    --device cuda \
+    --timesteps 10240 \
+    --seed 23 \
+    --num-envs 2048 \
+    --output-layout run \
+    --run-name pure_rl_seed23_20m_hold_stable_filter \
+    --rollout-steps 32 \
+    --checkpoint-interval 1024 \
+    --eval-num-envs 1024 \
+    --eval-steps 220 \
+    --eval-seed-offset 1000 \
+    --bc-updates 0 \
+    --selection-gate success_progress_long
+```
+
+判读：
+
+- strict gate 不变：`dmax <= 0.20`、`success >= 0.90`、`collision <= 0.02`、`timeout = 0`。
+- 若未 strict，重点比较 exp025：success 是否高于 `0.8525`、collision 是否低于 `0.0449`、timeout 是否低于 `0.1035`。
+- 重点 telemetry：`filter_hold_zone_activation_mean`、`filter_hold_zone_rho_cost_mean`、`filter_hold_zone_spacing_violation_mean`、`max_success_hold_count_mean`、`first_collision_step_mean`。
+
+当前结果：
+
+- seed23 20M 已完成，final eval：dmax ratio `0.1474`、success `0.7529`、collision `0.0615`、timeout `0.1865`。
+- `filter_hold_zone_activation_mean=0.1731`，说明 hold-zone 确实介入，但介入过早/过宽，压制了集合进度。
+- exp026 不能作为当前主结果；不要继续沿这个宽触发 hold-zone 配置加权。
+
+## exp027–exp029 后续随机地形诊断
+
+三轮均沿用 pure RL、shared-joint MAPPO、随机增强地形、`12 m` 通信半径和 `success_progress_long` checkpoint selection。
+
+| exp | config | run | final success | collision | timeout | 结论 |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| exp027 | `configs/experiment/exp027_randomized_terrain_strict_hold_filter.yaml` | `pure_rl_seed23_20m_strict_hold_filter` | 0.8418 | 0.0498 | 0.1123 | 严格 hold-zone trigger 避免 exp026 退化，但未优于 exp025。 |
+| exp028 | `configs/experiment/exp028_randomized_terrain_hold_reward.yaml` | `pure_rl_seed23_20m_hold_reward` | 0.8691 | 0.0469 | 0.0889 | 强化 hold reward 有效，是 exp026–029 中最好结果，但仍未 strict。 |
+| exp029 | `configs/experiment/exp029_randomized_terrain_hold_reward_safe.yaml` | `pure_rl_seed23_20m_hold_reward_safe` | 0.8262 | 0.0557 | 0.1221 | 继续加强 safety reward/filter 权重导致退化。 |
+
+启动这些实验时使用同一模板替换 config、unit、experiment/run 名：
+
+```bash
+ROOT=$(pwd)
+mkdir -p outputs/runs/<experiment>/_launcher
+
+systemd-run --user --unit <unit-name> \
+  --same-dir \
+  --collect \
+  --property=StandardOutput=append:${ROOT}/outputs/runs/<experiment>/_launcher/train.log \
+  --property=StandardError=append:${ROOT}/outputs/runs/<experiment>/_launcher/train.log \
+  .venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+    --config configs/experiment/<config>.yaml \
+    --device cuda \
+    --timesteps 10240 \
+    --seed 23 \
+    --num-envs 2048 \
+    --output-layout run \
+    --run-name <run> \
+    --rollout-steps 32 \
+    --checkpoint-interval 1024 \
+    --eval-num-envs 1024 \
+    --eval-steps 220 \
+    --eval-seed-offset 1000 \
+    --bc-updates 0 \
+    --selection-gate success_progress_long
+```
+
+历史下一步曾以 exp028 为最佳随机地形 candidate，随后 exp030–exp038 已完成控制层和 success-zone 稳定诊断。当前不要再回到单纯加大静态 path/mutual collision 权重；最新路线见下方 exp032–exp041 小节。
+
+不要提交 `outputs/` 下的 checkpoint、JSON、PNG、GIF 或 TensorBoard。
+
+## exp030 control safety projection
+
+目的：回到 exp028 的 dense mutual filter + hold reward，不再继续加重静态 safety 权重；在低层控制链路中加入默认关闭的 one-step collision anticipation 和 success-zone velocity damping。
+
+关键配置：
+
+```text
+config: configs/experiment/exp030_randomized_terrain_control_safety.yaml
+experiment: exp030_randomized_terrain_control_safety
+run: pure_rl_seed23_20m_control_safety
+selection gate: success_progress_long
+```
+
+专项测试：
+
+```bash
+.venv_isaaclab/bin/python -m pytest -q \
+  tests/test_control_safety.py \
+  tests/test_exp030_training.py \
+  tests/test_exp029_training.py \
+  tests/test_exp028_training.py \
+  tests/test_subgoal_filter.py
+
+.venv_isaaclab/bin/python -m pytest -q -ra
+```
+
+CPU smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp030_randomized_terrain_control_safety.yaml \
+  --device cpu \
+  --num-envs 8 \
+  --rollout-steps 4 \
+  --timesteps 8 \
+  --checkpoint-interval 4 \
+  --eval-num-envs 8 \
+  --eval-steps 16 \
+  --run-name smoke_cpu_exp030 \
+  --output-layout run \
+  --selection-gate success_progress_long
+```
+
+CUDA smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp030_randomized_terrain_control_safety.yaml \
+  --device cuda \
+  --num-envs 256 \
+  --rollout-steps 32 \
+  --timesteps 64 \
+  --checkpoint-interval 32 \
+  --eval-num-envs 256 \
+  --eval-steps 220 \
+  --run-name smoke_cuda_exp030 \
+  --output-layout run \
+  --selection-gate success_progress_long
+```
+
+正式 20M 长训练：
+
+```bash
+ROOT=$(pwd)
+mkdir -p outputs/runs/exp030_randomized_terrain_control_safety/_launcher
+
+systemd-run --user --unit exp030-control-safety-20m \
+  --same-dir \
+  --collect \
+  --property=StandardOutput=append:${ROOT}/outputs/runs/exp030_randomized_terrain_control_safety/_launcher/train.log \
+  --property=StandardError=append:${ROOT}/outputs/runs/exp030_randomized_terrain_control_safety/_launcher/train.log \
+  .venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+    --config configs/experiment/exp030_randomized_terrain_control_safety.yaml \
+    --device cuda \
+    --timesteps 10240 \
+    --seed 23 \
+    --num-envs 2048 \
+    --output-layout run \
+    --run-name pure_rl_seed23_20m_control_safety \
+    --rollout-steps 32 \
+    --checkpoint-interval 1024 \
+    --eval-num-envs 1024 \
+    --eval-steps 220 \
+    --eval-seed-offset 1000 \
+    --bc-updates 0 \
+    --selection-gate success_progress_long
+```
+
+重点 telemetry：
+
+- `control_safety_applied_fraction`
+- `control_safety_linear_scale_mean`
+- `control_safety_linear_scale_min`
+- `control_safety_pairwise_risk_mean`
+- `control_safety_success_zone_fraction`
+- `first_collision_step_mean`
+- `max_success_hold_count_mean`
+
+当前结果：
+
+- seed23 20M 已完成，best `ppo_timestep_010240.pt`，final eval：dmax ratio `0.1528`、success `0.8330`、collision `0.0313`、timeout `0.1357`。
+- 相对 exp028，collision 从 `0.0469` 降低，但 success 和 timeout 退化。
+- `control_safety_applied_fraction=0.1610`、`control_safety_linear_scale_mean=0.9304`、`control_safety_linear_scale_min=0.25`，说明投影起作用但偏强。
+- 下一轮建议降低触发范围和强度：`projection_activation_distance 0.62 -> 0.52`、`projection_strength 0.80 -> 0.55`、`projection_min_linear_scale 0.25 -> 0.45`，并关闭或推迟 success-zone damping。
+
+## exp031 narrow control safety projection
+
+目的：调弱 exp030 的低层控制投影，保留降碰撞方向，同时减少 success/timeout 退化。
+
+关键配置：
+
+```text
+config: configs/experiment/exp031_randomized_terrain_narrow_control_safety.yaml
+experiment: exp031_randomized_terrain_narrow_control_safety
+run: pure_rl_seed23_20m_narrow_control_safety
+selection gate: success_progress_long
+```
+
+正式 20M 长训练：
+
+```bash
+ROOT=$(pwd)
+mkdir -p outputs/runs/exp031_randomized_terrain_narrow_control_safety/_launcher
+
+systemd-run --user --unit exp031-narrow-control-safety-20m \
+  --same-dir \
+  --collect \
+  --property=StandardOutput=append:${ROOT}/outputs/runs/exp031_randomized_terrain_narrow_control_safety/_launcher/train.log \
+  --property=StandardError=append:${ROOT}/outputs/runs/exp031_randomized_terrain_narrow_control_safety/_launcher/train.log \
+  .venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+    --config configs/experiment/exp031_randomized_terrain_narrow_control_safety.yaml \
+    --device cuda \
+    --timesteps 10240 \
+    --seed 23 \
+    --num-envs 2048 \
+    --output-layout run \
+    --run-name pure_rl_seed23_20m_narrow_control_safety \
+    --rollout-steps 32 \
+    --checkpoint-interval 1024 \
+    --eval-num-envs 1024 \
+    --eval-steps 220 \
+    --eval-seed-offset 1000 \
+    --bc-updates 0 \
+    --selection-gate success_progress_long
+```
+
+## exp032–exp041 control/success-zone 稳定诊断速查
+
+这些实验都沿用随机增强 lunar crater proxy、shared-joint MAPPO pure RL、`12 m` 通信半径和 `86/54` 接口；除特别说明外，seed23 20M、2048 env、rollout 32、checkpoint interval 1024。
+
+| exp | config | run / eval | success | collision | timeout | 结论 |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| exp032 | `configs/experiment/exp032_randomized_terrain_closing_control_safety.yaml` | `pure_rl_seed23_20m_closing_control_safety` | 0.8379 | 0.0361 | 0.1279 | closing-only 略优于 exp031，但未达标。 |
+| exp033 | `configs/experiment/exp033_randomized_terrain_directional_control_safety.yaml` | `pure_rl_seed23_20m_directional_control_safety` | 0.8154 | 0.0488 | 0.1387 | directional scale 没有安全收益。 |
+| exp034 | `configs/experiment/exp034_randomized_terrain_directional_mask_control_safety.yaml` | `pure_rl_seed23_20m_directional_mask_control_safety` | 0.8828 | 0.0361 | 0.0840 | directional mask 恢复部分 success/timeout。 |
+| exp035 | `configs/experiment/exp035_randomized_terrain_directional_mask_buffer.yaml` | `pure_rl_seed23_20m_directional_mask_buffer` | 0.9072 | 0.0127 | 0.0811 | success/collision 首次同时达标，timeout 成主瓶颈。 |
+| exp036 | `configs/experiment/exp036_randomized_terrain_directional_mask_timeout_hold.yaml` | `pure_rl_seed23_20m_directional_mask_timeout_hold` | 0.9336 | 0.0088 | 0.0586 | stronger hold/timeout shaping 继续改善 timeout。 |
+| exp037 | `configs/experiment/exp037_randomized_terrain_directional_mask_timeout260.yaml` | `pure_rl_seed23_20m_directional_mask_timeout260` | 0.9238 | 0.0352 | 0.0410 | 延长到 260 steps 降 timeout，但 collision 反弹。 |
+| exp038 | `configs/experiment/exp038_randomized_terrain_success_zone_stabilizer.yaml` | `pure_rl_seed23_20m_success_zone_stabilizer_timeout320` | 0.9756 | 0.0137 | 0.0107 | 当前最佳；strict 只剩 timeout 未过。 |
+| exp039 | `configs/experiment/exp039_randomized_terrain_hard_near_stabilizer.yaml` | exp038 best 诊断复评 | 0.9424 | 0.0254 | 0.0322 | hard near 退化，不建议长训。 |
+| exp040 | `configs/experiment/exp040_randomized_terrain_soft_hold_stabilizer.yaml` | exp038 best 诊断复评 | 0.9658 | 0.0186 | 0.0166 | soft hold 仍差于 exp038，不建议长训。 |
+| exp041 | `configs/experiment/exp041_randomized_terrain_hold_zone_override.yaml` | exp038 best 诊断复评 + smoke | 0.9795 | 0.0107 | 0.0098 | 略优于 exp038，是下一轮长训候选。 |
+
+当前推荐下一轮长训是 exp041，从随机初始化开始，不续训 exp038 checkpoint：
+
+```bash
+ROOT=$(pwd)
+mkdir -p outputs/runs/exp041_randomized_terrain_hold_zone_override/_launcher
+
+systemd-run --user --unit exp041-hold-zone-override-20m \
+  --same-dir \
+  --collect \
+  --property=StandardOutput=append:${ROOT}/outputs/runs/exp041_randomized_terrain_hold_zone_override/_launcher/train.log \
+  --property=StandardError=append:${ROOT}/outputs/runs/exp041_randomized_terrain_hold_zone_override/_launcher/train.log \
+  .venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+    --config configs/experiment/exp041_randomized_terrain_hold_zone_override.yaml \
+    --device cuda \
+    --timesteps 10240 \
+    --seed 23 \
+    --num-envs 2048 \
+    --output-layout run \
+    --run-name pure_rl_seed23_20m_hold_zone_override_timeout320 \
+    --rollout-steps 32 \
+    --checkpoint-interval 1024 \
+    --eval-num-envs 1024 \
+    --eval-steps 320 \
+    --eval-seed-offset 1000 \
+    --bc-updates 0 \
+    --selection-gate strict
+```
+
+判读重点：
+
+- 以 `metrics/final_eval_proxy.json` 和 `metrics/strict_acceptance.json` 为准。
+- exp038 的剩余 timeout 主要卡在 `0.28–0.42 m` 最近邻灰区；若 exp041 仍未 strict，应继续做末端 pairwise spacing controller，而不是全局加硬 near/hold filter。
+- exp039/exp040 只是诊断配置，除非重新设计，否则不要直接长训。
+
 ## Checkpoint 统一评估
 
 训练完成后运行：

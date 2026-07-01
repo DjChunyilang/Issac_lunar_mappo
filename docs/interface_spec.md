@@ -101,13 +101,14 @@ critic_state_dim
 
 `planner.subgoal_filter` 是可选 proxy planner 后处理，默认关闭。启用时，它在 Actor 输出 `[rho, beta]` 之后、轨迹生成之前，从固定候选子目标中按地形路径风险和 endpoint safety 选择 filtered subgoal。该机制不改变 Actor 输出维度、Critic 状态维度或 checkpoint schema；checkpoint metadata 会记录 filter 配置摘要。
 
-当前支持五种 mode：
+当前支持六种 mode：
 
 - `terrain_safe_candidate`：exp020 使用的 hard filter，每步执行 score 最低的候选。
 - `terrain_safe_candidate_curriculum`：exp021 使用的课程化 filter，训练时按 `warmup_timesteps` / `ramp_timesteps` 逐步提高 `apply_probability` 和 `score_scale`；评估时读取 checkpoint metadata 中的 `timesteps` 固定课程进度，并使用 deterministic rule，只有 filtered score 比 raw score 至少好 `deterministic_improvement_margin` 时才替换。
 - `terrain_safe_candidate_constrained_curriculum`：exp022 使用的课程化安全约束 filter，在 exp021 课程 schedule 基础上加入 endpoint/path safety constraint、visible-neighbor center progress constraint 和 warmup 后 safety override；仍只使用通信半径内可见邻居，不使用 oracle。
 - `terrain_safe_candidate_soft_progress_curriculum`：exp023 使用的软进度保护 filter，保留课程 schedule，但移除 hard safety constraint 和 near-distance override；score 中加入 visible-neighbor center / center-progress 软惩罚，只在 raw endpoint/path 预测碰撞且候选可降低碰撞违反时允许 collision override。
 - `terrain_safe_candidate_mutual_progress_curriculum`：exp024 使用的 mutual path safety filter，在 exp023 基础上把可见邻居 raw subgoal path 作为动态障碍，按相同时间采样比较候选路径与邻居 raw path；仍不使用不可见 rover 或 oracle。
+- `terrain_safe_candidate_hold_progress_curriculum`：exp026 之后使用的 hold-stable filter，在 mutual path safety 基础上增加默认关闭的 hold-zone cost；当当前队形已经接近 success gate 时，score 额外偏好较短 rho 和更大的 endpoint pairwise buffer，减少末段过冲和相向冲入。exp041 额外启用默认关闭的 `hold_zone_override_after_warmup`，仅当 raw action 会破坏 hold-zone spacing 且候选 action 明确改善 spacing 时才覆盖 raw action。该模式仍只使用当前可见邻居和队形几何，不向 Actor 输入 oracle，也不改变 `86 / 54` 接口。
 
 `action_filter` telemetry 至少包含：
 
@@ -144,6 +145,13 @@ raw_visible_center_cost
 filtered_visible_center_cost
 suggested_visible_center_cost
 center_progress_regression
+hold_zone_activation
+hold_zone_rho_cost
+hold_zone_spacing_violation
+raw_hold_zone_rho_cost
+raw_hold_zone_spacing_violation
+hold_zone_override
+hold_zone_override_fraction
 candidate_index
 suggested_candidate_index
 schedule_progress_step
@@ -154,6 +162,43 @@ score_scale
 ## 第一阶段动力学
 
 当前 rover 是 proxy unicycle 状态模型。只有在 rover 资产和控制接口明确后，才应替换为真实 Isaac Sim articulation。
+
+`low_level_control` 支持默认关闭的 control safety projection。该机制位于 `compute_control()` 之后、proxy `_integrate()` 之前，只缩放本步线速度，不改变 Actor 输出 `[rho, beta]`、子目标、轨迹生成接口、Actor 86 维 observation、Critic 54 维 state 或 checkpoint schema。exp030 启用的主要字段为：
+
+```text
+safety_projection_enabled
+projection_activation_distance
+projection_stop_distance
+projection_horizon_s
+projection_strength
+projection_min_linear_scale
+projection_damp_nonclosing_near
+projection_directional_agent_scale
+projection_directional_agent_scale_mode
+success_zone_damping_enabled
+success_zone_dmax_multiplier
+success_zone_dispersion_multiplier
+success_zone_linear_scale
+```
+
+`control_safety` telemetry 包含：
+
+```text
+enabled
+linear_scale
+raw_linear
+projected_linear
+applied
+pairwise_risk
+predicted_nearest_distance
+success_zone_active
+control_safety_applied_fraction
+control_safety_linear_scale_mean
+control_safety_linear_scale_min
+control_safety_pairwise_risk_mean
+control_safety_predicted_nearest_mean
+control_safety_success_zone_fraction
+```
 
 ## Success / safety gate
 

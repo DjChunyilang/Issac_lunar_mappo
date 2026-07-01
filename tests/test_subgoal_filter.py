@@ -343,6 +343,66 @@ def _mutual_progress_cfg() -> MultiRoverGatheringEnvCfg:
     return cfg
 
 
+def _hold_progress_cfg() -> MultiRoverGatheringEnvCfg:
+    cfg = _mutual_progress_cfg()
+    cfg.planner.subgoal_filter.mode = "terrain_safe_candidate_hold_progress_curriculum"
+    cfg.planner.subgoal_filter.rho_scales = [0.5, 1.0]
+    cfg.planner.subgoal_filter.beta_offsets_deg = [0.0]
+    cfg.planner.subgoal_filter.intent_deviation_weight = 0.1
+    cfg.planner.subgoal_filter.hold_zone_dmax_multiplier = 1.5
+    cfg.planner.subgoal_filter.hold_zone_dispersion_multiplier = 2.0
+    cfg.planner.subgoal_filter.hold_zone_rho_weight = 10.0
+    cfg.planner.subgoal_filter.hold_zone_spacing_weight = 0.0
+    cfg.planner.subgoal_filter.hold_zone_pairwise_distance = 0.48
+    cfg.planner.subgoal_filter.mutual_path_collision_weight = 0.0
+    cfg.planner.subgoal_filter.visible_neighbor_center_weight = 0.0
+    cfg.planner.subgoal_filter.center_progress_weight = 0.0
+    return cfg
+
+
+def test_hold_zone_filter_prefers_shorter_step_near_success_zone() -> None:
+    cfg = _hold_progress_cfg()
+    positions = torch.tensor([[[0.0, 0.0, 0.0], [0.8, 0.0, 0.0]]])
+    action = torch.tensor([[[0.0, 0.0], [-1.0, 0.0]]])
+    decoded, yaws = _decode(cfg, positions, action)
+
+    result = apply_subgoal_filter(
+        decoded,
+        positions,
+        yaws,
+        cfg,
+        progress_timestep=16,
+        deterministic=True,
+    )
+
+    assert result.info["hold_zone_activation"][0, 0] == pytest.approx(1.0)
+    assert result.info["applied"][0, 0]
+    assert result.decoded.physical[0, 0, 0] < decoded.physical[0, 0, 0]
+    assert result.info["hold_zone_rho_cost"][0, 0] < result.info[
+        "raw_hold_zone_rho_cost"
+    ][0, 0]
+
+
+def test_hold_zone_filter_is_inactive_outside_success_zone() -> None:
+    cfg = _hold_progress_cfg()
+    positions = torch.tensor([[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]]])
+    action = torch.tensor([[[0.0, 0.0], [-1.0, 0.0]]])
+    decoded, yaws = _decode(cfg, positions, action)
+
+    result = apply_subgoal_filter(
+        decoded,
+        positions,
+        yaws,
+        cfg,
+        progress_timestep=16,
+        deterministic=True,
+    )
+
+    assert result.info["hold_zone_activation"][0, 0] == pytest.approx(0.0)
+    assert not result.info["applied"][0, 0]
+    assert torch.allclose(result.decoded.physical[0, 0], decoded.physical[0, 0])
+
+
 def test_constrained_curriculum_warmup_does_not_override_unsafe_raw_action() -> None:
     cfg = _constrained_curriculum_cfg()
     positions = torch.tensor([[[0.0, 0.0, 0.0], [0.7, 0.0, 0.0]]])

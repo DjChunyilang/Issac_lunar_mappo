@@ -67,6 +67,11 @@ def _disabled_filter_result(decoded: DecodedAction) -> SubgoalFilterResult:
             "suggested_visible_center_cost": zeros,
             "center_progress_regression": zeros,
             "suggested_center_progress_regression": zeros,
+            "hold_zone_activation": zeros,
+            "hold_zone_rho_cost": zeros,
+            "hold_zone_spacing_violation": zeros,
+            "raw_hold_zone_rho_cost": zeros,
+            "raw_hold_zone_spacing_violation": zeros,
             "raw_score": zeros,
             "filtered_score": zeros,
             "score_margin": zeros,
@@ -287,6 +292,72 @@ def _visible_neighbor_center_cost(
     return torch.where(count > 0.0, normalized, torch.zeros_like(normalized))
 
 
+def _hold_zone_costs(
+    positions: torch.Tensor,
+    candidate_world_subgoals: torch.Tensor,
+    physical_candidates: torch.Tensor,
+    cfg: MultiRoverGatheringEnvCfg,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    filter_cfg = cfg.planner.subgoal_filter
+    candidate_shape = candidate_world_subgoals.shape[:-1]
+    zeros = torch.zeros(
+        candidate_shape,
+        dtype=candidate_world_subgoals.dtype,
+        device=candidate_world_subgoals.device,
+    )
+    if (
+        filter_cfg.hold_zone_dmax_multiplier <= 0.0
+        or (
+            filter_cfg.hold_zone_rho_weight <= 0.0
+            and filter_cfg.hold_zone_spacing_weight <= 0.0
+        )
+    ):
+        return zeros, zeros, zeros
+
+    n_agents = positions.shape[1]
+    current_delta = positions[:, :, None, :2] - positions[:, None, :, :2]
+    current_distance = torch.linalg.norm(current_delta, dim=-1)
+    eye = torch.eye(n_agents, dtype=torch.bool, device=positions.device).unsqueeze(0)
+    current_dmax = current_distance.masked_fill(eye, 0.0).amax(dim=(-1, -2))
+    centered = positions[..., :2] - positions[..., :2].mean(dim=1, keepdim=True)
+    current_dispersion = torch.mean(torch.sum(centered.square(), dim=-1), dim=-1)
+    activation = current_dmax <= (
+        float(cfg.success_thresholds.dmax) * float(filter_cfg.hold_zone_dmax_multiplier)
+    )
+    if filter_cfg.hold_zone_dispersion_multiplier > 0.0:
+        activation = activation & (
+            current_dispersion
+            <= (
+                float(cfg.success_thresholds.dispersion)
+                * float(filter_cfg.hold_zone_dispersion_multiplier)
+            )
+        )
+    activation_f = activation.to(dtype=positions.dtype)[:, None, None]
+
+    rho_cost = (
+        physical_candidates[..., 0] / max(float(cfg.planner.rho_max), 1.0e-6)
+    ) * activation_f
+
+    if n_agents <= 1:
+        return activation_f.expand_as(rho_cost), rho_cost, torch.zeros_like(rho_cost)
+
+    visible = (current_distance <= float(cfg.observation.communication_radius)) & ~eye
+    candidate_delta = (
+        candidate_world_subgoals[..., None, :2] - positions[:, None, None, :, :2]
+    )
+    candidate_distance = torch.linalg.norm(candidate_delta, dim=-1)
+    nearest_visible = candidate_distance.masked_fill(~visible[:, :, None, :], float("inf")).amin(dim=-1)
+    target_distance = float(filter_cfg.hold_zone_pairwise_distance)
+    if target_distance <= 0.0:
+        target_distance = float(cfg.success_thresholds.min_pairwise_distance)
+    if target_distance <= 0.0:
+        target_distance = float(cfg.safety.near_distance)
+    target_distance = max(target_distance, 1.0e-6)
+    spacing_violation = torch.relu(target_distance - nearest_visible) / target_distance
+    spacing_violation = spacing_violation * activation_f
+    return activation_f.expand_as(rho_cost), rho_cost, spacing_violation
+
+
 def _schedule_values(
     cfg: MultiRoverGatheringEnvCfg,
     progress_timestep: int | None,
@@ -298,6 +369,7 @@ def _schedule_values(
         "terrain_safe_candidate_constrained_curriculum",
         "terrain_safe_candidate_soft_progress_curriculum",
         "terrain_safe_candidate_mutual_progress_curriculum",
+        "terrain_safe_candidate_hold_progress_curriculum",
     }:
         return step, 1.0, 1.0
 
@@ -351,6 +423,7 @@ def apply_subgoal_filter(
         "terrain_safe_candidate_constrained_curriculum",
         "terrain_safe_candidate_soft_progress_curriculum",
         "terrain_safe_candidate_mutual_progress_curriculum",
+        "terrain_safe_candidate_hold_progress_curriculum",
     }
     if filter_cfg.mode not in supported_modes:
         raise ValueError(f"Unsupported subgoal filter mode: {filter_cfg.mode}")
@@ -411,6 +484,12 @@ def apply_subgoal_filter(
         - current_center_cost[..., None]
         + float(filter_cfg.center_progress_margin)
     )
+    hold_zone_activation, hold_zone_rho_cost, hold_zone_spacing_violation = _hold_zone_costs(
+        positions,
+        world_candidates,
+        physical_candidates,
+        cfg,
+    )
     auxiliary_score = (
         float(filter_cfg.path_terrain_mean_weight) * path["risk_mean"]
         + float(filter_cfg.path_terrain_max_weight) * path["risk_max"]
@@ -424,6 +503,8 @@ def apply_subgoal_filter(
         + float(filter_cfg.mutual_path_collision_weight) * mutual_path_collision_violation
         + float(filter_cfg.visible_neighbor_center_weight) * visible_center_cost
         + float(filter_cfg.center_progress_weight) * center_progress_regression
+        + float(filter_cfg.hold_zone_rho_weight) * hold_zone_rho_cost
+        + float(filter_cfg.hold_zone_spacing_weight) * hold_zone_spacing_violation
     )
     score = (
         float(filter_cfg.intent_deviation_weight) * intent_deviation
@@ -468,6 +549,8 @@ def apply_subgoal_filter(
         mutual_path_collision_violation,
         raw_index,
     )
+    raw_hold_zone_rho_cost = _gather_scalar(hold_zone_rho_cost, raw_index)
+    raw_hold_zone_spacing_violation = _gather_scalar(hold_zone_spacing_violation, raw_index)
     selected_endpoint_collision_violation = _gather_scalar(collision_violation, selected)
     selected_path_collision_violation_for_override = _gather_scalar(
         path_collision_violation,
@@ -475,6 +558,14 @@ def apply_subgoal_filter(
     )
     selected_mutual_collision_violation_for_override = _gather_scalar(
         mutual_path_collision_violation,
+        selected,
+    )
+    selected_hold_zone_spacing_violation_for_override = _gather_scalar(
+        hold_zone_spacing_violation,
+        selected,
+    )
+    selected_hold_zone_activation_for_override = _gather_scalar(
+        hold_zone_activation,
         selected,
     )
     raw_unsafe = (
@@ -517,6 +608,18 @@ def apply_subgoal_filter(
         if collision_override
         else torch.zeros_like(raw_collision_unsafe)
     )
+    hold_zone_override = (
+        bool(filter_cfg.hold_zone_override_after_warmup)
+        and schedule_step >= int(filter_cfg.warmup_timesteps)
+    )
+    hold_zone_override_mask = (
+        (raw_hold_zone_spacing_violation > 1.0e-6)
+        & (selected != raw_index)
+        & (selected_hold_zone_activation_for_override > 0.0)
+        & (selected_hold_zone_spacing_violation_for_override < raw_hold_zone_spacing_violation)
+        if hold_zone_override
+        else torch.zeros_like(raw_hold_zone_spacing_violation, dtype=torch.bool)
+    )
     deterministic_filter = (
         bool(filter_cfg.deterministic_eval) if deterministic is None else bool(deterministic)
     )
@@ -539,7 +642,7 @@ def apply_subgoal_filter(
             generator=generator,
         )
         applied = (selected != raw_index) & (random_values < float(apply_probability))
-    applied = applied | safety_override_mask | collision_override_mask
+    applied = applied | safety_override_mask | collision_override_mask | hold_zone_override_mask
     execution_index = torch.where(applied, selected, raw_index)
     filtered_physical = _gather_candidate(physical_candidates, execution_index)
     filtered_local_xy = _gather_candidate(local_candidates, execution_index)
@@ -595,6 +698,17 @@ def apply_subgoal_filter(
     suggested_visible_center_cost = _gather_scalar(visible_center_cost, selected)
     selected_center_regression = _gather_scalar(center_progress_regression, execution_index)
     suggested_center_regression = _gather_scalar(center_progress_regression, selected)
+    selected_hold_zone_activation = _gather_scalar(hold_zone_activation, execution_index)
+    selected_hold_zone_rho_cost = _gather_scalar(hold_zone_rho_cost, execution_index)
+    selected_hold_zone_spacing_violation = _gather_scalar(
+        hold_zone_spacing_violation,
+        execution_index,
+    )
+    suggested_hold_zone_rho_cost = _gather_scalar(hold_zone_rho_cost, selected)
+    suggested_hold_zone_spacing_violation = _gather_scalar(
+        hold_zone_spacing_violation,
+        selected,
+    )
     candidate_count = physical_candidates.shape[2]
     histogram = torch.bincount(
         execution_index.reshape(-1),
@@ -654,11 +768,22 @@ def apply_subgoal_filter(
             "collision_override_fraction": float(
                 collision_override_mask.float().mean().detach().cpu()
             ),
+            "hold_zone_override": hold_zone_override_mask,
+            "hold_zone_override_fraction": float(
+                hold_zone_override_mask.float().mean().detach().cpu()
+            ),
             "raw_visible_center_cost": raw_center_cost,
             "filtered_visible_center_cost": selected_visible_center_cost,
             "suggested_visible_center_cost": suggested_visible_center_cost,
             "center_progress_regression": selected_center_regression,
             "suggested_center_progress_regression": suggested_center_regression,
+            "hold_zone_activation": selected_hold_zone_activation,
+            "hold_zone_rho_cost": selected_hold_zone_rho_cost,
+            "hold_zone_spacing_violation": selected_hold_zone_spacing_violation,
+            "raw_hold_zone_rho_cost": raw_hold_zone_rho_cost,
+            "raw_hold_zone_spacing_violation": raw_hold_zone_spacing_violation,
+            "suggested_hold_zone_rho_cost": suggested_hold_zone_rho_cost,
+            "suggested_hold_zone_spacing_violation": suggested_hold_zone_spacing_violation,
             "raw_score": raw_score,
             "filtered_score": executed_score,
             "suggested_score": selected_score,

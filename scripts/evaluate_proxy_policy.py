@@ -74,6 +74,7 @@ def evaluate_checkpoint(
         "terrain_safe_candidate_constrained_curriculum",
         "terrain_safe_candidate_soft_progress_curriculum",
         "terrain_safe_candidate_mutual_progress_curriculum",
+        "terrain_safe_candidate_hold_progress_curriculum",
     }:
         cfg.planner.subgoal_filter.progress_timestep_override = int(metadata.get("timesteps", 0))
         cfg.planner.subgoal_filter.deterministic_eval = True
@@ -153,6 +154,11 @@ def evaluate_checkpoint(
     filter_filtered_center_cost_sum = torch.tensor(0.0, device=env.device)
     filter_suggested_center_cost_sum = torch.tensor(0.0, device=env.device)
     filter_center_progress_regression_sum = torch.tensor(0.0, device=env.device)
+    filter_hold_zone_activation_sum = torch.tensor(0.0, device=env.device)
+    filter_hold_zone_rho_cost_sum = torch.tensor(0.0, device=env.device)
+    filter_hold_zone_spacing_violation_sum = torch.tensor(0.0, device=env.device)
+    filter_raw_hold_zone_rho_cost_sum = torch.tensor(0.0, device=env.device)
+    filter_raw_hold_zone_spacing_violation_sum = torch.tensor(0.0, device=env.device)
     filter_candidate_index_sum = torch.tensor(0.0, device=env.device)
     filter_deterministic_applied_sum = torch.tensor(0.0, device=env.device)
     filter_raw_score_sum = torch.tensor(0.0, device=env.device)
@@ -163,6 +169,15 @@ def evaluate_checkpoint(
     filter_schedule_progress_step = 0
     filter_candidate_histogram: torch.Tensor | None = None
     filter_candidate_count = 0
+    control_safety_sample_count = torch.tensor(0.0, device=env.device)
+    control_safety_env_count = torch.tensor(0.0, device=env.device)
+    control_safety_applied_sum = torch.tensor(0.0, device=env.device)
+    control_safety_linear_scale_sum = torch.tensor(0.0, device=env.device)
+    control_safety_linear_scale_min = torch.tensor(float("inf"), device=env.device)
+    control_safety_pairwise_risk_sum = torch.tensor(0.0, device=env.device)
+    control_safety_predicted_nearest_sum = torch.tensor(0.0, device=env.device)
+    control_safety_success_zone_sum = torch.tensor(0.0, device=env.device)
+    control_safety_enabled = False
 
     for step_id in range(steps):
         active_before = active.clone()
@@ -324,6 +339,21 @@ def evaluate_checkpoint(
                 center_progress_regression = action_filter["center_progress_regression"][
                     active_before
                 ].reshape(-1)
+                hold_zone_activation = action_filter["hold_zone_activation"][
+                    active_before
+                ].reshape(-1)
+                hold_zone_rho_cost = action_filter["hold_zone_rho_cost"][
+                    active_before
+                ].reshape(-1)
+                hold_zone_spacing_violation = action_filter[
+                    "hold_zone_spacing_violation"
+                ][active_before].reshape(-1)
+                raw_hold_zone_rho_cost = action_filter["raw_hold_zone_rho_cost"][
+                    active_before
+                ].reshape(-1)
+                raw_hold_zone_spacing_violation = action_filter[
+                    "raw_hold_zone_spacing_violation"
+                ][active_before].reshape(-1)
                 candidate_index = action_filter["candidate_index"][active_before].reshape(-1)
                 deterministic_applied = action_filter["deterministic_applied"][
                     active_before
@@ -417,6 +447,23 @@ def evaluate_checkpoint(
                     filter_center_progress_regression_sum
                     + center_progress_regression.sum()
                 )
+                filter_hold_zone_activation_sum = (
+                    filter_hold_zone_activation_sum + hold_zone_activation.sum()
+                )
+                filter_hold_zone_rho_cost_sum = (
+                    filter_hold_zone_rho_cost_sum + hold_zone_rho_cost.sum()
+                )
+                filter_hold_zone_spacing_violation_sum = (
+                    filter_hold_zone_spacing_violation_sum
+                    + hold_zone_spacing_violation.sum()
+                )
+                filter_raw_hold_zone_rho_cost_sum = (
+                    filter_raw_hold_zone_rho_cost_sum + raw_hold_zone_rho_cost.sum()
+                )
+                filter_raw_hold_zone_spacing_violation_sum = (
+                    filter_raw_hold_zone_spacing_violation_sum
+                    + raw_hold_zone_spacing_violation.sum()
+                )
                 filter_candidate_index_sum = filter_candidate_index_sum + candidate_index.float().sum()
                 filter_deterministic_applied_sum = (
                     filter_deterministic_applied_sum + deterministic_applied.float().sum()
@@ -446,6 +493,43 @@ def evaluate_checkpoint(
                         (0, step_histogram.numel() - filter_candidate_histogram.numel()),
                     )
                 filter_candidate_histogram[: step_histogram.numel()] += step_histogram
+        control_safety = step_output.info.get("control_safety")
+        if control_safety is not None:
+            control_safety_enabled = control_safety_enabled or bool(
+                control_safety.get("enabled", False)
+            )
+            active_scale = control_safety["linear_scale"][active_before].reshape(-1)
+            if active_scale.numel() > 0:
+                active_applied = control_safety["applied"][active_before].reshape(-1)
+                active_risk = control_safety["pairwise_risk"][active_before].reshape(-1)
+                active_predicted = control_safety["predicted_nearest_distance"][
+                    active_before
+                ].reshape(-1)
+                sample_count = torch.tensor(float(active_scale.numel()), device=env.device)
+                control_safety_sample_count = control_safety_sample_count + sample_count
+                control_safety_applied_sum = (
+                    control_safety_applied_sum + active_applied.float().sum()
+                )
+                control_safety_linear_scale_sum = (
+                    control_safety_linear_scale_sum + active_scale.sum()
+                )
+                control_safety_linear_scale_min = torch.minimum(
+                    control_safety_linear_scale_min,
+                    active_scale.amin(),
+                )
+                control_safety_pairwise_risk_sum = (
+                    control_safety_pairwise_risk_sum + active_risk.sum()
+                )
+                control_safety_predicted_nearest_sum = (
+                    control_safety_predicted_nearest_sum + active_predicted.sum()
+                )
+            active_success_zone = control_safety["success_zone_active"][active_before]
+            if active_success_zone.numel() > 0:
+                env_count = torch.tensor(float(active_success_zone.numel()), device=env.device)
+                control_safety_env_count = control_safety_env_count + env_count
+                control_safety_success_zone_sum = (
+                    control_safety_success_zone_sum + active_success_zone.float().sum()
+                )
         active = active & ~done.done
         if not active.any():
             break
@@ -460,6 +544,38 @@ def evaluate_checkpoint(
         if timeout_seen.any()
         else None,
         "final_mean_speed_mean": float(final_mean_speed[timeout_seen].mean().detach().cpu())
+        if timeout_seen.any()
+        else None,
+        "final_nearest_neighbor_distance_mean": float(
+            final_nearest[timeout_seen].mean().detach().cpu()
+        )
+        if timeout_seen.any()
+        else None,
+        "final_nearest_neighbor_distance_min": float(
+            final_nearest[timeout_seen].amin().detach().cpu()
+        )
+        if timeout_seen.any()
+        else None,
+        "final_min_pairwise_ok_rate": float(
+            (
+                final_nearest[timeout_seen]
+                >= float(env.cfg.success_thresholds.min_pairwise_distance)
+            )
+            .float()
+            .mean()
+            .detach()
+            .cpu()
+        )
+        if timeout_seen.any() and env.cfg.success_thresholds.min_pairwise_distance > 0.0
+        else None,
+        "final_success_hold_count_mean": float(
+            final_success_hold_count[timeout_seen].float().mean().detach().cpu()
+        )
+        if timeout_seen.any()
+        else None,
+        "max_success_hold_count_mean": float(
+            max_success_hold_count[timeout_seen].float().mean().detach().cpu()
+        )
         if timeout_seen.any()
         else None,
         "mean_terrain_speed_scale": float(final_terrain_speed_scale[timeout_seen].mean().detach().cpu())
@@ -647,6 +763,31 @@ def evaluate_checkpoint(
         "filter_center_progress_regression_mean": float(
             (filter_center_progress_regression_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
         ),
+        "filter_hold_zone_activation_mean": float(
+            (filter_hold_zone_activation_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_hold_zone_rho_cost_mean": float(
+            (filter_hold_zone_rho_cost_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_hold_zone_spacing_violation_mean": float(
+            (
+                filter_hold_zone_spacing_violation_sum
+                / filter_sample_count.clamp_min(1.0)
+            )
+            .detach()
+            .cpu()
+        ),
+        "filter_raw_hold_zone_rho_cost_mean": float(
+            (filter_raw_hold_zone_rho_cost_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "filter_raw_hold_zone_spacing_violation_mean": float(
+            (
+                filter_raw_hold_zone_spacing_violation_sum
+                / filter_sample_count.clamp_min(1.0)
+            )
+            .detach()
+            .cpu()
+        ),
         "filter_candidate_index_mean": float(
             (filter_candidate_index_sum / filter_sample_count.clamp_min(1.0)).detach().cpu()
         ),
@@ -676,6 +817,51 @@ def evaluate_checkpoint(
             }
             if filter_candidate_histogram is not None
             else {}
+        ),
+        "control_safety_enabled": control_safety_enabled,
+        "control_safety_applied_fraction": float(
+            (control_safety_applied_sum / control_safety_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "control_safety_linear_scale_mean": float(
+            (
+                control_safety_linear_scale_sum
+                / control_safety_sample_count.clamp_min(1.0)
+            )
+            .detach()
+            .cpu()
+        ),
+        "control_safety_linear_scale_min": float(
+            (
+                control_safety_linear_scale_min
+                if torch.isfinite(control_safety_linear_scale_min)
+                else torch.tensor(1.0, device=env.device)
+            )
+            .detach()
+            .cpu()
+        ),
+        "control_safety_pairwise_risk_mean": float(
+            (
+                control_safety_pairwise_risk_sum
+                / control_safety_sample_count.clamp_min(1.0)
+            )
+            .detach()
+            .cpu()
+        ),
+        "control_safety_predicted_nearest_mean": float(
+            (
+                control_safety_predicted_nearest_sum
+                / control_safety_sample_count.clamp_min(1.0)
+            )
+            .detach()
+            .cpu()
+        ),
+        "control_safety_success_zone_fraction": float(
+            (
+                control_safety_success_zone_sum
+                / control_safety_env_count.clamp_min(1.0)
+            )
+            .detach()
+            .cpu()
         ),
         "max_success_hold_count_mean": float(max_success_hold_count.float().mean().detach().cpu()),
         "final_success_hold_count_mean": float(final_success_hold_count.float().mean().detach().cpu()),

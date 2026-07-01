@@ -27,6 +27,7 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.oracle import (
 from lunar_rover_tasks.tasks.multi_rover_gathering.reward import RewardTerms, compute_reward
 from lunar_rover_tasks.tasks.multi_rover_gathering.simple_controller import (
     ControlCommand,
+    apply_control_safety_projection,
     compute_control,
 )
 from lunar_rover_tasks.tasks.multi_rover_gathering.state import build_critic_state
@@ -246,6 +247,18 @@ class MultiRoverGatheringCore:
             trajectory,
             self.cfg.low_level_control,
         )
+        raw_control = control
+        control_safety = apply_control_safety_projection(
+            control,
+            self.positions,
+            self.yaws,
+            self.prev_metrics,
+            self.cfg.low_level_control,
+            self.cfg.success_thresholds,
+            self.cfg.simulation.planning_dt,
+            communication_radius=self.communication_radius,
+        )
+        control = control_safety.control
         self._integrate(control)
         self.global_step_count += 1
         self.step_count += 1
@@ -314,6 +327,10 @@ class MultiRoverGatheringCore:
             key: value.clone() if isinstance(value, torch.Tensor) else value
             for key, value in filter_result.info.items()
         }
+        control_safety_snapshot = {
+            key: value.clone() if isinstance(value, torch.Tensor) else value
+            for key, value in control_safety.info.items()
+        }
         terrain_runtime = self.terrain_runtime.clone()
         success_hold_count = self.success_hold_count.clone()
 
@@ -338,6 +355,8 @@ class MultiRoverGatheringCore:
                 "metrics": metrics,
                 "trajectory": trajectory,
                 "control": control,
+                "raw_control": raw_control,
+                "control_safety": control_safety_snapshot,
                 "terrain_features": terrain_features,
                 "terrain_speed_scale": terrain_speed_scale,
                 "height_delta": height_delta,

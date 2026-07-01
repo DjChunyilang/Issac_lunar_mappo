@@ -77,6 +77,7 @@ def main() -> None:
         "terrain_safe_candidate_constrained_curriculum",
         "terrain_safe_candidate_soft_progress_curriculum",
         "terrain_safe_candidate_mutual_progress_curriculum",
+        "terrain_safe_candidate_hold_progress_curriculum",
     }:
         cfg.planner.subgoal_filter.progress_timestep_override = int(metadata.get("timesteps", 0))
         cfg.planner.subgoal_filter.deterministic_eval = True

@@ -29,6 +29,17 @@
 - exp023 已完成 soft progress-preserving filter 迭代：success 从 exp022 的 `0.0139` 回升到 `0.3027`，但 collision `0.2295`、timeout `0.4717`，strict 未通过；失败原因是 static endpoint/path safety 未预测可见邻居同步运动。
 - exp024 已完成 mutual path safety filter 迭代：在 exp023 基础上把可见邻居 raw subgoal path 作为动态障碍，按相同时间采样比较候选路径；post-hoc 使用 `success_progress_long` 重选 `ppo_timestep_010240.pt` 为 best，seed1023 final eval 为 dmax ratio `0.1397`、success `0.8398`、collision `0.0674`、timeout `0.0947`，strict 未通过但显著优于 exp023。
 - exp025 已完成 dense mutual path safety filter 迭代：基于 exp024 加密 mutual/path safety 采样到 9 点，并适度提高 path/mutual collision 权重；best `ppo_timestep_009216.pt` final eval 为 dmax ratio `0.1434`、success `0.8525`、collision `0.0449`、timeout `0.1035`，strict 未通过。相对 exp024 collision 降低，但 timeout 未改善。
+- exp026 已完成 hold-zone filter 诊断：过早/过宽的 `hold_zone_rho/spacing` cost 把 success 从 exp025 的 `0.8525` 拉低到 `0.7529`，collision `0.0615`、timeout `0.1865`，strict 未通过。
+- exp027 已完成 strict hold-zone filter 诊断：把 hold-zone activation 收窄到真正 success dmax/dispersion 附近后避免了 exp026 的明显退化，但 final eval success `0.8418`、collision `0.0498`、timeout `0.1123`，未优于 exp025。
+- exp028 已完成 hold reward 诊断：回退到 exp025 dense mutual filter，只强化 `success_hold_step=4.0`、`success_bonus=45`、`timeout_penalty=18`；final eval success `0.8691`、collision `0.0469`、timeout `0.0889`，是 exp026–029 中最好但仍未 strict。
+- exp029 已完成 hold reward + stronger safety 诊断：在 exp028 基础上加强 path/mutual collision filter 和终端碰撞惩罚，final eval success `0.8262`、collision `0.0557`、timeout `0.1221`，说明继续加安全权重会牺牲成功并未压低真实碰撞。
+- exp030 已完成低层 control safety projection 诊断：回到 exp028 主体，只在 `compute_control()` 后、`_integrate()` 前加入相对速度安全投影和 success-zone damping；final eval success `0.8330`、collision `0.0313`、timeout `0.1357`，collision 明显低于 exp028，但投影过强导致 success/timeout 退化。
+- exp031–exp034 已完成 control safety 投影条件迭代：简单调弱、closing-only、directional scale 和 directional mask 都未 strict；其中 exp034 的 mask 版本把 success 拉回 `0.8828`、timeout 降到 `0.0840`，但 collision `0.0361` 仍失败。
+- exp035–exp036 已完成 directional mask buffer 与 stronger hold/timeout shaping：exp035 首次让 success `0.9072` 和 collision `0.0127` 同时达标；exp036 进一步到 success `0.9336`、collision `0.0088`、timeout `0.0586`，剩余瓶颈转为 timeout/hold。
+- exp037 已完成 260-step episode/eval 诊断：timeout 从 exp036 的 `0.0586` 降到 `0.0410`，但 collision 反弹到 `0.0352`，说明单纯延长 episode 会暴露末段碰撞。
+- exp038 已完成 success-zone stabilizer + 320-step episode/eval：修正 best 后 final eval success `0.9756`、collision `0.0137`、timeout `0.0107`；当前随机地形最佳候选，strict 只剩 timeout gate 失败。
+- exp039/exp040 是基于 exp038 best 的诊断复评，不建议长训：hard near stabilizer 和 stronger soft hold stabilizer 都使 timeout 或 collision 差于 exp038。
+- exp041 已完成 hold-zone override 诊断与 CPU/CUDA smoke：在 exp038 best 上复评得到 success `0.9795`、collision `0.0107`、timeout `0.0098`，略优于 exp038，是下一轮长训练候选，但尚不是从头训练结果。
 
 ## Checkpoint 评估工作流
 
@@ -81,6 +92,22 @@ final_selected
 | exp023 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + soft progress-preserving subgoal filter | 未通过 | seed23 final eval：dmax ratio 0.1789、success 0.3027、collision 0.2295、timeout 0.4717；缓解 exp022 standoff，但 static filter 未处理同步运动碰撞。 |
 | exp024 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + mutual path safety subgoal filter | 未通过 | post-hoc best `10240`：dmax ratio 0.1397、success 0.8398、collision 0.0674、timeout 0.0947；mutual path filter 明显改善 success/collision 平衡，但 strict 安全和 timeout 仍未达标。 |
 | exp025 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + dense mutual path safety filter | 未通过 | best `9216`：dmax ratio 0.1434、success 0.8525、collision 0.0449、timeout 0.1035；dense mutual filter 继续降低碰撞，但仍未达到 strict 安全/timeout gate。 |
+| exp026 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + hold-stable subgoal filter | 未通过 | best final eval：success 0.7529、collision 0.0615、timeout 0.1865；hold-zone 介入过早，明显压制集合进度。 |
+| exp027 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + strict hold-zone filter | 未通过 | best final eval：success 0.8418、collision 0.0498、timeout 0.1123；严格触发避免 exp026 退化，但仍不优于 exp025。 |
+| exp028 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + dense mutual filter + stronger hold reward | 未通过 | best final eval：success 0.8691、collision 0.0469、timeout 0.0889；当前随机地形安全/hold 方向最好结果，但安全 gate 仍失败。 |
+| exp029 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + exp028 + stronger safety penalties/filter weights | 未通过 | best final eval：success 0.8262、collision 0.0557、timeout 0.1221；加强安全权重反而退化，不能作为下一步方向。 |
+| exp030 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + exp028 + low-level control safety projection | 未通过 | best final eval：success 0.8330、collision 0.0313、timeout 0.1357；动态控制投影能降低碰撞，但当前触发过强，牺牲 success/timeout。 |
+| exp031 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + narrow/weak control safety projection | 未通过 | best final eval：success 0.8105、collision 0.0449、timeout 0.1455；简单调弱没有恢复 success，也丢失 exp030 的安全收益。 |
+| exp032 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + closing-only control safety projection | 未通过 | best final eval：success 0.8379、collision 0.0361、timeout 0.1279；closing-only 略优于 exp031，但仍未达标。 |
+| exp033 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + directional agent-scale projection | 未通过 | best final eval：success 0.8154、collision 0.0488、timeout 0.1387；方向性连续缩放没有带来安全收益。 |
+| exp034 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + directional mask projection | 未通过 | best final eval：success 0.8828、collision 0.0361、timeout 0.0840；mask 版本恢复部分 success/timeout，但 collision 仍超 strict。 |
+| exp035 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + directional mask buffer | 未通过 | best final eval：success 0.9072、collision 0.0127、timeout 0.0811；success/collision 同时达标，timeout 成主瓶颈。 |
+| exp036 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + directional mask + stronger hold/timeout shaping | 未通过 | best final eval：success 0.9336、collision 0.0088、timeout 0.0586；继续改善 timeout，但 strict 仍失败。 |
+| exp037 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + directional mask + 260-step episode/eval | 未通过 | best final eval：success 0.9238、collision 0.0352、timeout 0.0410；延长 episode 降 timeout，但 collision 反弹。 |
+| exp038 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + success-zone stabilizer + 320-step episode/eval | 未通过 | 修正 best 后 final eval：success 0.9756、collision 0.0137、timeout 0.0107；当前随机地形最佳，strict 只剩 timeout 失败。 |
+| exp039 | 随机增强 lunar crater proxy | exp038 checkpoint + hard near stabilizer 诊断 | 未长训 | 复评 success 0.9424、collision 0.0254、timeout 0.0322，差于 exp038；不建议按原样长训。 |
+| exp040 | 随机增强 lunar crater proxy | exp038 checkpoint + stronger soft hold stabilizer 诊断 | 未长训 | 复评 success 0.9658、collision 0.0186、timeout 0.0166，timeout 差于 exp038；不建议按原样长训。 |
+| exp041 | 随机增强 lunar crater proxy | exp038 checkpoint + hold-zone override 诊断 | 待长训 | 复评 success 0.9795、collision 0.0107、timeout 0.0098，略优于 exp038；下一轮长训候选。 |
 
 历史完整 suite checkpoint：
 
@@ -105,6 +132,16 @@ outputs/runs/exp_008_terrain3d/_suite/checkpoints/
 - exp023 可以表述为“soft progress filter 缓解了 exp022 的 standoff，但 collision/timeout 仍严重失败”，不能写成随机地形安全策略改善或收敛。
 - exp024 可以表述为“mutual path safety 明显改善 exp023 的动态路径冲突，但 collision/timeout 仍未过 strict”，不能写成随机地形安全策略收敛。
 - exp025 可以表述为“dense mutual path safety 相对 exp024 进一步降低 collision，但仍未解决末段 hold / timeout 稳定性”，不能写成随机地形安全策略收敛。
+- exp026/exp027 可以表述为“hold-zone filter 诊断未改善 exp025，过早介入会压制集合”，不能写成 hold 稳定成功。
+- exp028 可以表述为“强化 success hold reward 提高了 success/timeout，是 exp026–029 中最好的随机地形结果”，但 collision 仍超 strict，不能写成安全收敛。
+- exp029 可以表述为“继续加强安全权重没有降低真实 collision，反而牺牲 success/timeout”，不能写成安全改善。
+- exp030 可以表述为“低层动态控制投影降低 collision 但牺牲 success/timeout”，不能写成安全收敛或 strict 改善。
+- exp031–exp034 可以表述为“控制层投影条件和方向性 mask 诊断”，不能写成随机地形安全收敛；exp034 是方向性 mask 的有效拐点，但 collision 仍失败。
+- exp035/exp036 可以表述为“success/collision 已同时过门槛但 timeout 仍失败”，不能写成 strict pass。
+- exp037 可以表述为“延长 episode 降 timeout 但导致 collision 反弹”，不能写成单纯时间预算不足。
+- exp038 可以表述为“当前随机地形最佳候选，strict 只剩 timeout 尾部未过”，不能写成 strict pass。
+- exp039/exp040 只是 exp038 checkpoint 复评诊断，不能写成长训练结果。
+- exp041 可以表述为“hold-zone override 在 exp038 checkpoint 上略有改善，是下一轮候选”，不能写成 exp041 长训练完成。
 - GIF、截图和 TensorBoard 曲线只能用于展示和诊断；严格结论以 `_suite/metrics/strict_acceptance.json`、`metrics/final_eval_proxy.json` 和 `metrics/checkpoint_status.json` 为准。
 
 ## Jackal 跟踪验证
@@ -149,7 +186,9 @@ outputs/runs/physx_jackal_tracking/strong_lunar_crater_final_v2/
 
 ## 下一步
 
-1. 下一步应基于 exp025 转向末段 hold / success-zone 稳定：在接近成功区时抑制过冲和相向冲入，重点降低 `first_collision_step_mean≈176/220` 的 late-stage collision，并把 `max_success_hold_count_mean≈7.22/8` 推到稳定满足 hold gate。
-2. 保留 exp017 作为固定地图 pure RL baseline，保留 exp018/exp019/exp020/exp021/exp022 作为随机地形 failure analysis，不把它们扩写为多 seed 或 PhysX 收敛。
-3. 不建议继续单纯加大 path/mutual collision 权重；exp025 已说明这能降低 collision，但会把问题推到 timeout / hold 稳定性。下一轮优先做 success-zone velocity damping、hold-aware filter score 或轻量 planner projection。
-4. 为 PhysX / Jackal 后续接入同布局 raycast / height scanner，保持 proxy 与高保真观测接口一致。
+1. 当前随机地形最佳综合候选是 exp038：success/collision 已过 strict，仅 timeout `0.0107` 未过。
+2. exp038 的剩余 timeout 不是整体不可达，而是少量 episode 卡在 `collision_distance=0.28 m` 与 `success_thresholds.min_pairwise_distance=0.42 m` 之间的最近邻灰区，hold count 接近完成但未稳定达标。
+3. 不建议继续全局加硬 near/hold filter；exp039/exp040 已说明会扰动 success 或 timeout。
+4. 下一轮优先从 exp041 出发，从随机初始化长训 hold-zone override；若仍只剩极少 timeout，再考虑更细的末端 pairwise spacing controller。
+5. 保留 exp017 作为固定地图 pure RL baseline，保留 exp018–exp041 作为随机地形 failure analysis，不把它们扩写为多 seed 或 PhysX 收敛。
+6. 为 PhysX / Jackal 后续接入同布局 raycast / height scanner，保持 proxy 与高保真观测接口一致。

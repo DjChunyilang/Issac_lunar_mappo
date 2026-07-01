@@ -1,0 +1,183 @@
+experiment:
+  name: exp034_randomized_terrain_directional_mask_control_safety
+  seed: 23
+  num_envs: 2048
+  device: cuda
+  rollout_steps: 32
+  output_layout: run
+  checkpoint_interval: 1024
+  telemetry_interval: 32
+  tensorboard_interval: 32
+  eval_num_envs: 1024
+  eval_steps: 220
+  eval_seed_offset: 1000
+
+simulation:
+  episode_length_s: 44.0
+  physics_dt: 0.05
+  control_decimation: 4
+
+task:
+  n_agents: 4
+
+planner:
+  rho_max: 1.2
+  beta_max: 0.78539816339
+  subgoal_filter:
+    enabled: true
+    mode: terrain_safe_candidate_mutual_progress_curriculum
+    rho_scales: [0.60, 0.80, 1.0, 1.08]
+    beta_offsets_deg: [-40.0, -25.0, -12.5, 0.0, 12.5, 25.0, 40.0]
+    path_samples: 9
+    intent_deviation_weight: 0.42
+    path_terrain_mean_weight: 0.32
+    path_terrain_max_weight: 0.18
+    path_height_change_weight: 0.08
+    subgoal_terrain_weight: 0.10
+    endpoint_near_weight: 1.00
+    endpoint_collision_weight: 550.0
+    path_near_weight: 0.80
+    path_collision_weight: 450.0
+    mutual_path_near_weight: 1.80
+    mutual_path_collision_weight: 1200.0
+    visible_neighbor_center_weight: 1.00
+    center_progress_weight: 1.20
+    center_progress_margin: 0.0
+    endpoint_safe_distance: 0.42
+    path_safe_distance: 0.34
+    hard_endpoint_near_filter: false
+    hard_path_collision_filter: false
+    hard_center_progress_filter: false
+    center_progress_slack: 0.0
+    hard_constraint_penalty: 10000.0
+    safety_override_after_warmup: false
+    collision_override_after_warmup: true
+    warmup_timesteps: 2048
+    ramp_timesteps: 4096
+    apply_probability_end: 0.50
+    score_scale_start: 0.20
+    score_scale_end: 0.65
+    deterministic_improvement_margin: 0.025
+
+low_level_control:
+  max_linear_speed: 1.0
+  max_angular_speed: 2.5
+  k_linear: 1.6
+  k_angular: 3.0
+  safety_projection_enabled: true
+  projection_activation_distance: 0.62
+  projection_stop_distance: 0.36
+  projection_horizon_s: 0.60
+  projection_strength: 0.80
+  projection_min_linear_scale: 0.25
+  projection_damp_nonclosing_near: false
+  projection_directional_agent_scale: true
+  projection_directional_agent_scale_mode: mask
+  success_zone_damping_enabled: false
+  success_zone_dmax_multiplier: 1.0
+  success_zone_dispersion_multiplier: 1.0
+  success_zone_linear_scale: 0.85
+
+observation:
+  communication_radius: 12.0
+
+safety:
+  world_xy_limit: 12.0
+  collision_distance: 0.28
+  near_distance: 0.85
+
+terrain:
+  type: lunar_crater_proxy
+  dynamics_enabled: true
+  amplitude: 0.10
+  wavelength: 2.8
+  roughness_scale: 1.0
+  traversability_slope_scale: 0.50
+  slope_speed_scale: 1.05
+  min_speed_scale: 0.22
+  crater_count: 9
+  crater_min_radius: 0.45
+  crater_max_radius: 1.30
+  crater_depth_to_diameter: 0.12
+  crater_rim_height_to_diameter: 0.025
+  crater_field_size: 9.0
+  crater_seed: 11
+  randomize_per_reset: true
+  random_translation_m: 1.5
+  random_yaw_rad: 3.14159265359
+  amplitude_scale_min: 0.90
+  amplitude_scale_max: 1.10
+  crater_radius_scale_min: 0.85
+  crater_radius_scale_max: 1.15
+  crater_depth_scale_min: 0.85
+  crater_depth_scale_max: 1.15
+
+reward:
+  weights:
+    gather: 1.0
+    oracle: 0.5
+    energy: 0.003
+    safety: 1.0
+    terrain: 0.30
+    motion: 0.005
+    consistency: 0.003
+    terminal: 1.0
+  coefficients:
+    dmax_progress: 3.4
+    dispersion_progress: 1.4
+    dmax_level: 0.05
+    dispersion_level: 0.006
+    oracle_mean_distance_progress: 2.2
+    path_length: 0.05
+    slope_cost: 0.30
+    terrain_cost: 0.30
+    subgoal_terrain_cost: 0.45
+    terrain_speed_loss_cost: 0.30
+    terrain_height_change_cost: 0.25
+    path_terrain_mean_cost: 0.60
+    path_terrain_max_cost: 0.40
+    path_height_change_cost: 0.20
+    filter_raw_path_risk_cost: 0.20
+    filter_deviation_cost: 0.05
+    turn_cost: 0.015
+    near_distance: 6.0
+    inter_agent_collision: 90.0
+    subgoal_turn: 0.015
+    subgoal_stagnation: 0.04
+    action_consistency: 0.006
+    success_hold_step: 4.0
+    success_bonus: 45.0
+    failure_penalty: 50.0
+    timeout_penalty: 18.0
+
+success_thresholds:
+  dmax: 1.25
+  dispersion: 0.30
+  speed: 0.25
+  hold_steps: 8
+  min_pairwise_distance: 0.42
+
+algorithm:
+  mode: pure_rl
+  training_semantics: exp034_shared_joint_randomized_terrain_directional_mask_control_safety
+  update_mode: shared_joint
+  shared_actor: true
+  centralized_critic: true
+  shared_value: true
+  initial_log_std: -1.0
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.20
+  value_clip: 0.20
+  ppo_epochs: 4
+  mini_batches: 16
+  learning_rate: 0.00012
+  max_grad_norm: 0.5
+  entropy_loss_scale: 0.002
+  entropy_loss_scale_end: 0.0005
+  entropy_schedule_timesteps: 4096
+  value_loss_coef: 0.5
+  bc_updates: 0
+  teacher_mode: null
+  teacher_stop_radius: null
+  teacher_max_rho: null

@@ -57,6 +57,12 @@ class SubgoalFilterCfg:
     visible_neighbor_center_weight: float = 0.0
     center_progress_weight: float = 0.0
     center_progress_margin: float = 0.0
+    hold_zone_dmax_multiplier: float = 0.0
+    hold_zone_dispersion_multiplier: float = 0.0
+    hold_zone_rho_weight: float = 0.0
+    hold_zone_spacing_weight: float = 0.0
+    hold_zone_pairwise_distance: float = 0.0
+    hold_zone_override_after_warmup: bool = False
     endpoint_safe_distance: float = 0.0
     path_safe_distance: float = 0.0
     hard_endpoint_near_filter: bool = False
@@ -99,6 +105,19 @@ class LowLevelControlCfg:
     max_angular_speed: float = 2.5
     k_linear: float = 1.6
     k_angular: float = 3.0
+    safety_projection_enabled: bool = False
+    projection_activation_distance: float = 0.0
+    projection_stop_distance: float = 0.0
+    projection_horizon_s: float = 0.40
+    projection_strength: float = 0.75
+    projection_min_linear_scale: float = 0.25
+    projection_damp_nonclosing_near: bool = True
+    projection_directional_agent_scale: bool = False
+    projection_directional_agent_scale_mode: str = "fraction"
+    success_zone_damping_enabled: bool = False
+    success_zone_dmax_multiplier: float = 1.0
+    success_zone_dispersion_multiplier: float = 1.0
+    success_zone_linear_scale: float = 0.75
 
 
 @dataclass(slots=True)
