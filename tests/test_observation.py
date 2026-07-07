@@ -79,3 +79,79 @@ def test_communication_radius_changes_neighbor_visibility_and_aggregation() -> N
     assert torch.all(small_neighbor.reshape(1, 4, 3, 7)[..., 6] == 0.0)
     assert torch.any(large_neighbor.reshape(1, 4, 3, 7)[..., 6] == 1.0)
     assert not torch.allclose(small_aggregation, large_aggregation)
+
+
+def test_zero_communication_radius_means_unlimited_visibility() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    env = MultiRoverGatheringCore(cfg)
+    env.positions.copy_(
+        torch.tensor(
+            [[[0.0, 0.0, 0.0], [50.0, 0.0, 0.0], [0.0, 50.0, 0.0], [-50.0, 0.0, 0.0]]],
+            device=env.device,
+        )
+    )
+    env.yaws.zero_()
+    env.velocities_xy.zero_()
+    env.angular_velocities.zero_()
+
+    cfg.observation.communication_radius = 1.0
+    finite_radius_actor, _ = env.get_observations()
+    cfg.observation.communication_radius = 0.0
+    unlimited_actor, _ = env.get_observations()
+    cfg.observation.communication_radius = 1.0e6
+    huge_radius_actor, _ = env.get_observations()
+
+    ego_end = cfg.observation.ego_dim
+    neighbor_end = ego_end + cfg.observation.max_neighbors * cfg.observation.neighbor_dim
+    finite_neighbor_mask = finite_radius_actor[..., ego_end:neighbor_end].reshape(1, 4, 3, 7)[..., 6]
+    unlimited_neighbor_mask = unlimited_actor[..., ego_end:neighbor_end].reshape(1, 4, 3, 7)[..., 6]
+
+    assert torch.all(finite_neighbor_mask == 0.0)
+    assert torch.all(unlimited_neighbor_mask == 1.0)
+    assert torch.allclose(unlimited_actor, huge_radius_actor)
+
+
+def test_initial_state_cfg_controls_reset_distribution() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.initial_state.spawn_radius_min = 6.0
+    cfg.initial_state.spawn_radius_max = 6.0
+    cfg.initial_state.center_xy_range = 0.0
+    cfg.initial_state.jitter_std = 0.0
+
+    env = MultiRoverGatheringCore(cfg)
+    env.reset()
+
+    radii = torch.linalg.norm(env.positions[0, :, :2], dim=-1)
+    assert torch.allclose(radii, torch.full_like(radii, 6.0), atol=1.0e-5)
+
+
+def test_initial_state_curriculum_interpolates_only_when_progress_is_set() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.initial_state.curriculum_enabled = True
+    cfg.initial_state.curriculum_start_spawn_radius_min = 3.0
+    cfg.initial_state.curriculum_start_spawn_radius_max = 3.0
+    cfg.initial_state.curriculum_start_center_xy_range = 0.0
+    cfg.initial_state.curriculum_start_jitter_std = 0.0
+    cfg.initial_state.spawn_radius_min = 6.0
+    cfg.initial_state.spawn_radius_max = 6.0
+    cfg.initial_state.center_xy_range = 0.0
+    cfg.initial_state.jitter_std = 0.0
+    cfg.initial_state.curriculum_warmup_timesteps = 0
+    cfg.initial_state.curriculum_ramp_timesteps = 100
+
+    env = MultiRoverGatheringCore(cfg)
+
+    cfg.initial_state.progress_timestep_override = 0
+    env.reset()
+    start_radii = torch.linalg.norm(env.positions[0, :, :2], dim=-1)
+    assert torch.allclose(start_radii, torch.full_like(start_radii, 3.0), atol=1.0e-5)
+
+    cfg.initial_state.progress_timestep_override = 100
+    env.reset()
+    target_radii = torch.linalg.norm(env.positions[0, :, :2], dim=-1)
+    assert torch.allclose(target_radii, torch.full_like(target_radii, 6.0), atol=1.0e-5)
+
+    cfg.initial_state.progress_timestep_override = -1
+    env.reset()
+    eval_radii = torch.linalg.norm(env.positions[0, :, :2], dim=-1)
+    assert torch.allclose(eval_radii, torch.full_like(eval_radii, 6.0), atol=1.0e-5)

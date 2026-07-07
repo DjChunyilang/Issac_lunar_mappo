@@ -60,3 +60,28 @@ outputs/runs/exp018_randomized_terrain_pure_rl/pure_rl_seed23_20m_randomized_ter
 ```
 
 GIF 只用于观察轨迹和地形交互，strict 结论仍以 `metrics/final_eval_proxy.json`、`metrics/strict_acceptance.json` 和 `metrics/checkpoint_status.json` 为准。
+
+## SKRL run 曲线
+
+可用统一脚本从 `metrics/train_metrics.jsonl` 和 `metrics/eval_metrics.json` 生成训练曲线、候选 checkpoint 曲线和跨 run 对比曲线：
+
+```bash
+.venv_isaaclab/bin/python scripts/plot_skrl_run_curves.py \
+  --run-dir outputs/runs/exp038_randomized_terrain_success_zone_stabilizer/pure_rl_seed23_20m_success_zone_stabilizer_timeout320 \
+  --label exp038 \
+  --run-dir outputs/runs/exp048_structured_bicycle_quintic_map25_terminal_drive/pure_rl_seed23_40m_structured_bicycle_quintic_map25_terminal_drive \
+  --label exp048 \
+  --run-dir outputs/runs/exp049_structured_bicycle_quintic_map25_terminal_spacing/pure_rl_seed23_40m_structured_bicycle_quintic_map25_terminal_spacing \
+  --label exp049 \
+  --comparison-output outputs/runs/_comparisons/exp038_exp048_exp049_20260707/figures/candidate_eval_comparison.png
+```
+
+输出示例：
+
+```text
+outputs/runs/<experiment>/<run>/figures/training_curves.png
+outputs/runs/<experiment>/<run>/figures/candidate_eval_curves.png
+outputs/runs/_comparisons/exp038_exp048_exp049_20260707/figures/candidate_eval_comparison.png
+```
+
+这些 PNG 仍属于 `outputs/` 生成产物，不提交；长期结论写入 `docs/experiments/*.md`。

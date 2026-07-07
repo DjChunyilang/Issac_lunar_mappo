@@ -9,15 +9,37 @@ import json
 import gymnasium as gym
 import torch
 
-from _common import cfg_from_experiment
+from _common import cfg_from_experiment, load_yaml
 from _skrl_metadata import validate_checkpoint_compatibility
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore
 from train import Actor
-from train_skrl_mappo import SKRLPolicy
+from train_skrl_mappo import (
+    SKRLPolicy,
+    normalize_actor_architecture,
+    normalize_critic_architecture,
+)
 
 
-def _load_policy_players(checkpoint: dict, cfg, device):
-    validate_checkpoint_compatibility(checkpoint, cfg)
+def _expected_architectures(raw_cfg: dict | None) -> tuple[str | None, str | None]:
+    if raw_cfg is None:
+        return None, None
+    algorithm = raw_cfg.get("algorithm", {})
+    if not isinstance(algorithm, dict):
+        algorithm = {}
+    return (
+        normalize_actor_architecture(algorithm.get("actor_architecture", "mlp_v1")),
+        normalize_critic_architecture(algorithm.get("critic_architecture", "mlp_v1")),
+    )
+
+
+def _load_policy_players(checkpoint: dict, cfg, device, raw_cfg: dict | None = None):
+    expected_actor_architecture, expected_critic_architecture = _expected_architectures(raw_cfg)
+    metadata = validate_checkpoint_compatibility(
+        checkpoint,
+        cfg,
+        expected_actor_architecture=expected_actor_architecture,
+        expected_critic_architecture=expected_critic_architecture,
+    )
     if "actor" in checkpoint:
         actor = Actor(cfg.actor_obs_dim).to(device)
         actor.load_state_dict(checkpoint["actor"])
@@ -42,9 +64,15 @@ def _load_policy_players(checkpoint: dict, cfg, device):
         dtype=float,
     )
     action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=float)
+    actor_architecture = str(metadata.get("actor_architecture", "mlp_v1"))
     policies = []
     for agent_id in agent_ids:
-        policy = SKRLPolicy(obs_space, action_space, device).to(device)
+        policy = SKRLPolicy(
+            obs_space,
+            action_space,
+            device,
+            architecture=actor_architecture,
+        ).to(device)
         policy.load_state_dict(checkpoint[agent_id]["policy"])
         policy.eval()
         policies.append(policy)
@@ -66,6 +94,7 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=100)
     args = parser.parse_args()
 
+    raw_cfg = load_yaml(args.config)
     cfg = cfg_from_experiment(args.config)
     map_location = torch.device(cfg.simulation.device)
     if map_location.type == "cuda" and not torch.cuda.is_available():
@@ -82,7 +111,7 @@ def main() -> None:
         cfg.planner.subgoal_filter.progress_timestep_override = int(metadata.get("timesteps", 0))
         cfg.planner.subgoal_filter.deterministic_eval = True
     env = MultiRoverGatheringCore(cfg)
-    act, backend = _load_policy_players(checkpoint, cfg, env.device)
+    act, backend = _load_policy_players(checkpoint, cfg, env.device, raw_cfg=raw_cfg)
     actor_obs, _ = env.get_observations()
     rewards = []
     for _ in range(args.steps):

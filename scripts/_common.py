@@ -121,6 +121,34 @@ def _apply_planner_values(cfg: MultiRoverGatheringEnvCfg, values: dict) -> None:
         raise ValueError("planner.subgoal_filter.warmup_timesteps must be non-negative.")
 
 
+def _apply_trajectory_generator_values(
+    cfg: MultiRoverGatheringEnvCfg,
+    values: dict,
+) -> None:
+    _apply_values(cfg.trajectory_generator, values, "trajectory_generator")
+    if cfg.trajectory_generator.geometry_method not in {"line", "quintic"}:
+        raise ValueError(
+            "trajectory_generator.geometry_method must be one of: line, quintic."
+        )
+    if cfg.trajectory_generator.n_trajectory_points < 2:
+        raise ValueError("trajectory_generator.n_trajectory_points must be at least 2.")
+    if cfg.trajectory_generator.quintic_tangent_scale < 0.0:
+        raise ValueError("trajectory_generator.quintic_tangent_scale must be non-negative.")
+    if cfg.trajectory_generator.end_heading_mode not in {"subgoal_direction"}:
+        raise ValueError(
+            "trajectory_generator.end_heading_mode currently supports only subgoal_direction."
+        )
+
+
+def _validate_low_level_control(cfg: MultiRoverGatheringEnvCfg) -> None:
+    if cfg.low_level_control.kinematic_model not in {"unicycle", "bicycle"}:
+        raise ValueError("low_level_control.kinematic_model must be one of: unicycle, bicycle.")
+    if cfg.low_level_control.wheelbase_m <= 0.0:
+        raise ValueError("low_level_control.wheelbase_m must be positive.")
+    if cfg.low_level_control.max_steer_angle_rad <= 0.0:
+        raise ValueError("low_level_control.max_steer_angle_rad must be positive.")
+
+
 def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     data = load_yaml(path)
     data = _require_mapping(str(path), data)
@@ -134,7 +162,12 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     experiment = _require_mapping("experiment", data.get("experiment", {}))
     simulation = _require_mapping("simulation", data.get("simulation", {}))
     task = _require_mapping("task", data.get("task", {}))
+    initial_state = _require_mapping("initial_state", data.get("initial_state", {}))
     planner = _require_mapping("planner", data.get("planner", {}))
+    trajectory_generator = _require_mapping(
+        "trajectory_generator",
+        data.get("trajectory_generator", {}),
+    )
     low_level_control = _require_mapping("low_level_control", data.get("low_level_control", {}))
     terrain = _require_mapping("terrain", data.get("terrain", {}))
     reward = _require_mapping("reward", data.get("reward", {}))
@@ -156,8 +189,45 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
         simulation.get("control_decimation", cfg.simulation.control_decimation)
     )
     cfg.task.n_agents = int(task.get("n_agents", cfg.task.n_agents))
+    _apply_values(cfg.initial_state, initial_state, "initial_state")
+    if cfg.initial_state.spawn_radius_min <= 0.0:
+        raise ValueError("initial_state.spawn_radius_min must be positive.")
+    if cfg.initial_state.spawn_radius_max < cfg.initial_state.spawn_radius_min:
+        raise ValueError(
+            "initial_state.spawn_radius_max must be >= initial_state.spawn_radius_min."
+        )
+    if cfg.initial_state.center_xy_range < 0.0:
+        raise ValueError("initial_state.center_xy_range must be non-negative.")
+    if cfg.initial_state.jitter_std < 0.0:
+        raise ValueError("initial_state.jitter_std must be non-negative.")
+    if cfg.initial_state.curriculum_start_spawn_radius_min <= 0.0:
+        raise ValueError(
+            "initial_state.curriculum_start_spawn_radius_min must be positive."
+        )
+    if (
+        cfg.initial_state.curriculum_start_spawn_radius_max
+        < cfg.initial_state.curriculum_start_spawn_radius_min
+    ):
+        raise ValueError(
+            "initial_state.curriculum_start_spawn_radius_max must be >= "
+            "initial_state.curriculum_start_spawn_radius_min."
+        )
+    if cfg.initial_state.curriculum_start_center_xy_range < 0.0:
+        raise ValueError(
+            "initial_state.curriculum_start_center_xy_range must be non-negative."
+        )
+    if cfg.initial_state.curriculum_start_jitter_std < 0.0:
+        raise ValueError("initial_state.curriculum_start_jitter_std must be non-negative.")
+    if cfg.initial_state.curriculum_warmup_timesteps < 0:
+        raise ValueError("initial_state.curriculum_warmup_timesteps must be non-negative.")
+    if cfg.initial_state.curriculum_ramp_timesteps <= 0:
+        raise ValueError("initial_state.curriculum_ramp_timesteps must be positive.")
+    if cfg.initial_state.progress_timestep_override < -1:
+        raise ValueError("initial_state.progress_timestep_override must be >= -1.")
     _apply_planner_values(cfg, planner)
+    _apply_trajectory_generator_values(cfg, trajectory_generator)
     _apply_values(cfg.low_level_control, low_level_control, "low_level_control")
+    _validate_low_level_control(cfg)
     cfg.terrain.type = str(terrain.get("type", cfg.terrain.type))
     cfg.terrain.amplitude = float(terrain.get("amplitude", cfg.terrain.amplitude))
     cfg.terrain.wavelength = float(terrain.get("wavelength", cfg.terrain.wavelength))

@@ -16,3 +16,52 @@ def test_trajectory_shape_and_timestamps() -> None:
     assert torch.allclose(trajectory.points[:, :, 0], positions)
     assert torch.allclose(trajectory.points[:, :, -1], subgoals)
 
+
+def test_line_and_quintic_generation_share_interface() -> None:
+    positions = torch.zeros(2, 4, 3)
+    subgoals = torch.ones(2, 4, 3)
+    current_yaws = torch.zeros(2, 4)
+
+    for method in ("line", "quintic"):
+        cfg = TrajectoryGeneratorCfg(n_trajectory_points=8, geometry_method=method)
+        trajectory = generate_trajectory(
+            positions,
+            subgoals,
+            cfg,
+            dt=0.2,
+            current_yaws=current_yaws,
+        )
+
+        assert trajectory.packed.shape == (2, 4, 8, 6)
+        assert torch.isfinite(trajectory.packed).all()
+        assert torch.all(trajectory.timestamps[..., 1:] >= trajectory.timestamps[..., :-1])
+        assert torch.allclose(trajectory.points[:, :, 0], positions, atol=1.0e-6)
+        assert torch.allclose(trajectory.points[:, :, -1], subgoals, atol=1.0e-6)
+
+
+def test_quintic_path_hits_endpoint_and_heading_constraints() -> None:
+    cfg = TrajectoryGeneratorCfg(
+        n_trajectory_points=9,
+        geometry_method="quintic",
+        quintic_tangent_scale=0.5,
+    )
+    positions = torch.tensor([[[0.0, 0.0, 0.0]]], dtype=torch.float32)
+    subgoals = torch.tensor([[[1.0, 1.0, 0.2]]], dtype=torch.float32)
+    current_yaws = torch.zeros(1, 1)
+
+    trajectory = generate_trajectory(
+        positions,
+        subgoals,
+        cfg,
+        dt=0.2,
+        current_yaws=current_yaws,
+    )
+
+    assert torch.allclose(trajectory.points[:, :, 0], positions, atol=1.0e-6)
+    assert torch.allclose(trajectory.points[:, :, -1], subgoals, atol=1.0e-6)
+    assert torch.allclose(trajectory.headings[:, :, 0], current_yaws, atol=1.0e-4)
+    expected_end_heading = torch.atan2(
+        subgoals[..., 1] - positions[..., 1],
+        subgoals[..., 0] - positions[..., 0],
+    )
+    assert torch.allclose(trajectory.headings[:, :, -1], expected_end_heading, atol=1.0e-4)

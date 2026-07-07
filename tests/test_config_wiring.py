@@ -103,8 +103,49 @@ def test_observation_dimension_keys_are_not_opened(tmp_path: Path) -> None:
         cfg_from_experiment(config_path)
 
 
+def test_initial_state_config_is_wired_and_validated(tmp_path: Path) -> None:
+    config_path = tmp_path / "experiment.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "experiment": {"name": "initial_state"},
+                "initial_state": {
+                    "spawn_radius_min": 4.5,
+                    "spawn_radius_max": 6.5,
+                    "center_xy_range": 3.0,
+                    "jitter_std": 0.45,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = cfg_from_experiment(config_path)
+
+    assert cfg.initial_state.spawn_radius_min == pytest.approx(4.5)
+    assert cfg.initial_state.spawn_radius_max == pytest.approx(6.5)
+    assert cfg.initial_state.center_xy_range == pytest.approx(3.0)
+    assert cfg.initial_state.jitter_std == pytest.approx(0.45)
+
+    bad_path = tmp_path / "bad_initial_state.yaml"
+    bad_path.write_text(
+        yaml.safe_dump(
+            {
+                "experiment": {"name": "bad_initial_state"},
+                "initial_state": {
+                    "spawn_radius_min": 7.0,
+                    "spawn_radius_max": 6.5,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"spawn_radius_max"):
+        cfg_from_experiment(bad_path)
+
+
 @pytest.mark.parametrize("config_path", sorted((ROOT / "configs/experiment").glob("*.yaml")))
 def test_all_experiment_configs_parse(config_path: Path) -> None:
     cfg = cfg_from_experiment(config_path)
     assert cfg.task.n_agents == 4
-    assert cfg.observation.communication_radius > 0.0
+    assert cfg.observation.communication_radius >= 0.0

@@ -9,6 +9,7 @@ from typing import Any
 import torch
 
 from lunar_rover_tasks.tasks.multi_rover_gathering.action_interpreter import DecodedAction
+from lunar_rover_tasks.tasks.multi_rover_gathering.communication import compute_visibility_mask
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import (
     MultiRoverGatheringEnvCfg,
 )
@@ -144,11 +145,7 @@ def _endpoint_safety_violations(
     candidate_world_subgoals: torch.Tensor,
     cfg: MultiRoverGatheringEnvCfg,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    current_delta = positions[:, :, None, :2] - positions[:, None, :, :2]
-    current_distance = torch.linalg.norm(current_delta, dim=-1)
-    n_agents = positions.shape[1]
-    eye = torch.eye(n_agents, dtype=torch.bool, device=positions.device).unsqueeze(0)
-    visible = (current_distance <= float(cfg.observation.communication_radius)) & ~eye
+    visible = compute_visibility_mask(positions, float(cfg.observation.communication_radius))
     candidate_delta = (
         candidate_world_subgoals[..., None, :2] - positions[:, None, None, :, :2]
     )
@@ -179,10 +176,7 @@ def _path_safety_violations(
             device=candidate_world_subgoals.device,
         )
         return zeros, zeros
-    current_delta = positions[:, :, None, :2] - positions[:, None, :, :2]
-    current_distance = torch.linalg.norm(current_delta, dim=-1)
-    eye = torch.eye(n_agents, dtype=torch.bool, device=positions.device).unsqueeze(0)
-    visible = (current_distance <= float(cfg.observation.communication_radius)) & ~eye
+    visible = compute_visibility_mask(positions, float(cfg.observation.communication_radius))
 
     samples = max(2, int(num_samples))
     t = torch.linspace(
@@ -226,10 +220,7 @@ def _mutual_path_safety_violations(
             device=candidate_world_subgoals.device,
         )
         return zeros, zeros
-    current_delta = positions[:, :, None, :2] - positions[:, None, :, :2]
-    current_distance = torch.linalg.norm(current_delta, dim=-1)
-    eye = torch.eye(n_agents, dtype=torch.bool, device=positions.device).unsqueeze(0)
-    visible = (current_distance <= float(cfg.observation.communication_radius)) & ~eye
+    visible = compute_visibility_mask(positions, float(cfg.observation.communication_radius))
 
     samples = max(2, int(num_samples))
     t = torch.linspace(
@@ -280,10 +271,7 @@ def _visible_neighbor_center_cost(
             dtype=candidate_world_subgoals.dtype,
             device=candidate_world_subgoals.device,
         )
-    current_delta = positions[:, :, None, :2] - positions[:, None, :, :2]
-    current_distance = torch.linalg.norm(current_delta, dim=-1)
-    eye = torch.eye(n_agents, dtype=torch.bool, device=positions.device).unsqueeze(0)
-    visible = (current_distance <= float(cfg.observation.communication_radius)) & ~eye
+    visible = compute_visibility_mask(positions, float(cfg.observation.communication_radius))
     weights = visible.to(dtype=positions.dtype)
     count = weights.sum(dim=-1, keepdim=True)
     center = torch.matmul(weights, positions[..., :2]) / count.clamp_min(1.0)
@@ -341,7 +329,7 @@ def _hold_zone_costs(
     if n_agents <= 1:
         return activation_f.expand_as(rho_cost), rho_cost, torch.zeros_like(rho_cost)
 
-    visible = (current_distance <= float(cfg.observation.communication_radius)) & ~eye
+    visible = compute_visibility_mask(positions, float(cfg.observation.communication_radius))
     candidate_delta = (
         candidate_world_subgoals[..., None, :2] - positions[:, None, None, :, :2]
     )

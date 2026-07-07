@@ -35,6 +35,22 @@ class TaskCfg:
 
 
 @dataclass(slots=True)
+class InitialStateCfg:
+    spawn_radius_min: float = 3.0
+    spawn_radius_max: float = 4.0
+    center_xy_range: float = 1.0
+    jitter_std: float = 0.35
+    curriculum_enabled: bool = False
+    curriculum_start_spawn_radius_min: float = 3.0
+    curriculum_start_spawn_radius_max: float = 4.0
+    curriculum_start_center_xy_range: float = 1.0
+    curriculum_start_jitter_std: float = 0.35
+    curriculum_warmup_timesteps: int = 0
+    curriculum_ramp_timesteps: int = 1
+    progress_timestep_override: int = -1
+
+
+@dataclass(slots=True)
 class SubgoalFilterCfg:
     enabled: bool = False
     mode: str = "terrain_safe_candidate"
@@ -96,11 +112,16 @@ class TrajectoryGeneratorCfg:
     n_trajectory_points: int = 8
     geometry_method: str = "line"
     reference_speed: float = 0.8
+    quintic_tangent_scale: float = 0.5
+    end_heading_mode: str = "subgoal_direction"
 
 
 @dataclass(slots=True)
 class LowLevelControlCfg:
     first_stage_mode: str = "simplified_velocity_tracking"
+    kinematic_model: str = "unicycle"
+    wheelbase_m: float = 0.65
+    max_steer_angle_rad: float = 0.610865
     max_linear_speed: float = 1.0
     max_angular_speed: float = 2.5
     k_linear: float = 1.6
@@ -238,6 +259,7 @@ class StateCfg:
 class MultiRoverGatheringEnvCfg:
     simulation: SimulationCfg = field(default_factory=SimulationCfg)
     task: TaskCfg = field(default_factory=TaskCfg)
+    initial_state: InitialStateCfg = field(default_factory=InitialStateCfg)
     planner: PlannerCfg = field(default_factory=PlannerCfg)
     trajectory_generator: TrajectoryGeneratorCfg = field(default_factory=TrajectoryGeneratorCfg)
     low_level_control: LowLevelControlCfg = field(default_factory=LowLevelControlCfg)

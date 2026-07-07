@@ -114,3 +114,115 @@ def test_terrain_dynamics_updates_z_and_reduces_speed_on_slope() -> None:
     assert torch.all(actual_dx < expected_unscaled_dx)
     assert torch.allclose(env.positions[..., 2], expected_z, atol=1.0e-6)
     assert torch.isfinite(env.last_height_delta).all()
+
+
+def test_bicycle_model_zero_steer_degenerates_to_straight_motion() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.low_level_control.kinematic_model = "bicycle"
+    env = MultiRoverGatheringCore(cfg)
+    _set_square_state(env)
+    old_positions = env.positions.clone()
+    old_yaws = env.yaws.clone()
+    control = ControlCommand(
+        linear=torch.full((1, cfg.task.n_agents), 0.5, device=env.device),
+        angular=torch.zeros(1, cfg.task.n_agents, device=env.device),
+    )
+
+    env._integrate(control)
+
+    expected_dx = control.linear * cfg.simulation.planning_dt
+    actual_delta = env.positions[..., :2] - old_positions[..., :2]
+    assert torch.allclose(env.yaws, old_yaws, atol=1.0e-6)
+    assert torch.allclose(env.last_steering_angle, torch.zeros_like(control.linear), atol=1.0e-6)
+    assert torch.allclose(env.angular_velocities, torch.zeros_like(control.linear), atol=1.0e-6)
+    assert torch.allclose(actual_delta[..., 0], expected_dx, atol=1.0e-6)
+    assert torch.allclose(actual_delta[..., 1], torch.zeros_like(expected_dx), atol=1.0e-6)
+
+
+def test_bicycle_model_clamps_yaw_rate_by_wheelbase_and_max_steer() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.low_level_control.kinematic_model = "bicycle"
+    cfg.low_level_control.wheelbase_m = 0.65
+    cfg.low_level_control.max_steer_angle_rad = 0.25
+    env = MultiRoverGatheringCore(cfg)
+    _set_square_state(env)
+    control = ControlCommand(
+        linear=torch.full((1, cfg.task.n_agents), 0.4, device=env.device),
+        angular=torch.full((1, cfg.task.n_agents), 20.0, device=env.device),
+    )
+
+    env._integrate(control)
+
+    max_yaw_rate = (
+        control.linear
+        / cfg.low_level_control.wheelbase_m
+        * torch.tan(torch.tensor(cfg.low_level_control.max_steer_angle_rad))
+    )
+    assert torch.allclose(
+        env.last_steering_angle,
+        torch.full_like(control.angular, cfg.low_level_control.max_steer_angle_rad),
+        atol=1.0e-6,
+    )
+    assert torch.all(env.angular_velocities <= max_yaw_rate + 1.0e-6)
+    assert torch.allclose(env.angular_velocities, env.last_actual_yaw_rate)
+    assert torch.isfinite(env.positions).all()
+
+
+def test_bicycle_terrain_speed_scale_reduces_actual_yaw_rate() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.low_level_control.kinematic_model = "bicycle"
+    cfg.low_level_control.wheelbase_m = 0.65
+    cfg.low_level_control.max_steer_angle_rad = 0.5
+    cfg.terrain.type = "lunar_heightfield_proxy"
+    cfg.terrain.dynamics_enabled = True
+    cfg.terrain.amplitude = 0.30
+    cfg.terrain.wavelength = 3.0
+    cfg.terrain.slope_speed_scale = 2.0
+    cfg.terrain.min_speed_scale = 0.05
+    env = MultiRoverGatheringCore(cfg)
+    xy = torch.tensor(
+        [[[0.25, 0.40], [1.50, -0.75], [-1.00, 2.00], [2.20, 1.10]]],
+        dtype=torch.float32,
+        device=env.device,
+    )
+    env.positions[..., :2] = xy
+    env.positions[..., 2] = query_height(xy, cfg.terrain).squeeze(-1)
+    env.last_terrain_features = query_terrain_features(xy, cfg.terrain)
+    env.yaws.zero_()
+    control = ControlCommand(
+        linear=torch.full((1, cfg.task.n_agents), 0.8, device=env.device),
+        angular=torch.full((1, cfg.task.n_agents), 1.5, device=env.device),
+    )
+
+    env._integrate(control)
+
+    linear_eff = control.linear * env.last_terrain_speed_scale
+    expected_yaw_rate = (
+        linear_eff
+        / cfg.low_level_control.wheelbase_m
+        * torch.tan(env.last_steering_angle)
+    )
+    flat_yaw_rate = (
+        control.linear
+        / cfg.low_level_control.wheelbase_m
+        * torch.tan(env.last_steering_angle)
+    )
+    assert torch.all(env.last_terrain_speed_scale < 1.0)
+    assert torch.allclose(env.angular_velocities, expected_yaw_rate, atol=1.0e-6)
+    assert torch.all(env.angular_velocities.abs() < flat_yaw_rate.abs())
+    assert torch.isfinite(env.positions).all()
+
+
+def test_step_info_reports_bicycle_kinematics() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.low_level_control.kinematic_model = "bicycle"
+    env = MultiRoverGatheringCore(cfg)
+    output = env.step(torch.zeros(1, cfg.task.n_agents, cfg.planner.action_dim, device=env.device))
+    kinematics = output.info["kinematics"]
+
+    assert kinematics["kinematic_model"] == "bicycle"
+    assert kinematics["steering_angle"].shape == (1, cfg.task.n_agents)
+    assert kinematics["actual_yaw_rate"].shape == (1, cfg.task.n_agents)
+    assert kinematics["turning_radius"].shape == (1, cfg.task.n_agents)
+    assert torch.isfinite(kinematics["steering_angle"]).all()
+    assert torch.isfinite(kinematics["actual_yaw_rate"]).all()

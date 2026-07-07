@@ -7,16 +7,18 @@
 - Isaac Sim / Isaac Lab / PhysX 不作为当前主训练 loop，而作为 high-fidelity validation、迁移 sanity check、失效分析和可视化展示平台。
 - 当前 PhysX 层使用 Clearpath Jackal 作为活跃轮式资产，已替换旧占位资产。Jackal tracking 可验证轮式控制、强三维地形 mesh、姿态稳定性和输出链路，但不能证明真实月球车越障、轮壤接触或低重力动力学已经完成。
 - 视觉观测不进入 policy input；地形以车体系 `5×5×2` 局部结构化网格进入策略。
+- 当前从“暂停长训完善环境”切回新环境栈长训迭代：结构化 Actor/Critic、bicycle proxy 动力学、quintic 轨迹、`25 m × 25 m` 地图和 `communication_radius=0.0` 无限通信语义已通过 `exp042` smoke。`exp043` 直接 40M env-step 长跑已完成但没有收敛；`exp044` 改为 initial-state curriculum 后能明显缩短 dmax，但 success 仍为 0；`exp045` local-success bootstrap 首次恢复局部 success 信号但未 strict；`exp046`/`exp047` 逐步恢复 terminal convergence；`exp048` 已通过 dmax/success/collision，仅 timeout `0.0137` 未过。`exp049` 已完成但 success/timeout 退化，说明全局增强 terminal spacing 过强。
 - 生成结果写入 `outputs/runs/`，并由 git 忽略。
 
 ## 当前接口状态
 
 - actor observation schema 为 `ego_v3_local_terrain_grid`，输入维度为 86，包含 ego、neighbor、50 维局部地形网格和 aggregation 特征，不包含 oracle 集合点。
-- 地形网格通道为相对高度和风险，覆盖前后 `[-0.4, 1.2] m`、横向 `[-0.8, 0.8] m`；critic 仍为 54 维，并使用 5 维网格摘要。
-- checkpoint 加载要求 schema、actor 输入维度和 critic 状态维度完全匹配；旧 `ego_v2_speed_angular` checkpoint 不自动迁移。
+- 地形网格通道为相对高度和风险，覆盖前后 `[-0.4, 1.2] m`、横向 `[-0.8, 0.8] m`；critic 仍为 54 维，并使用 5 维网格摘要。地图面积可通过 `world_xy_limit/crater_field_size` 扩大，但本轮不扩大 Actor 局部地形观测窗口。
+- checkpoint 加载要求 schema、actor 输入维度和 critic 状态维度完全匹配；新 checkpoint metadata 还记录 Actor/Critic 架构、运动学模型和轨迹生成方法。旧 `ego_v2_speed_angular` checkpoint 不自动迁移；当前 schema 但缺少架构 metadata 的旧 checkpoint 只按 `mlp_v1` 兼容路径加载。
 - centralized critic state 和 reward shaping 可以使用 oracle 信息；执行期 actor 不接收 `p*`、oracle 距离或 oracle 距离下降量。
-- 动作接口固定为低维 `[rho, beta]`，再经局部子目标、直线轨迹和简化速度控制器转换为运动命令。
-- 当前 proxy 动力学是 2D/2.5D kinematic unicycle 风格状态更新；没有质量、惯量、轮地接触、打滑、悬挂或 PhysX contact。
+- 动作接口固定为低维 `[rho, beta]`，再经局部子目标、可配置 `line/quintic` 轨迹和简化速度控制器转换为运动命令。
+- 当前 proxy 动力学可配置为 `unicycle` 或 `bicycle`；旧配置默认 `unicycle`，`exp042` 显式使用 `bicycle`。二者都没有质量、惯量、轮地接触、打滑、悬挂或 PhysX contact。
+- `scripts/train_skrl_mappo.py` 支持 `actor_architecture=mlp_v1|branched_v1` 和 `critic_architecture=mlp_v1|structured_v1`；新结构保持 Actor/Critic 接口维度 `86/54` 不变。
 - `scripts/train_skrl_mappo.py` 使用 SKRL MAPPO 训练 proxy wrapper；`isaaclab-multi-agent` wrapper 只是接口层，不代表训练 loop 运行在 Isaac Sim / PhysX。
 - exp016 已启用项目侧 `shared_joint` 更新：共享 Actor/Critic 只使用一个 optimizer，每个 rollout 合并四个 rover 的 Actor 样本并只更新一次 Critic。
 - 当前 exp016 诊断配置把通信半径临时扩大到 `12 m`；这是训练诊断设置，不是最终通信约束。
@@ -39,7 +41,15 @@
 - exp037 已完成 260-step episode/eval 诊断：timeout 从 exp036 的 `0.0586` 降到 `0.0410`，但 collision 反弹到 `0.0352`，说明单纯延长 episode 会暴露末段碰撞。
 - exp038 已完成 success-zone stabilizer + 320-step episode/eval：修正 best 后 final eval success `0.9756`、collision `0.0137`、timeout `0.0107`；当前随机地形最佳候选，strict 只剩 timeout gate 失败。
 - exp039/exp040 是基于 exp038 best 的诊断复评，不建议长训：hard near stabilizer 和 stronger soft hold stabilizer 都使 timeout 或 collision 差于 exp038。
-- exp041 已完成 hold-zone override 诊断与 CPU/CUDA smoke：在 exp038 best 上复评得到 success `0.9795`、collision `0.0107`、timeout `0.0098`，略优于 exp038，是下一轮长训练候选，但尚不是从头训练结果。
+- exp041 已完成 hold-zone override 诊断与 CPU/CUDA smoke：在 exp038 best 上复评得到 success `0.9795`、collision `0.0107`、timeout `0.0098`，略优于 exp038，但当前已暂停长训，暂不启动 exp041。
+- exp042 已完成环境工程探针：`branched_v1` Actor、`structured_v1` Critic、`bicycle` proxy、`quintic` 轨迹生成、`25 m × 25 m` 地图和 `communication_radius=0.0` 无限可见邻居语义在 CPU `8 env / 8 timesteps` 与 CUDA `256 env / 64 timesteps` smoke 中通过；CUDA smoke 显示一个 optimizer、两次 joint update、terrain branch 权重更新 `0.1263`、动作非退化。
+- exp043 已完成直接长训：基于 exp042 新环境栈，迁移 exp041 的 hold-zone override，加入可配置 initial-state 分布并扩大初始队形采样，terrain crater density 提高到 `crater_count=48`，seed23 连续 `20480` timesteps / `41,943,040` env steps。训练链路正常、参数和 terrain branch 均更新，但 final eval 为 dmax ratio `0.8596`、success `0.0`、collision `0.0`、timeout `1.0`，strict 未通过。
+- exp044 已完成：保留 `branched_v1/structured_v1`、`bicycle`、`quintic`、`25 m × 25 m` 地图和无限通信语义，并加入 `3.0–4.0 m -> 3.8–5.2 m` initial-state curriculum。final eval dmax ratio `0.4796`、success `0.0`、collision `0.00195`、timeout `0.9980`，strict 未通过；相比 exp043 明显靠拢但仍未进入 success basin。
+- exp045 已完成：保持新环境栈和 25m 地图，但把目标 reset 分布缩小到 `2.4–3.4 m`，课程起点为 `1.6–2.4 m`，同时放大 `rho/beta` 可达范围、增强 gather progress、临时降低 terrain/filter 干扰。final eval dmax ratio `0.2734`、success `0.1846`、collision `0.0`、timeout `0.8174`，说明 local-success bootstrap 有效但仍未收敛。
+- exp046 已完成：沿用 exp045 的 local reset 分布，但降低 filter/control-safety 的末端介入强度，增强 dmax/dispersion progress、success bonus 和 timeout penalty。final eval dmax ratio `0.2424`、success `0.6123`、collision `0.0`、timeout `0.3877`，strict 未通过，但证明新环境栈已进入 local success basin。
+- exp047 已完成：保持 exp046 reset 分布，进一步释放 terminal safety/filter/control damping，同时增强 dmax/dispersion/timeout/success shaping。final eval dmax ratio `0.2132`、success `0.7188`、collision `0.0059`、timeout `0.2764`，strict 未通过，但成为新环境栈 local reset 当前最好结果。
+- exp048 已完成：在 exp047 附近小步提高 terminal drive、dispersion 收缩和 timeout shaping。final eval dmax ratio `0.1866`、success `0.9844`、collision `0.0020`，均通过 strict；唯一失败是 timeout `0.0137`。
+- exp049 已完成：针对 exp048 剩余最近邻安全间距灰区增强 terminal spacing。final eval dmax ratio `0.1884`、success `0.8926`、collision `0.0010`、timeout `0.1064`，strict 未通过且明显差于 exp048；说明 spacing/filter/control safety 介入过强，修复了部分间距但牺牲了成功保持。
 
 ## Checkpoint 评估工作流
 
@@ -107,7 +117,15 @@ final_selected
 | exp038 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + success-zone stabilizer + 320-step episode/eval | 未通过 | 修正 best 后 final eval：success 0.9756、collision 0.0137、timeout 0.0107；当前随机地形最佳，strict 只剩 timeout 失败。 |
 | exp039 | 随机增强 lunar crater proxy | exp038 checkpoint + hard near stabilizer 诊断 | 未长训 | 复评 success 0.9424、collision 0.0254、timeout 0.0322，差于 exp038；不建议按原样长训。 |
 | exp040 | 随机增强 lunar crater proxy | exp038 checkpoint + stronger soft hold stabilizer 诊断 | 未长训 | 复评 success 0.9658、collision 0.0186、timeout 0.0166，timeout 差于 exp038；不建议按原样长训。 |
-| exp041 | 随机增强 lunar crater proxy | exp038 checkpoint + hold-zone override 诊断 | 待长训 | 复评 success 0.9795、collision 0.0107、timeout 0.0098，略优于 exp038；下一轮长训候选。 |
+| exp041 | 随机增强 lunar crater proxy | exp038 checkpoint + hold-zone override 诊断 | 暂停长训 | 复评 success 0.9795、collision 0.0107、timeout 0.0098，略优于 exp038；当前不启动长训。 |
+| exp042 | 随机增强 lunar crater proxy | 结构化 Actor/Critic + bicycle proxy + quintic trajectory + 25m 地图 + 无限通信工程探针 | 工程 smoke 通过 | CPU `8/8` 与 CUDA `256/64` smoke 通过；只验证环境链路，不代表策略收敛。 |
+| exp043 | 随机增强 lunar crater proxy | exp042 新环境栈 + exp041 hold override + 扩大 initial-state 分布 | 未通过 | seed23 40M 完成；工程链路正常但策略几乎不集合，final eval success `0.0`、timeout `1.0`。 |
+| exp044 | 随机增强 lunar crater proxy | exp043 新环境栈 + initial-state curriculum | 未通过 | seed23 40M 完成；dmax 从 exp043 明显改善到 `0.4796`，但 success `0.0`、timeout `0.9980`。 |
+| exp045 | 随机增强 lunar crater proxy | exp044 新环境栈 + local-success bootstrap | 未通过 | seed23 40M 完成；success `0.1846`、collision `0.0`，证明 local bootstrap 有效但 timeout/dmax/dispersion 仍失败。 |
+| exp046 | 随机增强 lunar crater proxy | exp045 local reset + terminal hold release | 未通过 | final eval success `0.6123`、collision `0.0`，但 dmax ratio `0.2424`、timeout `0.3877` 仍失败；local terminal release 有效但不足。 |
+| exp047 | 随机增强 lunar crater proxy | exp046 local reset + terminal convergence release | 未通过 | final eval success `0.7188`、collision `0.0059`、dmax ratio `0.2132`，但 timeout `0.2764` 仍失败；当前新环境栈 local reset 最好结果。 |
+| exp048 | 随机增强 lunar crater proxy | exp047 local reset + terminal drive / dispersion tightening | 未通过 | dmax ratio `0.1866`、success `0.9844`、collision `0.0020` 均通过；唯一失败为 timeout `0.0137`，当前新环境栈 local reset 最佳。 |
+| exp049 | 随机增强 lunar crater proxy | exp048 local reset + terminal spacing timeout closure | 未通过 | final eval dmax ratio `0.1884`、success `0.8926`、collision `0.0010`、timeout `0.1064`；过强 spacing 修正降低成功并抬高 timeout，不优于 exp048。 |
 
 历史完整 suite checkpoint：
 
@@ -141,7 +159,12 @@ outputs/runs/exp_008_terrain3d/_suite/checkpoints/
 - exp037 可以表述为“延长 episode 降 timeout 但导致 collision 反弹”，不能写成单纯时间预算不足。
 - exp038 可以表述为“当前随机地形最佳候选，strict 只剩 timeout 尾部未过”，不能写成 strict pass。
 - exp039/exp040 只是 exp038 checkpoint 复评诊断，不能写成长训练结果。
-- exp041 可以表述为“hold-zone override 在 exp038 checkpoint 上略有改善，是下一轮候选”，不能写成 exp041 长训练完成。
+- exp041 可以表述为“hold-zone override 在 exp038 checkpoint 上略有改善”，不能写成 exp041 长训练完成。
+- exp042 可以表述为“训练环境三项核心改造和 25m/无限通信设置的工程探针通过”，不能写成策略训练收敛或 strict pass。
+- exp043 可以表述为“新环境栈直接长训未收敛，主要表现为集合进度不足而非碰撞或数值异常”，不能写成 strict pass。
+- exp044 可以表述为“initial-state curriculum 改善了靠拢但仍未产生 success”，不能写成 strict pass。
+- exp045 可以表述为“local-success bootstrap 把 success 从 0 提升到 0.1846，但仍未收敛”，不能写成 strict pass。
+- exp046 在完成前只能写成“local hold release 候选”，即便通过也不能直接表述为 exp044 完整难度收敛。
 - GIF、截图和 TensorBoard 曲线只能用于展示和诊断；严格结论以 `_suite/metrics/strict_acceptance.json`、`metrics/final_eval_proxy.json` 和 `metrics/checkpoint_status.json` 为准。
 
 ## Jackal 跟踪验证
@@ -189,6 +212,7 @@ outputs/runs/physx_jackal_tracking/strong_lunar_crater_final_v2/
 1. 当前随机地形最佳综合候选是 exp038：success/collision 已过 strict，仅 timeout `0.0107` 未过。
 2. exp038 的剩余 timeout 不是整体不可达，而是少量 episode 卡在 `collision_distance=0.28 m` 与 `success_thresholds.min_pairwise_distance=0.42 m` 之间的最近邻灰区，hold count 接近完成但未稳定达标。
 3. 不建议继续全局加硬 near/hold filter；exp039/exp040 已说明会扰动 success 或 timeout。
-4. 下一轮优先从 exp041 出发，从随机初始化长训 hold-zone override；若仍只剩极少 timeout，再考虑更细的末端 pairwise spacing controller。
-5. 保留 exp017 作为固定地图 pure RL baseline，保留 exp018–exp041 作为随机地形 failure analysis，不把它们扩写为多 seed 或 PhysX 收敛。
-6. 为 PhysX / Jackal 后续接入同布局 raycast / height scanner，保持 proxy 与高保真观测接口一致。
+4. exp049 说明不能继续全局增强 terminal spacing/filter/control safety；这会把部分本可成功的 episode 推出 hold 区，timeout 从 exp048 的 `0.0137` 升到 `0.1064`。
+5. 下一轮应回退到 exp048 主体，只加入窄触发 terminal spacing：仅在 dmax/dispersion 已接近成功、且最近邻落入 `0.28–0.42 m` 灰区时轻推开，避免全局改变子目标。
+6. 保留 exp017 作为固定地图 pure RL baseline，保留 exp018–exp041 作为随机地形 failure analysis，不把它们扩写为多 seed 或 PhysX 收敛。
+7. 为 PhysX / Jackal 后续接入同布局 raycast / height scanner，保持 proxy 与高保真观测接口一致。

@@ -102,6 +102,13 @@ class MultiRoverGatheringCore:
         self.last_terrain_features = torch.zeros(self.num_envs, self.n_agents, 5, device=self.device)
         self.last_terrain_speed_scale = torch.ones(self.num_envs, self.n_agents, device=self.device)
         self.last_height_delta = torch.zeros(self.num_envs, self.n_agents, device=self.device)
+        self.last_steering_angle = torch.zeros(self.num_envs, self.n_agents, device=self.device)
+        self.last_actual_yaw_rate = torch.zeros(self.num_envs, self.n_agents, device=self.device)
+        self.last_turning_radius = torch.full(
+            (self.num_envs, self.n_agents),
+            float("inf"),
+            device=self.device,
+        )
         self.reset()
 
     @property
@@ -112,6 +119,34 @@ class MultiRoverGatheringCore:
     def max_episode_steps(self) -> int:
         return self.cfg.simulation.max_episode_steps
 
+    def _effective_initial_state_values(self) -> tuple[float, float, float, float]:
+        initial_state = self.cfg.initial_state
+        if (
+            not bool(initial_state.curriculum_enabled)
+            or int(initial_state.progress_timestep_override) < 0
+        ):
+            return (
+                float(initial_state.spawn_radius_min),
+                float(initial_state.spawn_radius_max),
+                float(initial_state.center_xy_range),
+                float(initial_state.jitter_std),
+            )
+
+        step = max(0, int(initial_state.progress_timestep_override))
+        warmup = max(0, int(initial_state.curriculum_warmup_timesteps))
+        ramp = max(1, int(initial_state.curriculum_ramp_timesteps))
+        alpha = 0.0 if step < warmup else min(1.0, (step - warmup) / float(ramp))
+
+        def lerp(start: float, end: float) -> float:
+            return float(start) + alpha * (float(end) - float(start))
+
+        return (
+            lerp(initial_state.curriculum_start_spawn_radius_min, initial_state.spawn_radius_min),
+            lerp(initial_state.curriculum_start_spawn_radius_max, initial_state.spawn_radius_max),
+            lerp(initial_state.curriculum_start_center_xy_range, initial_state.center_xy_range),
+            lerp(initial_state.curriculum_start_jitter_std, initial_state.jitter_std),
+        )
+
     def reset(self, env_ids: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
@@ -120,11 +155,30 @@ class MultiRoverGatheringCore:
         self.randomize_terrain(env_ids)
         base_angles = torch.linspace(0.0, 2.0 * torch.pi, self.n_agents + 1, device=self.device)[:-1]
         base = torch.stack((torch.cos(base_angles), torch.sin(base_angles)), dim=-1)
-        radius = 3.0 + 1.0 * torch.rand(count, 1, 1, generator=self.generator, device=self.device)
-        jitter = 0.35 * torch.randn(count, self.n_agents, 2, generator=self.generator, device=self.device)
+        spawn_radius_min, spawn_radius_max, center_xy_range, jitter_std = (
+            self._effective_initial_state_values()
+        )
+        radius_span = max(
+            spawn_radius_max - spawn_radius_min,
+            0.0,
+        )
+        radius = spawn_radius_min + radius_span * torch.rand(
+            count,
+            1,
+            1,
+            generator=self.generator,
+            device=self.device,
+        )
+        jitter = jitter_std * torch.randn(
+            count,
+            self.n_agents,
+            2,
+            generator=self.generator,
+            device=self.device,
+        )
         centers = torch.empty(count, 1, 2, device=self.device).uniform_(
-            -1.0,
-            1.0,
+            -center_xy_range,
+            center_xy_range,
             generator=self.generator,
         )
         xy = centers + radius * base[None, :, :] + jitter
@@ -142,6 +196,9 @@ class MultiRoverGatheringCore:
             self.last_terrain_features[env_ids] = 0.0
         self.last_terrain_speed_scale[env_ids] = 1.0
         self.last_height_delta[env_ids] = 0.0
+        self.last_steering_angle[env_ids] = 0.0
+        self.last_actual_yaw_rate[env_ids] = 0.0
+        self.last_turning_radius[env_ids] = float("inf")
         self.yaws[env_ids] = torch.atan2(-xy[..., 1], -xy[..., 0])
         self.velocities_xy[env_ids] = 0.0
         self.angular_velocities[env_ids] = 0.0
@@ -331,6 +388,12 @@ class MultiRoverGatheringCore:
             key: value.clone() if isinstance(value, torch.Tensor) else value
             for key, value in control_safety.info.items()
         }
+        kinematics_snapshot = {
+            "kinematic_model": self.cfg.low_level_control.kinematic_model,
+            "steering_angle": self.last_steering_angle.clone(),
+            "actual_yaw_rate": self.last_actual_yaw_rate.clone(),
+            "turning_radius": self.last_turning_radius.clone(),
+        }
         terrain_runtime = self.terrain_runtime.clone()
         success_hold_count = self.success_hold_count.clone()
 
@@ -357,6 +420,7 @@ class MultiRoverGatheringCore:
                 "control": control,
                 "raw_control": raw_control,
                 "control_safety": control_safety_snapshot,
+                "kinematics": kinematics_snapshot,
                 "terrain_features": terrain_features,
                 "terrain_speed_scale": terrain_speed_scale,
                 "height_delta": height_delta,
@@ -391,8 +455,19 @@ class MultiRoverGatheringCore:
     def _integrate(self, control: ControlCommand) -> None:
         dt = self.cfg.simulation.planning_dt
         old_positions = self.positions.clone()
-        self.yaws = wrap_to_pi(self.yaws + control.angular * dt)
-        direction = torch.stack((torch.cos(self.yaws), torch.sin(self.yaws)), dim=-1)
+        model = str(self.cfg.low_level_control.kinematic_model)
+        if model == "unicycle":
+            yaw_rate = control.angular
+            self.yaws = wrap_to_pi(self.yaws + yaw_rate * dt)
+            direction = torch.stack((torch.cos(self.yaws), torch.sin(self.yaws)), dim=-1)
+            steering_angle = torch.zeros_like(control.angular)
+        elif model == "bicycle":
+            heading_for_slope = torch.stack((torch.cos(self.yaws), torch.sin(self.yaws)), dim=-1)
+            direction = heading_for_slope
+            yaw_rate = torch.zeros_like(control.angular)
+            steering_angle = torch.zeros_like(control.angular)
+        else:
+            raise ValueError(f"Unsupported kinematic_model: {model}")
         speed_scale = torch.ones_like(control.linear)
         if self._terrain_dynamics_enabled:
             current_features = self.last_terrain_features
@@ -406,26 +481,49 @@ class MultiRoverGatheringCore:
                 min=float(self.cfg.terrain.min_speed_scale),
                 max=1.0,
             )
-            delta_xy = direction * control.linear.unsqueeze(-1) * speed_scale.unsqueeze(-1) * dt
-            next_xy = old_positions[..., :2] + delta_xy
+        linear_eff = control.linear * speed_scale
+        if model == "bicycle":
+            wheelbase = float(self.cfg.low_level_control.wheelbase_m)
+            max_steer = float(self.cfg.low_level_control.max_steer_angle_rad)
+            eps = 1.0e-6
+            steer_demand = torch.atan(
+                wheelbase * control.angular / control.linear.abs().clamp_min(eps)
+            )
+            steering_angle = torch.clamp(steer_demand, -max_steer, max_steer)
+            yaw_rate = torch.where(
+                linear_eff.abs() > eps,
+                linear_eff / wheelbase * torch.tan(steering_angle),
+                torch.zeros_like(linear_eff),
+            )
+            midpoint_yaw = wrap_to_pi(self.yaws + 0.5 * yaw_rate * dt)
+            direction = torch.stack((torch.cos(midpoint_yaw), torch.sin(midpoint_yaw)), dim=-1)
+            self.yaws = wrap_to_pi(self.yaws + yaw_rate * dt)
+        delta_xy = direction * linear_eff.unsqueeze(-1) * dt
+        next_xy = old_positions[..., :2] + delta_xy
+        self.positions[..., :2] = next_xy
+        if self._terrain_dynamics_enabled:
             next_features = query_terrain_features(
                 next_xy,
                 self.cfg.terrain,
                 self.terrain_runtime,
             )
-            self.positions[..., :2] = next_xy
             self.positions[..., 2] = next_features[..., 0]
             self.last_terrain_features = next_features
             self.last_height_delta = self.positions[..., 2] - old_positions[..., 2]
         else:
-            delta_xy = direction * control.linear.unsqueeze(-1) * dt
-            self.positions[..., :2] = self.positions[..., :2] + delta_xy
             self.positions[..., 2] = 0.0
             self.last_terrain_features.zero_()
             self.last_height_delta.zero_()
         self.last_terrain_speed_scale = speed_scale
         self.velocities_xy = (self.positions[..., :2] - old_positions[..., :2]) / dt
-        self.angular_velocities = control.angular
+        self.angular_velocities = yaw_rate
+        self.last_steering_angle = steering_angle
+        self.last_actual_yaw_rate = yaw_rate
+        self.last_turning_radius = torch.where(
+            yaw_rate.abs() > 1.0e-6,
+            linear_eff.abs() / yaw_rate.abs().clamp_min(1.0e-6),
+            torch.full_like(linear_eff, float("inf")),
+        )
 
     def _check_finite(
         self,

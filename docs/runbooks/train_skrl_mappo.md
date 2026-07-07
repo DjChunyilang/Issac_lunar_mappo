@@ -1379,9 +1379,9 @@ systemd-run --user --unit exp031-narrow-control-safety-20m \
 | exp038 | `configs/experiment/exp038_randomized_terrain_success_zone_stabilizer.yaml` | `pure_rl_seed23_20m_success_zone_stabilizer_timeout320` | 0.9756 | 0.0137 | 0.0107 | 当前最佳；strict 只剩 timeout 未过。 |
 | exp039 | `configs/experiment/exp039_randomized_terrain_hard_near_stabilizer.yaml` | exp038 best 诊断复评 | 0.9424 | 0.0254 | 0.0322 | hard near 退化，不建议长训。 |
 | exp040 | `configs/experiment/exp040_randomized_terrain_soft_hold_stabilizer.yaml` | exp038 best 诊断复评 | 0.9658 | 0.0186 | 0.0166 | soft hold 仍差于 exp038，不建议长训。 |
-| exp041 | `configs/experiment/exp041_randomized_terrain_hold_zone_override.yaml` | exp038 best 诊断复评 + smoke | 0.9795 | 0.0107 | 0.0098 | 略优于 exp038，是下一轮长训候选。 |
+| exp041 | `configs/experiment/exp041_randomized_terrain_hold_zone_override.yaml` | exp038 best 诊断复评 + smoke | 0.9795 | 0.0107 | 0.0098 | 略优于 exp038，但当前暂停长训。 |
 
-当前推荐下一轮长训是 exp041，从随机初始化开始，不续训 exp038 checkpoint：
+当前暂停继续长训；下面命令只作为历史候选参考，不是当前推荐启动命令。恢复训练研究时应新建 exp043 或后续实验，并重新确认是否沿用 exp042 的环境改造：
 
 ```bash
 ROOT=$(pwd)
@@ -1414,6 +1414,748 @@ systemd-run --user --unit exp041-hold-zone-override-20m \
 - 以 `metrics/final_eval_proxy.json` 和 `metrics/strict_acceptance.json` 为准。
 - exp038 的剩余 timeout 主要卡在 `0.28–0.42 m` 最近邻灰区；若 exp041 仍未 strict，应继续做末端 pairwise spacing controller，而不是全局加硬 near/hold filter。
 - exp039/exp040 只是诊断配置，除非重新设计，否则不要直接长训。
+
+## exp042 结构化网络 / bicycle / quintic smoke
+
+exp042 只做训练环境工程验证，不启动 20M 长训。配置：
+
+```text
+configs/experiment/exp042_structured_actor_bicycle_quintic_probe.yaml
+```
+
+当前 exp042 配置额外验证两个环境尺度调整：
+
+- `safety.world_xy_limit=12.5`、`terrain.crater_field_size=25.0`，对应 `25 m × 25 m` 训练区域。
+- `observation.communication_radius=0.0`，表示临时取消通信距离限制，所有非自身 rover 可见。
+
+Actor 的局部地形网格仍是 `5×5×2=50` 维；本轮不扩大地形感知窗口，也不改变 Actor/Critic `86/54` 接口。
+
+聚焦测试：
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv_isaaclab/bin/python -m pytest -q \
+  tests/test_observation.py \
+  tests/test_trajectory_generator.py \
+  tests/test_proxy_rover_model.py \
+  tests/test_config_wiring.py \
+  tests/test_skrl_mappo_semantics.py
+```
+
+CPU smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp042_structured_actor_bicycle_quintic_probe.yaml \
+  --device cpu \
+  --timesteps 8 \
+  --seed 23 \
+  --num-envs 8 \
+  --output-layout run \
+  --run-name smoke_cpu_structured_bicycle_quintic_comm0_map25 \
+  --rollout-steps 4 \
+  --checkpoint-interval 4 \
+  --eval-num-envs 8 \
+  --eval-steps 16 \
+  --bc-updates 0 \
+  --selection-gate strict
+```
+
+CUDA smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp042_structured_actor_bicycle_quintic_probe.yaml \
+  --device cuda \
+  --timesteps 64 \
+  --seed 23 \
+  --num-envs 256 \
+  --output-layout run \
+  --run-name smoke_cuda_structured_bicycle_quintic_comm0_map25 \
+  --rollout-steps 32 \
+  --checkpoint-interval 32 \
+  --eval-num-envs 256 \
+  --eval-steps 64 \
+  --bc-updates 0 \
+  --selection-gate strict
+```
+
+验收重点：
+
+- summary 中 `actor_architecture=branched_v1`、`critic_architecture=structured_v1`、`kinematic_model=bicycle`、`trajectory_geometry_method=quintic`。
+- summary/config 中 `communication_radius=0.0`、`world_xy_limit=12.5`、`crater_field_size=25.0`。
+- `optimizer_count=1`，`joint_update_count=2`。
+- `terrain_input_weight_delta_l2 > 0`。
+- `post_training_action_std > 0`，动作非退化。
+- training telemetry 中有 `steering_angle_abs_mean`、`actual_yaw_rate_abs_mean` 和 `turning_radius_*`。
+
+产物保留在 `outputs/runs/exp042_structured_actor_bicycle_quintic_probe/`，不要提交 checkpoint、JSONL、TensorBoard 或日志。
+
+## exp043 structured / bicycle / quintic / map25 长训
+
+exp043 是恢复长训后的第一轮新环境栈收敛实验，已完成但未通过 strict。配置：
+
+```text
+configs/experiment/exp043_structured_bicycle_quintic_map25_long.yaml
+```
+
+关键差异：
+
+- `branched_v1 / structured_v1`，`bicycle`，`quintic`。
+- `world_xy_limit=12.5`、`crater_field_size=25.0`、`communication_radius=0.0`。
+- `initial_state.spawn_radius_min/max=4.5/6.5`、`center_xy_range=3.0`。
+- `crater_count=48`，避免 25m 地图上地形密度被过度稀释。
+- 继承 exp041 的 hold-zone override。
+
+历史启动命令：
+
+```bash
+mkdir -p outputs/runs/exp043_structured_bicycle_quintic_map25_long/_launcher
+
+systemd-run --user --unit exp043-structured-bicycle-quintic-map25-40m \
+  --same-dir \
+  --collect \
+  --property=StandardOutput=append:${PWD}/outputs/runs/exp043_structured_bicycle_quintic_map25_long/_launcher/train.log \
+  --property=StandardError=append:${PWD}/outputs/runs/exp043_structured_bicycle_quintic_map25_long/_launcher/train.log \
+  .venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+    --config configs/experiment/exp043_structured_bicycle_quintic_map25_long.yaml \
+    --device cuda \
+    --timesteps 20480 \
+    --seed 23 \
+    --num-envs 2048 \
+    --output-layout run \
+    --run-name pure_rl_seed23_40m_structured_bicycle_quintic_map25 \
+    --rollout-steps 64 \
+    --checkpoint-interval 1024 \
+    --eval-num-envs 1024 \
+    --eval-steps 320 \
+    --eval-seed-offset 1000 \
+    --bc-updates 0 \
+    --selection-gate success_progress_long
+```
+
+监控：
+
+```bash
+tail -f outputs/runs/exp043_structured_bicycle_quintic_map25_long/_launcher/train.log
+systemctl --user status exp043-structured-bicycle-quintic-map25-40m
+```
+
+训练完成后优先读取：
+
+```text
+outputs/runs/exp043_structured_bicycle_quintic_map25_long/pure_rl_seed23_40m_structured_bicycle_quintic_map25/metrics/summary.json
+outputs/runs/exp043_structured_bicycle_quintic_map25_long/pure_rl_seed23_40m_structured_bicycle_quintic_map25/metrics/final_eval_proxy.json
+outputs/runs/exp043_structured_bicycle_quintic_map25_long/pure_rl_seed23_40m_structured_bicycle_quintic_map25/metrics/strict_acceptance.json
+```
+
+严格结论仍以 `dmax<=0.20`、`success>=0.90`、`collision<=0.02`、`timeout=0` 为准。
+
+当前结果：
+
+```text
+best_candidate: ppo_timestep_020480.pt
+dmax_reduction_ratio: 0.8596
+success_rate: 0.0
+collision_rate: 0.0
+timeout_rate: 1.0
+```
+
+判读：不是工程链路故障，而是在新环境栈 + 较大 initial-state 分布下 pure RL 冷启动没有学出集合进度。当前不要继续重复启动 exp043；下一轮使用 exp044 的 initial-state curriculum。
+
+## exp044 structured / bicycle / quintic / map25 initial-state curriculum
+
+exp044 保留 exp043 的新网络、bicycle、quintic、25m 地图和 `communication_radius=0.0`，但训练时从较近队形开始并逐步 ramp 到目标 reset 分布。配置：
+
+```text
+configs/experiment/exp044_structured_bicycle_quintic_map25_curriculum.yaml
+```
+
+关键差异：
+
+- 目标 reset 分布：`spawn_radius_min/max=3.8/5.2`、`center_xy_range=2.0`、`jitter_std=0.40`。
+- curriculum 起点：`spawn_radius_min/max=3.0/4.0`、`center_xy_range=1.0`、`jitter_std=0.35`。
+- `curriculum_warmup_timesteps=4096`，`curriculum_ramp_timesteps=8192`。
+- 候选/最终 eval 不设置 progress override，因此仍在目标 reset 分布上判定。
+- `crater_count=36`，避免 exp043 的地形密度和大初始分布同时过强。
+
+CPU smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp044_structured_bicycle_quintic_map25_curriculum.yaml \
+  --device cpu \
+  --timesteps 8 \
+  --seed 23 \
+  --num-envs 8 \
+  --output-layout run \
+  --run-name smoke_cpu_seed23_structured_bicycle_quintic_map25_curriculum \
+  --rollout-steps 4 \
+  --checkpoint-interval 4 \
+  --eval-num-envs 8 \
+  --eval-steps 16 \
+  --bc-updates 0 \
+  --selection-gate success_progress_long
+```
+
+CUDA smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp044_structured_bicycle_quintic_map25_curriculum.yaml \
+  --device cuda \
+  --timesteps 128 \
+  --seed 23 \
+  --num-envs 256 \
+  --output-layout run \
+  --run-name smoke_cuda_seed23_structured_bicycle_quintic_map25_curriculum \
+  --rollout-steps 64 \
+  --checkpoint-interval 64 \
+  --eval-num-envs 256 \
+  --eval-steps 64 \
+  --bc-updates 0 \
+  --selection-gate success_progress_long
+```
+
+长训启动：
+
+```bash
+mkdir -p outputs/runs/exp044_structured_bicycle_quintic_map25_curriculum/_launcher
+
+systemd-run --user --unit exp044-structured-bicycle-quintic-map25-curriculum-40m \
+  --same-dir \
+  --collect \
+  --property=StandardOutput=append:${PWD}/outputs/runs/exp044_structured_bicycle_quintic_map25_curriculum/_launcher/train.log \
+  --property=StandardError=append:${PWD}/outputs/runs/exp044_structured_bicycle_quintic_map25_curriculum/_launcher/train.log \
+  .venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+    --config configs/experiment/exp044_structured_bicycle_quintic_map25_curriculum.yaml \
+    --device cuda \
+    --timesteps 20480 \
+    --seed 23 \
+    --num-envs 2048 \
+    --output-layout run \
+    --run-name pure_rl_seed23_40m_structured_bicycle_quintic_map25_curriculum \
+    --rollout-steps 64 \
+    --checkpoint-interval 1024 \
+    --eval-num-envs 1024 \
+    --eval-steps 320 \
+    --eval-seed-offset 1000 \
+    --bc-updates 0 \
+    --selection-gate success_progress_long
+```
+
+监控：
+
+```bash
+tail -f outputs/runs/exp044_structured_bicycle_quintic_map25_curriculum/_launcher/train.log
+systemctl --user status exp044-structured-bicycle-quintic-map25-curriculum-40m
+```
+
+训练完成后优先读取：
+
+```text
+outputs/runs/exp044_structured_bicycle_quintic_map25_curriculum/pure_rl_seed23_40m_structured_bicycle_quintic_map25_curriculum/metrics/summary.json
+outputs/runs/exp044_structured_bicycle_quintic_map25_curriculum/pure_rl_seed23_40m_structured_bicycle_quintic_map25_curriculum/metrics/final_eval_proxy.json
+outputs/runs/exp044_structured_bicycle_quintic_map25_curriculum/pure_rl_seed23_40m_structured_bicycle_quintic_map25_curriculum/metrics/strict_acceptance.json
+```
+
+当前结果：exp044 未通过 strict，final eval dmax ratio `0.4796`、success `0.0`、collision `0.00195`、timeout `0.9980`。下一轮使用 exp045 的 local-success bootstrap，不要重复启动 exp044。
+
+## exp045 structured / bicycle / quintic / map25 local success bootstrap
+
+exp045 先缩小 reset 目标分布，验证新网络/bicycle/quintic/25m 地图下是否能恢复 success。配置：
+
+```text
+configs/experiment/exp045_structured_bicycle_quintic_map25_local_success_bootstrap.yaml
+```
+
+关键差异：
+
+- 目标 reset：`spawn_radius_min/max=2.4/3.4`、`center_xy_range=1.0`。
+- curriculum 起点：`spawn_radius_min/max=1.6/2.4`、`center_xy_range=0.5`。
+- 动作/低层：`rho_max=1.6`、`beta_max=60°`、`max_steer_angle≈45°`、`reference_speed=0.9`。
+- reward 更偏中距离集合：`dmax_progress=5.5`、`dispersion_progress=2.4`，terrain weight `0.20`。
+- filter 仍保留，但 `apply_probability_end=0.35`、`score_scale_end=0.50`。
+
+CPU smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp045_structured_bicycle_quintic_map25_local_success_bootstrap.yaml \
+  --device cpu \
+  --timesteps 8 \
+  --seed 23 \
+  --num-envs 8 \
+  --output-layout run \
+  --run-name smoke_cpu_seed23_structured_bicycle_quintic_map25_local_success \
+  --rollout-steps 4 \
+  --checkpoint-interval 4 \
+  --eval-num-envs 8 \
+  --eval-steps 16 \
+  --bc-updates 0 \
+  --selection-gate success_progress_long
+```
+
+CUDA smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp045_structured_bicycle_quintic_map25_local_success_bootstrap.yaml \
+  --device cuda \
+  --timesteps 128 \
+  --seed 23 \
+  --num-envs 256 \
+  --output-layout run \
+  --run-name smoke_cuda_seed23_structured_bicycle_quintic_map25_local_success \
+  --rollout-steps 64 \
+  --checkpoint-interval 64 \
+  --eval-num-envs 256 \
+  --eval-steps 64 \
+  --bc-updates 0 \
+  --selection-gate success_progress_long
+```
+
+长训启动：
+
+```bash
+mkdir -p outputs/runs/exp045_structured_bicycle_quintic_map25_local_success_bootstrap/_launcher
+
+systemd-run --user --unit exp045-structured-bicycle-quintic-map25-local-success-40m \
+  --same-dir \
+  --collect \
+  --property=StandardOutput=append:${PWD}/outputs/runs/exp045_structured_bicycle_quintic_map25_local_success_bootstrap/_launcher/train.log \
+  --property=StandardError=append:${PWD}/outputs/runs/exp045_structured_bicycle_quintic_map25_local_success_bootstrap/_launcher/train.log \
+  .venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+    --config configs/experiment/exp045_structured_bicycle_quintic_map25_local_success_bootstrap.yaml \
+    --device cuda \
+    --timesteps 20480 \
+    --seed 23 \
+    --num-envs 2048 \
+    --output-layout run \
+    --run-name pure_rl_seed23_40m_structured_bicycle_quintic_map25_local_success \
+    --rollout-steps 64 \
+    --checkpoint-interval 1024 \
+    --eval-num-envs 1024 \
+    --eval-steps 320 \
+    --eval-seed-offset 1000 \
+    --bc-updates 0 \
+    --selection-gate success_progress_long
+```
+
+监控：
+
+```bash
+tail -f outputs/runs/exp045_structured_bicycle_quintic_map25_local_success_bootstrap/_launcher/train.log
+systemctl --user status exp045-structured-bicycle-quintic-map25-local-success-40m
+```
+
+训练完成后优先读取：
+
+```text
+outputs/runs/exp045_structured_bicycle_quintic_map25_local_success_bootstrap/pure_rl_seed23_40m_structured_bicycle_quintic_map25_local_success/metrics/summary.json
+outputs/runs/exp045_structured_bicycle_quintic_map25_local_success_bootstrap/pure_rl_seed23_40m_structured_bicycle_quintic_map25_local_success/metrics/final_eval_proxy.json
+outputs/runs/exp045_structured_bicycle_quintic_map25_local_success_bootstrap/pure_rl_seed23_40m_structured_bicycle_quintic_map25_local_success/metrics/strict_acceptance.json
+```
+
+当前结果：exp045 未通过 strict，final eval dmax ratio `0.2734`、success `0.1846`、collision `0.0`、timeout `0.8174`。下一轮使用 exp046 释放末端 filter/control-safety 阻尼，并增强 dmax/dispersion/hold。
+
+## exp046 structured / bicycle / quintic / map25 local hold release
+
+exp046 沿用 exp045 的 local reset 分布，但降低 filter/control-safety 末端阻尼并增强末端收缩。配置：
+
+```text
+configs/experiment/exp046_structured_bicycle_quintic_map25_local_hold_release.yaml
+```
+
+关键差异：
+
+- filter：`apply_probability_end=0.22`、`score_scale_end=0.35`。
+- control safety：`projection_activation_distance=0.68`、`projection_strength=0.70`、`projection_min_linear_scale=0.40`。
+- 低层：`reference_speed=1.0`、`max_linear_speed=1.2`、success-zone damping scale `0.65`。
+- reward：`dmax_progress=7.0`、`dispersion_progress=3.2`、`success_bonus=85`、`timeout_penalty=45`、terrain weight `0.15`。
+
+CPU smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp046_structured_bicycle_quintic_map25_local_hold_release.yaml \
+  --device cpu \
+  --timesteps 8 \
+  --seed 23 \
+  --num-envs 8 \
+  --output-layout run \
+  --run-name smoke_cpu_seed23_structured_bicycle_quintic_map25_local_hold_release \
+  --rollout-steps 4 \
+  --checkpoint-interval 4 \
+  --eval-num-envs 8 \
+  --eval-steps 16 \
+  --bc-updates 0 \
+  --selection-gate success_progress_long
+```
+
+CUDA smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp046_structured_bicycle_quintic_map25_local_hold_release.yaml \
+  --device cuda \
+  --timesteps 128 \
+  --seed 23 \
+  --num-envs 256 \
+  --output-layout run \
+  --run-name smoke_cuda_seed23_structured_bicycle_quintic_map25_local_hold_release \
+  --rollout-steps 64 \
+  --checkpoint-interval 64 \
+  --eval-num-envs 256 \
+  --eval-steps 64 \
+  --bc-updates 0 \
+  --selection-gate success_progress_long
+```
+
+长训启动：
+
+```bash
+mkdir -p outputs/runs/exp046_structured_bicycle_quintic_map25_local_hold_release/_launcher
+
+systemd-run --user --unit exp046-structured-bicycle-quintic-map25-local-hold-release-40m \
+  --same-dir \
+  --collect \
+  --property=StandardOutput=append:${PWD}/outputs/runs/exp046_structured_bicycle_quintic_map25_local_hold_release/_launcher/train.log \
+  --property=StandardError=append:${PWD}/outputs/runs/exp046_structured_bicycle_quintic_map25_local_hold_release/_launcher/train.log \
+  .venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+    --config configs/experiment/exp046_structured_bicycle_quintic_map25_local_hold_release.yaml \
+    --device cuda \
+    --timesteps 20480 \
+    --seed 23 \
+    --num-envs 2048 \
+    --output-layout run \
+    --run-name pure_rl_seed23_40m_structured_bicycle_quintic_map25_local_hold_release \
+    --rollout-steps 64 \
+    --checkpoint-interval 1024 \
+    --eval-num-envs 1024 \
+    --eval-steps 320 \
+    --eval-seed-offset 1000 \
+    --bc-updates 0 \
+    --selection-gate success_progress_long
+```
+
+监控：
+
+```bash
+tail -f outputs/runs/exp046_structured_bicycle_quintic_map25_local_hold_release/_launcher/train.log
+systemctl --user status exp046-structured-bicycle-quintic-map25-local-hold-release-40m
+```
+
+训练完成后优先读取：
+
+```text
+outputs/runs/exp046_structured_bicycle_quintic_map25_local_hold_release/pure_rl_seed23_40m_structured_bicycle_quintic_map25_local_hold_release/metrics/summary.json
+outputs/runs/exp046_structured_bicycle_quintic_map25_local_hold_release/pure_rl_seed23_40m_structured_bicycle_quintic_map25_local_hold_release/metrics/final_eval_proxy.json
+ outputs/runs/exp046_structured_bicycle_quintic_map25_local_hold_release/pure_rl_seed23_40m_structured_bicycle_quintic_map25_local_hold_release/metrics/strict_acceptance.json
+```
+
+当前结果：exp046 未通过 strict，但 local success 从 exp045 的 `0.1846` 提升到 `0.6123`，collision 保持 `0.0`。失败项为 dmax ratio `0.2424`、success `0.6123` 和 timeout `0.3877`。下一轮使用 exp047 继续释放 terminal safety/filter/control damping，并增强 dmax/dispersion/timeout shaping。
+
+## exp047 structured / bicycle / quintic / map25 terminal convergence
+
+exp047 沿用 exp046 的 local reset 分布，但更聚焦 terminal convergence。配置：
+
+```text
+configs/experiment/exp047_structured_bicycle_quintic_map25_terminal_convergence.yaml
+```
+
+关键差异：
+
+- filter：`apply_probability_end=0.16`、`score_scale_end=0.28`、`hold_zone_pairwise_distance=0.48`。
+- control safety：`projection_activation_distance=0.62`、`projection_strength=0.50`、`projection_min_linear_scale=0.55`。
+- 低层：`reference_speed=1.05`、`max_linear_speed=1.25`、success-zone damping scale `0.80`。
+- reward：`dmax_progress=9.0`、`dispersion_progress=4.5`、`success_bonus=115`、`timeout_penalty=65`、terrain weight `0.12`。
+
+CPU smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp047_structured_bicycle_quintic_map25_terminal_convergence.yaml \
+  --device cpu \
+  --timesteps 8 \
+  --seed 23 \
+  --num-envs 8 \
+  --output-layout run \
+  --run-name smoke_cpu_seed23_structured_bicycle_quintic_map25_terminal_convergence \
+  --rollout-steps 4 \
+  --checkpoint-interval 4 \
+  --eval-num-envs 8 \
+  --eval-steps 16 \
+  --bc-updates 0 \
+  --selection-gate success_progress_long
+```
+
+CUDA smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp047_structured_bicycle_quintic_map25_terminal_convergence.yaml \
+  --device cuda \
+  --timesteps 128 \
+  --seed 23 \
+  --num-envs 256 \
+  --output-layout run \
+  --run-name smoke_cuda_seed23_structured_bicycle_quintic_map25_terminal_convergence \
+  --rollout-steps 64 \
+  --checkpoint-interval 64 \
+  --eval-num-envs 256 \
+  --eval-steps 64 \
+  --bc-updates 0 \
+  --selection-gate success_progress_long
+```
+
+长训启动：
+
+```bash
+mkdir -p outputs/runs/exp047_structured_bicycle_quintic_map25_terminal_convergence/_launcher
+
+systemd-run --user --unit exp047-structured-bicycle-quintic-map25-terminal-convergence-40m \
+  --same-dir \
+  --collect \
+  --property=StandardOutput=append:${PWD}/outputs/runs/exp047_structured_bicycle_quintic_map25_terminal_convergence/_launcher/train.log \
+  --property=StandardError=append:${PWD}/outputs/runs/exp047_structured_bicycle_quintic_map25_terminal_convergence/_launcher/train.log \
+  .venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+    --config configs/experiment/exp047_structured_bicycle_quintic_map25_terminal_convergence.yaml \
+    --device cuda \
+    --timesteps 20480 \
+    --seed 23 \
+    --num-envs 2048 \
+    --output-layout run \
+    --run-name pure_rl_seed23_40m_structured_bicycle_quintic_map25_terminal_convergence \
+    --rollout-steps 64 \
+    --checkpoint-interval 1024 \
+    --eval-num-envs 1024 \
+    --eval-steps 320 \
+    --eval-seed-offset 1000 \
+    --bc-updates 0 \
+    --selection-gate success_progress_long
+```
+
+监控：
+
+```bash
+tail -f outputs/runs/exp047_structured_bicycle_quintic_map25_terminal_convergence/_launcher/train.log
+systemctl --user status exp047-structured-bicycle-quintic-map25-terminal-convergence-40m
+```
+
+训练完成后优先读取：
+
+```text
+outputs/runs/exp047_structured_bicycle_quintic_map25_terminal_convergence/pure_rl_seed23_40m_structured_bicycle_quintic_map25_terminal_convergence/metrics/summary.json
+outputs/runs/exp047_structured_bicycle_quintic_map25_terminal_convergence/pure_rl_seed23_40m_structured_bicycle_quintic_map25_terminal_convergence/metrics/final_eval_proxy.json
+outputs/runs/exp047_structured_bicycle_quintic_map25_terminal_convergence/pure_rl_seed23_40m_structured_bicycle_quintic_map25_terminal_convergence/metrics/strict_acceptance.json
+```
+
+当前结果：exp047 未通过 strict，但 final eval 提升到 success `0.7188`、collision `0.0059`、dmax ratio `0.2132`、timeout `0.2764`。下一轮使用 exp048，在 exp047 附近提高 terminal drive 和 dispersion 收缩。
+
+## exp048 structured / bicycle / quintic / map25 terminal drive
+
+exp048 沿用 exp047 local reset 分布，但提高末端推进速度和 dispersion 收缩。配置：
+
+```text
+configs/experiment/exp048_structured_bicycle_quintic_map25_terminal_drive.yaml
+```
+
+关键差异：
+
+- filter：`apply_probability_end=0.18`、`score_scale_end=0.30`、`hold_zone_pairwise_distance=0.46`。
+- control safety：`projection_strength=0.45`、`projection_min_linear_scale=0.65`。
+- 低层：`reference_speed=1.15`、`max_linear_speed=1.35`、success-zone damping scale `0.95`。
+- reward：`dmax_progress=9.5`、`dispersion_progress=6.0`、`success_bonus=130`、`timeout_penalty=80`、terrain weight `0.10`。
+
+CPU smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp048_structured_bicycle_quintic_map25_terminal_drive.yaml \
+  --device cpu \
+  --timesteps 8 \
+  --seed 23 \
+  --num-envs 8 \
+  --output-layout run \
+  --run-name smoke_cpu_seed23_structured_bicycle_quintic_map25_terminal_drive \
+  --rollout-steps 4 \
+  --checkpoint-interval 4 \
+  --eval-num-envs 8 \
+  --eval-steps 16 \
+  --bc-updates 0 \
+  --selection-gate success_progress_long
+```
+
+CUDA smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp048_structured_bicycle_quintic_map25_terminal_drive.yaml \
+  --device cuda \
+  --timesteps 128 \
+  --seed 23 \
+  --num-envs 256 \
+  --output-layout run \
+  --run-name smoke_cuda_seed23_structured_bicycle_quintic_map25_terminal_drive \
+  --rollout-steps 64 \
+  --checkpoint-interval 64 \
+  --eval-num-envs 256 \
+  --eval-steps 64 \
+  --bc-updates 0 \
+  --selection-gate success_progress_long
+```
+
+长训启动：
+
+```bash
+mkdir -p outputs/runs/exp048_structured_bicycle_quintic_map25_terminal_drive/_launcher
+
+systemd-run --user --unit exp048-structured-bicycle-quintic-map25-terminal-drive-40m \
+  --same-dir \
+  --collect \
+  --property=StandardOutput=append:${PWD}/outputs/runs/exp048_structured_bicycle_quintic_map25_terminal_drive/_launcher/train.log \
+  --property=StandardError=append:${PWD}/outputs/runs/exp048_structured_bicycle_quintic_map25_terminal_drive/_launcher/train.log \
+  .venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+    --config configs/experiment/exp048_structured_bicycle_quintic_map25_terminal_drive.yaml \
+    --device cuda \
+    --timesteps 20480 \
+    --seed 23 \
+    --num-envs 2048 \
+    --output-layout run \
+    --run-name pure_rl_seed23_40m_structured_bicycle_quintic_map25_terminal_drive \
+    --rollout-steps 64 \
+    --checkpoint-interval 1024 \
+    --eval-num-envs 1024 \
+    --eval-steps 320 \
+    --eval-seed-offset 1000 \
+    --bc-updates 0 \
+    --selection-gate success_progress_long
+```
+
+监控：
+
+```bash
+tail -f outputs/runs/exp048_structured_bicycle_quintic_map25_terminal_drive/_launcher/train.log
+systemctl --user status exp048-structured-bicycle-quintic-map25-terminal-drive-40m
+```
+
+当前结果：exp048 未通过 strict，但已经通过 dmax/success/collision gates：dmax ratio `0.1866`、success `0.9844`、collision `0.0020`，唯一失败为 timeout `0.0137`。剩余 timeout episode 已满足 dmax/dispersion，但最近邻距离均值约 `0.393 m`，低于 success 安全间距 `0.42 m`。
+
+## exp049 structured / bicycle / quintic / map25 terminal spacing
+
+exp049 沿用 exp048 local reset 分布，针对最后的最近邻安全间距灰区 timeout 做轻量 terminal spacing 修正。配置：
+
+```text
+configs/experiment/exp049_structured_bicycle_quintic_map25_terminal_spacing.yaml
+```
+
+关键差异：
+
+- filter spacing：`hold_zone_pairwise_distance=0.52`、`hold_zone_spacing_weight=4.60`、`endpoint_safe_distance=0.44`。
+- filter schedule：`apply_probability_end=0.20`、`score_scale_end=0.32`。
+- control safety：`projection_activation_distance=0.64`、`projection_strength=0.55`、`projection_min_linear_scale=0.58`。
+- reward：`near_distance=3.4`、`dispersion_progress=6.2`、`success_bonus=135`、`timeout_penalty=90`。
+
+CPU smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp049_structured_bicycle_quintic_map25_terminal_spacing.yaml \
+  --device cpu \
+  --timesteps 8 \
+  --seed 23 \
+  --num-envs 8 \
+  --output-layout run \
+  --run-name smoke_cpu_seed23_structured_bicycle_quintic_map25_terminal_spacing \
+  --rollout-steps 4 \
+  --checkpoint-interval 4 \
+  --eval-num-envs 8 \
+  --eval-steps 16 \
+  --bc-updates 0 \
+  --selection-gate success_progress_long
+```
+
+CUDA smoke：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp049_structured_bicycle_quintic_map25_terminal_spacing.yaml \
+  --device cuda \
+  --timesteps 128 \
+  --seed 23 \
+  --num-envs 256 \
+  --output-layout run \
+  --run-name smoke_cuda_seed23_structured_bicycle_quintic_map25_terminal_spacing \
+  --rollout-steps 64 \
+  --checkpoint-interval 64 \
+  --eval-num-envs 256 \
+  --eval-steps 64 \
+  --bc-updates 0 \
+  --selection-gate success_progress_long
+```
+
+长训启动：
+
+```bash
+mkdir -p outputs/runs/exp049_structured_bicycle_quintic_map25_terminal_spacing/_launcher
+
+systemd-run --user --unit exp049-structured-bicycle-quintic-map25-terminal-spacing-40m \
+  --same-dir \
+  --collect \
+  --property=StandardOutput=append:${PWD}/outputs/runs/exp049_structured_bicycle_quintic_map25_terminal_spacing/_launcher/train.log \
+  --property=StandardError=append:${PWD}/outputs/runs/exp049_structured_bicycle_quintic_map25_terminal_spacing/_launcher/train.log \
+  .venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+    --config configs/experiment/exp049_structured_bicycle_quintic_map25_terminal_spacing.yaml \
+    --device cuda \
+    --timesteps 20480 \
+    --seed 23 \
+    --num-envs 2048 \
+    --output-layout run \
+    --run-name pure_rl_seed23_40m_structured_bicycle_quintic_map25_terminal_spacing \
+    --rollout-steps 64 \
+    --checkpoint-interval 1024 \
+    --eval-num-envs 1024 \
+    --eval-steps 320 \
+    --eval-seed-offset 1000 \
+    --bc-updates 0 \
+    --selection-gate success_progress_long
+```
+
+监控：
+
+```bash
+tail -f outputs/runs/exp049_structured_bicycle_quintic_map25_terminal_spacing/_launcher/train.log
+systemctl --user status exp049-structured-bicycle-quintic-map25-terminal-spacing-40m
+```
+
+当前结果：exp049 未通过 strict，且不优于 exp048。final eval 为 dmax ratio `0.1884`、success `0.8926`、collision `0.0010`、timeout `0.1064`。相比 exp048，碰撞略低但 success 跌破 `0.90`，timeout 从 `0.0137` 升到 `0.1064`；后续不要按原样继续增强全局 terminal spacing。
+
+可视化复现：
+
+```bash
+.venv_isaaclab/bin/python scripts/render_skrl_proxy_rollout.py \
+  --config outputs/runs/exp049_structured_bicycle_quintic_map25_terminal_spacing/pure_rl_seed23_40m_structured_bicycle_quintic_map25_terminal_spacing/config/experiment.yaml \
+  --checkpoint outputs/runs/exp049_structured_bicycle_quintic_map25_terminal_spacing/pure_rl_seed23_40m_structured_bicycle_quintic_map25_terminal_spacing/checkpoints/best.pt \
+  --device cuda \
+  --steps 320 \
+  --seed 11023 \
+  --run-dir outputs/runs/exp049_structured_bicycle_quintic_map25_terminal_spacing/pure_rl_seed23_40m_structured_bicycle_quintic_map25_terminal_spacing \
+  --capture-interval 4 \
+  --max-frames 90
+```
+
+曲线输出：
+
+```bash
+.venv_isaaclab/bin/python scripts/plot_skrl_run_curves.py \
+  --run-dir outputs/runs/exp038_randomized_terrain_success_zone_stabilizer/pure_rl_seed23_20m_success_zone_stabilizer_timeout320 \
+  --label exp038 \
+  --run-dir outputs/runs/exp048_structured_bicycle_quintic_map25_terminal_drive/pure_rl_seed23_40m_structured_bicycle_quintic_map25_terminal_drive \
+  --label exp048 \
+  --run-dir outputs/runs/exp049_structured_bicycle_quintic_map25_terminal_spacing/pure_rl_seed23_40m_structured_bicycle_quintic_map25_terminal_spacing \
+  --label exp049 \
+  --comparison-output outputs/runs/_comparisons/exp038_exp048_exp049_20260707/figures/candidate_eval_comparison.png
+```
 
 ## Checkpoint 统一评估
 

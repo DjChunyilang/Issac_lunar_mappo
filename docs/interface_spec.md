@@ -18,7 +18,7 @@ aggregation_dim: 5
 actor_obs_dim: 86
 ```
 
-`observation.communication_radius` 是当前唯一允许从 experiment YAML 覆盖的 observation 字段。`max_neighbors`、`ego_dim`、`neighbor_dim`、`terrain_dim` 和 `aggregation_dim` 会改变模型输入接口，本轮不开放配置覆盖。
+`observation.communication_radius` 是当前唯一允许从 experiment YAML 覆盖的 observation 字段。取值 `>0` 时表示有限通信半径；取值 `<=0` 时表示临时取消通信距离限制，所有非自身 rover 均视为可见。`max_neighbors`、`ego_dim`、`neighbor_dim`、`terrain_dim` 和 `aggregation_dim` 会改变模型输入接口，本轮不开放配置覆盖。
 
 ego 10 维顺序：
 
@@ -42,6 +42,7 @@ flatten_order: x -> y -> channel
 - 平地网格全部为 0。
 - 网格随 rover yaw 旋转到世界坐标采样，因此策略看到的是稳定的车体系局部地形。
 - 当前网格布局固定在代码中，不开放 YAML 修改。
+- 地图面积与局部地形观测窗口是两层设置：`safety.world_xy_limit=12.5` / `terrain.crater_field_size=25.0` 可把训练区域扩大为 `25 m × 25 m`，但不会改变 Actor 的 `5×5×2=50` 维局部地形输入；如需扩大地形感知范围，需要另开 observation schema 和网络切片改造。
 
 ## 地形 episode 随机化
 
@@ -61,6 +62,21 @@ crater_depth_scale
 - 地形高度、traversability、速度缩放、Actor 局部网格、Critic 摘要和可视化共用同一份 runtime。
 - 历史配置默认 `randomize_per_reset=false`，继续使用固定地图。
 - 随机化不改变 observation schema，Actor / Critic 维度仍为 `86 / 54`。
+
+## 初始队形分布
+
+训练 reset 的初始队形可通过 `initial_state` 配置覆盖，默认保持旧行为：
+
+```text
+spawn_radius_min: 3.0
+spawn_radius_max: 4.0
+center_xy_range: 1.0
+jitter_std: 0.35
+```
+
+该配置只改变 episode 初始状态采样，不改变 Actor observation、Critic state、checkpoint schema 或动作接口。`exp043` 使用更大的初始半径和中心采样范围，以匹配 `25 m × 25 m` 地图。
+
+`initial_state.curriculum_enabled=true` 时，训练可从 `curriculum_start_*` 起始分布按 `curriculum_warmup_timesteps / curriculum_ramp_timesteps` 线性过渡到目标分布。课程只在训练脚本显式设置 `progress_timestep_override` 时生效；独立 eval 默认使用目标分布，避免用课程早期简单分布判定 strict。
 
 ## Critic 状态
 
@@ -86,9 +102,50 @@ Checkpoint metadata 必须包含：
 observation_schema_version
 actor_obs_dim
 critic_state_dim
+actor_architecture
+critic_architecture
+observation_slices
+kinematic_model
+trajectory_geometry_method
 ```
 
-加载时必须与当前配置完全一致。旧 `ego_v2_speed_angular` checkpoint、缺少 schema metadata 的 checkpoint 和错误输入维度 checkpoint 均明确拒绝，不做补零或自动迁移。
+加载时 schema 和维度必须与当前配置完全一致。若当前配置显式要求 `branched_v1` / `structured_v1`，checkpoint 中的架构 metadata 也必须匹配；缺少架构 metadata 的当前 schema checkpoint 按旧 `mlp_v1` 解释，可继续用旧 MLP 配置播放和评估。旧 `ego_v2_speed_angular` checkpoint、缺少 schema metadata 的 checkpoint 和错误输入维度 checkpoint 均明确拒绝，不做补零或自动迁移。
+
+## 网络架构
+
+`algorithm.actor_architecture` 支持：
+
+```text
+mlp_v1
+branched_v1
+```
+
+`mlp_v1` 是旧兼容路径：`86 -> 128 -> 128 -> 2`。`branched_v1` 保持 Actor 输入 86 和输出 `[rho, beta]` 不变，但按固定切片编码：
+
+```text
+ego:          [0:10]   10 -> 32
+neighbors:   [10:31]  21 -> 48
+terrain:     [31:81]  50 -> 64
+aggregation: [81:86]   5 -> 16
+concat: 160 -> shared trunk 128 -> 128 -> 2 -> tanh
+```
+
+`algorithm.critic_architecture` 支持：
+
+```text
+mlp_v1
+structured_v1
+```
+
+`mlp_v1` 是旧兼容路径：`54 -> 128 -> 128 -> 1`。`structured_v1` 保持 Critic state 54 不变，固定拆分为：
+
+```text
+agent states:  [0:32]  4x8，经共享 agent encoder 后 mean + max 聚合
+team stats:    [32:40] 8 维分支
+terrain:       [40:45] 5 维分支
+oracle:        [45:54] 9 维分支
+concat -> value trunk 128 -> 128 -> 1
+```
 
 ## 动作
 
@@ -161,9 +218,41 @@ score_scale
 
 ## 第一阶段动力学
 
-当前 rover 是 proxy unicycle 状态模型。只有在 rover 资产和控制接口明确后，才应替换为真实 Isaac Sim articulation。
+当前 rover 仍是 torch-vectorized proxy 状态模型，不是 Isaac Sim articulation。`low_level_control.kinematic_model` 支持 `unicycle` 和 `bicycle`；旧配置默认 `unicycle`，新工程探针 `exp042` 显式使用 `bicycle`。
 
-`low_level_control` 支持默认关闭的 control safety projection。该机制位于 `compute_control()` 之后、proxy `_integrate()` 之前，只缩放本步线速度，不改变 Actor 输出 `[rho, beta]`、子目标、轨迹生成接口、Actor 86 维 observation、Critic 54 维 state 或 checkpoint schema。exp030 启用的主要字段为：
+`bicycle` v1 仍使用现有控制器输出的期望 `linear` 和期望 yaw-rate，但在 `_integrate()` 中将 yaw-rate demand 转成转角：
+
+```text
+steer = atan(wheelbase_m * omega_cmd / max(v_cmd, eps))
+steer = clamp(steer, +/- max_steer_angle_rad)
+yaw_rate_actual = v_eff / wheelbase_m * tan(steer)
+```
+
+其中 `v_eff` 是经 terrain speed scaling 后的前向速度。位置/yaw 使用半隐式 midpoint heading 更新；`angular_velocities` 记录实际 bicycle yaw-rate。新增 `kinematics` telemetry 包含：
+
+```text
+kinematic_model
+steering_angle
+actual_yaw_rate
+turning_radius
+```
+
+只有在 rover 资产和控制接口明确后，才应替换为真实 Isaac Sim articulation。
+
+## 轨迹生成
+
+`trajectory_generator.geometry_method` 支持：
+
+```text
+line
+quintic
+```
+
+`line` 是旧兼容路径。`quintic` 使用 2D quintic Hermite 曲线：起点为 rover 当前 `xy`，起点切向为当前 yaw，终点为 decoded / filtered subgoal `xy`，终点切向默认指向 subgoal 方向，起终点二阶导为 0。`Trajectory.points/headings/timestamps/reference_speed` 接口不变。
+
+## Control safety
+
+`low_level_control` 支持默认关闭的 control safety projection。该机制位于 `compute_control()` 之后、proxy `_integrate()` 之前，只缩放本步线速度，不改变 Actor 输出 `[rho, beta]`、子目标、轨迹生成接口、Actor 86 维 observation、Critic 54 维 state 或 checkpoint schema。exp030 之后部分实验启用的主要字段为：
 
 ```text
 safety_projection_enabled

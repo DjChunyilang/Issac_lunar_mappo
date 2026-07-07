@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import torch
 
-from lunar_rover_tasks.tasks.multi_rover_gathering.communication import build_neighbor_features
+from lunar_rover_tasks.tasks.multi_rover_gathering.communication import (
+    build_neighbor_features,
+    compute_visibility_mask,
+)
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import MultiRoverGatheringEnvCfg
 from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
     build_local_terrain_grid,
@@ -47,9 +50,7 @@ def build_aggregation_features(
     del velocities_xy
     delta = positions[:, None, :, :2] - positions[:, :, None, :2]
     dist = torch.linalg.norm(delta, dim=-1)
-    n_agents = positions.shape[1]
-    self_mask = torch.eye(n_agents, dtype=torch.bool, device=positions.device).unsqueeze(0)
-    visible = (dist <= communication_radius) & ~self_mask
+    visible = compute_visibility_mask(positions, communication_radius)
     visible_f = visible.float()
     count = visible_f.sum(dim=-1).clamp_min(1.0)
     centroid_rel = (delta * visible_f[..., None]).sum(dim=2) / count[..., None]

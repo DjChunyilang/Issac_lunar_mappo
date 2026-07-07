@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from _common import ROOT, cfg_from_experiment
+from _common import ROOT, cfg_from_experiment, load_yaml
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore
 from play import _load_policy_players
 
@@ -57,6 +57,7 @@ def evaluate_checkpoint(
     if run_dir is not None and output is None:
         output = Path(run_dir) / "metrics" / "final_eval_proxy.json"
 
+    raw_cfg = load_yaml(config)
     cfg = cfg_from_experiment(config)
     cfg.simulation.num_envs = num_envs
     if device is not None:
@@ -80,7 +81,7 @@ def evaluate_checkpoint(
         cfg.planner.subgoal_filter.deterministic_eval = True
 
     env = MultiRoverGatheringCore(cfg)
-    act, backend = _load_policy_players(checkpoint_data, cfg, env.device)
+    act, backend = _load_policy_players(checkpoint_data, cfg, env.device, raw_cfg=raw_cfg)
     actor_obs, _ = env.get_observations()
 
     initial_dmax = env.metrics.dmax.detach().clone()

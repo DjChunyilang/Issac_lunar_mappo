@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from _common import ROOT, cfg_from_experiment
+from _common import ROOT, cfg_from_experiment, load_yaml
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore
 from play import _load_policy_players
 from terrain_viz import add_height_heatmap, height_grid_for_extent, save_height_map
@@ -209,6 +209,7 @@ def render_rollout(
     if metrics_output is None:
         metrics_output = Path(output).with_suffix(".json")
 
+    raw_cfg = load_yaml(config)
     cfg = cfg_from_experiment(config)
     cfg.simulation.num_envs = 1
     cfg.simulation.device = device
@@ -232,7 +233,7 @@ def render_rollout(
 
     env = MultiRoverGatheringCore(cfg)
     rollout_terrain_runtime = env.terrain_runtime.clone()
-    act, backend = _load_policy_players(checkpoint_data, cfg, env.device)
+    act, backend = _load_policy_players(checkpoint_data, cfg, env.device, raw_cfg=raw_cfg)
     actor_obs, _ = env.get_observations()
 
     history: list[np.ndarray] = []

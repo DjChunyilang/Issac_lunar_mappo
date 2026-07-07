@@ -26,7 +26,15 @@
 - `exp037` 已完成 260-step episode/eval 诊断；timeout 降低但 collision 反弹，说明问题不是单纯时间预算。
 - `exp038` 已完成 success-zone stabilizer + 320-step episode/eval；当前随机地形最佳候选，success/collision 已过 strict，仅 timeout `0.0107` 未过。
 - `exp039` / `exp040` 已完成 exp038 checkpoint 诊断复评；hard near 与 stronger soft hold 都不建议长训。
-- `exp041` 已完成 hold-zone override 诊断和 CPU/CUDA smoke；在 exp038 best 上略优，是下一轮长训候选。
+- `exp041` 已完成 hold-zone override 诊断和 CPU/CUDA smoke；在 exp038 best 上略优，但当前暂停继续长训。
+- `exp042` 已完成结构化 Actor/Critic、bicycle proxy 和 quintic trajectory 工程探针；当前配置进一步扩大到 `25 m × 25 m` 地图，并用 `communication_radius=0.0` 临时取消通信距离限制；只验证训练环境链路，不作为收敛实验。
+- `exp043` 是新环境栈下的直接长跑：从随机初始化开始，迁移 exp041 hold-zone override，并扩大 reset 初始队形分布；40M 已完成但 success `0.0`、timeout `1.0`，说明直接上 25m 大地图/大初始分布没有恢复集合学习。
+- `exp044` 已完成：保留新网络、bicycle、quintic、25m 地图和无限通信，并新增 initial-state curriculum；final eval dmax ratio 改善到 `0.4796`，但 success 仍为 `0.0`、timeout `0.9980`，说明课程有效但不足。
+- `exp045` 已完成：保留新环境栈和 25m 地图，但改成 local-success bootstrap；final eval success 提升到 `0.1846`，collision `0.0`，但 dmax/dispersion/timeout 仍未通过。
+- `exp046` 已完成：local success 提升到 `0.6123`、collision `0.0`，但 dmax `0.2424` 和 timeout `0.3877` 未过 strict。
+- `exp047` 已完成：success `0.7188`、collision `0.0059`、dmax ratio `0.2132`，但 timeout `0.2764` 仍未 strict；这是新环境栈 local reset 当前最好结果。
+- `exp048` 已完成：dmax `0.1866`、success `0.9844`、collision `0.0020` 均通过，唯一失败为 timeout `0.0137`。
+- `exp049` 已完成：针对 exp048 剩余最近邻安全间距灰区增强 terminal spacing，但 final eval success `0.8926`、timeout `0.1064`，明显差于 exp048，说明全局 spacing/filter/control safety 修正过强。
 - PhysX / Isaac Sim 作为 checkpoint 级高保真闭环评估和展示层，不进入当前主训练 loop。
 - 新训练和评估默认写入 `outputs/runs/<experiment>/<run>/`。
 
@@ -265,14 +273,104 @@ outputs/runs/exp022_randomized_terrain_endpoint_safety_filter/
 
 - 在 exp038 best 上使用 exp041 配置 eval：success `0.9795`、collision `0.0107`、timeout `0.0098`。
 - CPU/CUDA smoke 已通过。
-- 结果略优于 exp038，但仍只是 checkpoint 复评；下一步应从随机初始化执行 exp041 长训。
+- 结果略优于 exp038，但仍只是 checkpoint 复评；当前暂停继续长训，不启动 exp041。
+
+`exp042_structured_actor_bicycle_quintic_probe` 已完成环境工程探针：
+
+- 配置：`configs/experiment/exp042_structured_actor_bicycle_quintic_probe.yaml`。
+- Actor 使用 `branched_v1`：ego `10->32`、neighbor `21->48`、terrain `50->64`、aggregation `5->16`，concat `160` 后接 `128->128->2` 共享主干。
+- Critic 使用 `structured_v1`：agent states `4x8` 经共享 encoder 后 mean+max 聚合，team stats、terrain summary 和 oracle state 分支后接 value trunk。
+- Proxy 动力学使用 `low_level_control.kinematic_model=bicycle`，轨迹生成使用 `trajectory_generator.geometry_method=quintic`。
+- 当前地图设置：`safety.world_xy_limit=12.5`、`terrain.crater_field_size=25.0`，对应 `25 m × 25 m` 训练区域。
+- 当前通信设置：`observation.communication_radius=0.0`，表示所有非自身 rover 可见。Actor 地形网格仍保持 `5×5×2=50` 维，暂不扩大感知面积。
+- CPU smoke：`8 env / 8 timesteps` 通过。
+- CUDA smoke：`256 env / 64 timesteps / rollout 32` 通过；一个 optimizer、两次 joint update、terrain branch 权重更新 `0.1263`、动作非退化。
+
+`exp043_structured_bicycle_quintic_map25_long` 已完成直接长训：
+
+- 配置：`configs/experiment/exp043_structured_bicycle_quintic_map25_long.yaml`。
+- 保持 `branched_v1` Actor、`structured_v1` Critic、`bicycle` proxy、`quintic` 轨迹、Actor/Critic `86/54` 接口和 `communication_radius=0.0`。
+- 继承 exp041 的 hold-zone override：`hold_zone_spacing_weight=8.0`、`hold_zone_pairwise_distance=0.58`、`hold_zone_override_after_warmup=true`。
+- 训练分布扩大：`initial_state.spawn_radius_min/max=4.5/6.5`、`center_xy_range=3.0`、`jitter_std=0.45`。
+- 地形密度相对 exp042 probe 提高：`crater_count=48`、`crater_field_size=25.0`、`random_translation_m=5.0`。
+- MAPPO：2048 env、rollout 64、`20480` timesteps（约 `41,943,040` env steps）、checkpoint interval 1024、`success_progress_long` selection。
+- 结果：best 为 `ppo_timestep_020480.pt`，final eval dmax ratio `0.8596`、success `0.0`、collision `0.0`、timeout `1.0`。
+- 判读：工程链路正常、参数和 terrain branch 均更新，但扩大后的初始分布让 pure RL 几乎没有学到集合进度；下一步优先做 initial-state curriculum，而不是单纯继续加训练预算。
+
+`exp044_structured_bicycle_quintic_map25_curriculum` 已完成：
+
+- 配置：`configs/experiment/exp044_structured_bicycle_quintic_map25_curriculum.yaml`。
+- 保持 `branched_v1` Actor、`structured_v1` Critic、`bicycle` proxy、`quintic` 轨迹、Actor/Critic `86/54` 接口、`25 m × 25 m` 地图和 `communication_radius=0.0`。
+- reset 目标难度改为 `spawn_radius_min/max=3.8/5.2`、`center_xy_range=2.0`、`jitter_std=0.40`。
+- initial-state curriculum：训练前 `4096` timesteps 使用 `3.0/4.0` spawn radius、`center_xy_range=1.0`、`jitter_std=0.35`，随后 `8192` timesteps 线性 ramp 到目标分布；独立 eval 不使用课程 override，仍在目标难度上判定。
+- 地形密度从 exp043 的 `crater_count=48` 回调到 `36`，避免在 25m 地图与 bicycle/quintic 叠加时地形阻力过早主导。
+- 探索参数较 exp043 收敛一点：`initial_log_std=-1.1`、entropy `0.0015 -> 0.0003` over `8192` timesteps。
+- MAPPO：2048 env、rollout 64、`20480` timesteps（约 `41,943,040` env steps）、checkpoint interval 1024、`success_progress_long` selection。
+- 结果：best 为 `ppo_timestep_020480.pt`，final eval dmax ratio `0.4796`、success `0.0`、collision `0.00195`、timeout `0.9980`。
+- 判读：相对 exp043 明显改善靠拢距离，但全部候选 checkpoint 的 success 仍为 `0`；下一步应先做 local-success bootstrap。
+
+`exp045_structured_bicycle_quintic_map25_local_success_bootstrap` 已完成：
+
+- 配置：`configs/experiment/exp045_structured_bicycle_quintic_map25_local_success_bootstrap.yaml`。
+- 保持 `branched_v1` Actor、`structured_v1` Critic、`bicycle` proxy、`quintic` 轨迹、Actor/Critic `86/54` 接口、`25 m × 25 m` 地图和 `communication_radius=0.0`。
+- reset 目标难度缩小到 `spawn_radius_min/max=2.4/3.4`、`center_xy_range=1.0`、`jitter_std=0.25`；课程起点为 `1.6/2.4`、`center_xy_range=0.5`。
+- 动作/低层略放大：`rho_max=1.6`、`beta_max=60°`、`max_steer_angle≈45°`、`reference_speed=0.9`。
+- reward 临时偏向中距离集合：`dmax_progress=5.5`、`dispersion_progress=2.4`、`oracle_mean_distance_progress=3.0`，terrain weight 降到 `0.20`。
+- filter 仍保留 safety/path 作用，但 apply probability 和 score scale 降低，避免早期过度替换集合意图。
+- MAPPO：2048 env、rollout 64、`20480` timesteps（约 `41,943,040` env steps）、checkpoint interval 1024、`success_progress_long` selection。
+- 结果：best 为 `ppo_timestep_020480.pt`，final eval dmax ratio `0.2734`、success `0.1846`、collision `0.0`、timeout `0.8174`。
+- 判读：local bootstrap 有效，但多数 episode 停在 success 区外侧；下一步需要末端释放与 dmax/dispersion 收缩。
+
+`exp046_structured_bicycle_quintic_map25_local_hold_release` 已完成：
+
+- 配置：`configs/experiment/exp046_structured_bicycle_quintic_map25_local_hold_release.yaml`。
+- 保持 `branched_v1` Actor、`structured_v1` Critic、`bicycle` proxy、`quintic` 轨迹、Actor/Critic `86/54` 接口、`25 m × 25 m` 地图和 `communication_radius=0.0`。
+- reset 分布沿用 exp045：目标 `2.4–3.4 m`，课程起点 `1.6–2.4 m`。
+- 降低 filter 介入：`apply_probability_end=0.22`、`score_scale_end=0.35`。
+- 降低 control safety 阻尼：activation distance `0.68`、projection strength `0.70`、min linear scale `0.40`。
+- 增强末端集合：`dmax_progress=7.0`、`dispersion_progress=3.2`、`success_bonus=85`、`timeout_penalty=45`，terrain weight 降到 `0.15`。
+- MAPPO：2048 env、rollout 64、`20480` timesteps（约 `41,943,040` env steps）、checkpoint interval 1024、`success_progress_long` selection。
+- 结果：best 为 `ppo_timestep_015360.pt`，final eval dmax ratio `0.2424`、success `0.6123`、collision `0.0`、timeout `0.3877`。
+- 判读：local terminal release 有效，但未 strict；失败样本仍停在 success 区外，下一轮应继续释放末端阻尼并加强收缩/timeout。
+
+`exp047_structured_bicycle_quintic_map25_terminal_convergence` 已完成：
+
+- 配置：`configs/experiment/exp047_structured_bicycle_quintic_map25_terminal_convergence.yaml`。
+- reset 分布保持 exp046：目标 `2.4–3.4 m`，课程起点 `1.6–2.4 m`。
+- filter 继续弱化：`apply_probability_end=0.16`、`score_scale_end=0.28`，并把 hold-zone 安全距离降到 `0.48 m` 附近。
+- control safety 继续释放：activation distance `0.62`、projection strength `0.50`、min linear scale `0.55`、success-zone linear scale `0.80`。
+- reward 更偏 terminal convergence：`dmax_progress=9.0`、`dispersion_progress=4.5`、`success_bonus=115`、`timeout_penalty=65`，terrain weight 降到 `0.12`。
+- MAPPO：2048 env、rollout 64、`20480` timesteps（约 `41,943,040` env steps）、checkpoint interval 1024、`success_progress_long` selection。
+- 结果：best 为 `ppo_timestep_015360.pt`，final eval dmax ratio `0.2132`、success `0.7188`、collision `0.0059`、timeout `0.2764`。
+- 判读：接近 dmax strict，但 timeout episode 仍停在成功区外且速度低；下一轮应提高 terminal drive 与 dispersion 收缩，而不是只延长 episode。
+
+`exp048_structured_bicycle_quintic_map25_terminal_drive` 已完成：
+
+- 配置：`configs/experiment/exp048_structured_bicycle_quintic_map25_terminal_drive.yaml`。
+- reset 分布保持 exp047：目标 `2.4–3.4 m`，课程起点 `1.6–2.4 m`。
+- filter 小步调整：`apply_probability_end=0.18`、`score_scale_end=0.30`、`hold_zone_pairwise_distance=0.46`，保留 collision override。
+- terminal drive：`reference_speed=1.15`、`max_linear_speed=1.35`、`projection_min_linear_scale=0.65`、`success_zone_linear_scale=0.95`。
+- reward：`dmax_progress=9.5`、`dispersion_progress=6.0`、`success_bonus=130`、`timeout_penalty=80`，terrain weight 降到 `0.10`。
+- MAPPO：2048 env、rollout 64、`20480` timesteps（约 `41,943,040` env steps）、checkpoint interval 1024、`success_progress_long` selection。
+- 结果：best 为 `ppo_timestep_008192.pt`，final eval dmax ratio `0.1866`、success `0.9844`、collision `0.0020`、timeout `0.0137`。
+- 判读：dmax/success/collision 已全部通过 strict；剩余 timeout episode 几何已经合格，但最近邻间距约 `0.393 m`，低于 `0.42 m` 成功安全阈值。
+
+`exp049_structured_bicycle_quintic_map25_terminal_spacing` 已完成：
+
+- 配置：`configs/experiment/exp049_structured_bicycle_quintic_map25_terminal_spacing.yaml`。
+- reset 分布保持 exp048：目标 `2.4–3.4 m`，课程起点 `1.6–2.4 m`。
+- terminal spacing：`hold_zone_pairwise_distance=0.52`、`hold_zone_spacing_weight=4.60`、`endpoint_safe_distance=0.44`、`path_safe_distance=0.32`。
+- control safety 轻量回收：`projection_activation_distance=0.64`、`projection_strength=0.55`、`projection_min_linear_scale=0.58`、success-zone scale `0.88`。
+- reward：`near_distance=3.4`、`dispersion_progress=6.2`、`timeout_penalty=90`、`success_bonus=135`。
+- MAPPO：2048 env、rollout 64、`20480` timesteps（约 `41,943,040` env steps）、checkpoint interval 1024、`success_progress_long` selection。
+- 结果：best 为 `ppo_timestep_010240.pt`，final eval dmax ratio `0.1884`、success `0.8926`、collision `0.0010`、timeout `0.1064`。
+- 判读：collision 更低但 success/timeout 明显退化；timeout episode 的最近邻安全性已大多满足，但 dmax/dispersion 反而变差，说明全局 spacing 修正扰动了末段几何收缩。
 
 当前下一轮方向：
 
-- 以 exp038 作为当前随机地形最佳综合 candidate。
-- 不再全局加硬 near/hold filter；exp039/exp040 已说明会退化。
-- 下一轮优先启动 exp041 从头长训，验证 hold-zone override 是否能在不破坏 success/collision 的前提下消除最后 `~1%` timeout。
-- 如果 exp041 长训仍只剩少量 timeout，应继续做更细粒度的末端 pairwise spacing controller，而不是扩大全局安全惩罚。
+- 以 exp048 作为当前新环境栈 local reset 最佳 candidate。
+- 不再全局加硬 near/hold/spacing filter；exp039/exp040 和 exp049 均说明会扰动 success 或 timeout。
+- 下一轮应回退 exp048 主体，只加入窄触发 terminal spacing：仅在 dmax/dispersion 已接近成功、且最近邻落入 `0.28–0.42 m` 灰区时生效。
 
 ## Checkpoint 复评计划
 

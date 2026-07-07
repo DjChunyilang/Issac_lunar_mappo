@@ -12,10 +12,18 @@ def compute_visibility_mask(
     positions: torch.Tensor,
     communication_radius: float,
 ) -> torch.Tensor:
+    """Return non-self neighbor visibility.
+
+    A non-positive radius is treated as the temporary "unlimited communication"
+    setting used by engineering probes, not as a zero-meter visibility range.
+    """
+
     delta = positions[:, :, None, :2] - positions[:, None, :, :2]
     dist = torch.linalg.norm(delta, dim=-1)
     n_agents = positions.shape[1]
     self_mask = torch.eye(n_agents, dtype=torch.bool, device=positions.device).unsqueeze(0)
+    if float(communication_radius) <= 0.0:
+        return (~self_mask).expand(positions.shape[0], -1, -1)
     return (dist <= communication_radius) & ~self_mask
 
 

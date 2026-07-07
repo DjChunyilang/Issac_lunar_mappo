@@ -26,6 +26,7 @@ from _skrl_metadata import (
     resolve_training_semantics,
 )
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringSKRLEnv
+from lunar_rover_tasks.tasks.multi_rover_gathering.communication import compute_visibility_mask
 from lunar_rover_tasks.tasks.multi_rover_gathering.metrics import compute_team_metrics
 from lunar_rover_tasks.tasks.multi_rover_gathering.oracle import (
     compute_geometric_median,
@@ -45,29 +46,140 @@ from shared_policy_mappo import SharedPolicyMAPPO
 
 TRAINING_SEMANTICS = DEFAULT_TRAINING_SEMANTICS
 
+ACTOR_ARCHITECTURES = {"mlp_v1", "branched_v1"}
+CRITIC_ARCHITECTURES = {"mlp_v1", "structured_v1"}
+ACTOR_OBSERVATION_SLICES = {
+    "ego": (0, 10),
+    "neighbors": (10, 31),
+    "terrain": (31, 81),
+    "aggregation": (81, 86),
+}
+CRITIC_STATE_SLICES = {
+    "agents": (0, 32),
+    "team": (32, 40),
+    "terrain": (40, 45),
+    "oracle": (45, 54),
+}
+
+
+def _slice_metadata(slices: dict[str, tuple[int, int]]) -> dict[str, dict[str, int]]:
+    return {
+        name: {"start": start, "end": end, "dim": end - start}
+        for name, (start, end) in slices.items()
+    }
+
+
+def observation_slices_metadata() -> dict[str, dict[str, int]]:
+    return _slice_metadata(ACTOR_OBSERVATION_SLICES)
+
+
+def critic_state_slices_metadata() -> dict[str, dict[str, int]]:
+    metadata = _slice_metadata(CRITIC_STATE_SLICES)
+    metadata["agents"]["shape_agents"] = 4
+    metadata["agents"]["shape_features"] = 8
+    return metadata
+
+
+def normalize_actor_architecture(value: Any | None) -> str:
+    architecture = "mlp_v1" if value is None else str(value)
+    if architecture not in ACTOR_ARCHITECTURES:
+        raise ValueError(
+            "algorithm.actor_architecture must be one of: "
+            f"{', '.join(sorted(ACTOR_ARCHITECTURES))}."
+        )
+    return architecture
+
+
+def normalize_critic_architecture(value: Any | None) -> str:
+    architecture = "mlp_v1" if value is None else str(value)
+    if architecture not in CRITIC_ARCHITECTURES:
+        raise ValueError(
+            "algorithm.critic_architecture must be one of: "
+            f"{', '.join(sorted(CRITIC_ARCHITECTURES))}."
+        )
+    return architecture
+
 
 class SKRLPolicy(GaussianMixin, Model):
-    def __init__(self, observation_space, action_space, device, initial_log_std: float = -0.5):
+    def __init__(
+        self,
+        observation_space,
+        action_space,
+        device,
+        initial_log_std: float = -0.5,
+        architecture: str = "mlp_v1",
+    ):
         Model.__init__(self, observation_space=observation_space, action_space=action_space, device=device)
         GaussianMixin.__init__(self, clip_actions=True, clip_log_std=True, reduction="sum")
-        self.net = nn.Sequential(
-            nn.Linear(self.num_observations, 128),
-            nn.ELU(),
-            nn.Linear(128, 128),
-            nn.ELU(),
-            nn.Linear(128, self.num_actions),
-        )
+        self.architecture = normalize_actor_architecture(architecture)
+        if self.architecture == "mlp_v1":
+            self.net = nn.Sequential(
+                nn.Linear(self.num_observations, 128),
+                nn.ELU(),
+                nn.Linear(128, 128),
+                nn.ELU(),
+                nn.Linear(128, self.num_actions),
+            )
+        else:
+            if self.num_observations != 86:
+                raise ValueError(
+                    "branched_v1 actor expects the fixed ego_v3 86-dim observation."
+                )
+            self.ego_encoder = nn.Sequential(nn.Linear(10, 32), nn.ELU())
+            self.neighbor_encoder = nn.Sequential(nn.Linear(21, 48), nn.ELU())
+            self.terrain_encoder = nn.Sequential(nn.Linear(50, 64), nn.ELU())
+            self.aggregation_encoder = nn.Sequential(nn.Linear(5, 16), nn.ELU())
+            self.trunk = nn.Sequential(
+                nn.Linear(160, 128),
+                nn.ELU(),
+                nn.Linear(128, 128),
+                nn.ELU(),
+                nn.Linear(128, self.num_actions),
+            )
         self.log_std_parameter = nn.Parameter(
             torch.full((self.num_actions,), float(initial_log_std))
         )
 
     def compute(self, inputs, role):
-        mean = torch.tanh(self.net(inputs["observations"]))
+        observations = inputs["observations"]
+        if self.architecture == "mlp_v1":
+            logits = self.net(observations)
+        else:
+            ego_start, ego_end = ACTOR_OBSERVATION_SLICES["ego"]
+            neighbor_start, neighbor_end = ACTOR_OBSERVATION_SLICES["neighbors"]
+            terrain_start, terrain_end = ACTOR_OBSERVATION_SLICES["terrain"]
+            aggregation_start, aggregation_end = ACTOR_OBSERVATION_SLICES["aggregation"]
+            encoded = torch.cat(
+                (
+                    self.ego_encoder(observations[..., ego_start:ego_end]),
+                    self.neighbor_encoder(observations[..., neighbor_start:neighbor_end]),
+                    self.terrain_encoder(observations[..., terrain_start:terrain_end]),
+                    self.aggregation_encoder(
+                        observations[..., aggregation_start:aggregation_end]
+                    ),
+                ),
+                dim=-1,
+            )
+            logits = self.trunk(encoded)
+        mean = torch.tanh(logits)
         return mean, {"log_std": self.log_std_parameter.expand_as(mean)}
+
+    def terrain_input_weight(self) -> torch.Tensor:
+        if self.architecture == "mlp_v1":
+            terrain_start, terrain_end = ACTOR_OBSERVATION_SLICES["terrain"]
+            return self.net[0].weight[:, terrain_start:terrain_end]
+        return self.terrain_encoder[0].weight
 
 
 class SKRLValue(DeterministicMixin, Model):
-    def __init__(self, observation_space, state_space, action_space, device):
+    def __init__(
+        self,
+        observation_space,
+        state_space,
+        action_space,
+        device,
+        architecture: str = "mlp_v1",
+    ):
         Model.__init__(
             self,
             observation_space=observation_space,
@@ -76,16 +188,65 @@ class SKRLValue(DeterministicMixin, Model):
             device=device,
         )
         DeterministicMixin.__init__(self)
-        self.net = nn.Sequential(
-            nn.Linear(self.num_states, 128),
-            nn.ELU(),
-            nn.Linear(128, 128),
-            nn.ELU(),
-            nn.Linear(128, 1),
-        )
+        self.architecture = normalize_critic_architecture(architecture)
+        if self.architecture == "mlp_v1":
+            self.net = nn.Sequential(
+                nn.Linear(self.num_states, 128),
+                nn.ELU(),
+                nn.Linear(128, 128),
+                nn.ELU(),
+                nn.Linear(128, 1),
+            )
+        else:
+            if self.num_states != 54:
+                raise ValueError("structured_v1 critic expects the fixed 54-dim state.")
+            self.agent_encoder = nn.Sequential(nn.Linear(8, 32), nn.ELU())
+            self.team_encoder = nn.Sequential(nn.Linear(8, 32), nn.ELU())
+            self.terrain_encoder = nn.Sequential(nn.Linear(5, 16), nn.ELU())
+            self.oracle_encoder = nn.Sequential(nn.Linear(9, 32), nn.ELU())
+            self.value_trunk = nn.Sequential(
+                nn.Linear(144, 128),
+                nn.ELU(),
+                nn.Linear(128, 128),
+                nn.ELU(),
+                nn.Linear(128, 1),
+            )
 
     def compute(self, inputs, role):
-        return self.net(inputs["states"]), {}
+        states = inputs["states"]
+        if self.architecture == "mlp_v1":
+            return self.net(states), {}
+        agents_start, agents_end = CRITIC_STATE_SLICES["agents"]
+        team_start, team_end = CRITIC_STATE_SLICES["team"]
+        terrain_start, terrain_end = CRITIC_STATE_SLICES["terrain"]
+        oracle_start, oracle_end = CRITIC_STATE_SLICES["oracle"]
+        agent_features = states[..., agents_start:agents_end].reshape(-1, 4, 8)
+        encoded_agents = self.agent_encoder(agent_features)
+        agent_mean = encoded_agents.mean(dim=1)
+        agent_max = encoded_agents.amax(dim=1)
+        encoded = torch.cat(
+            (
+                agent_mean,
+                agent_max,
+                self.team_encoder(states[..., team_start:team_end]),
+                self.terrain_encoder(states[..., terrain_start:terrain_end]),
+                self.oracle_encoder(states[..., oracle_start:oracle_end]),
+            ),
+            dim=-1,
+        )
+        return self.value_trunk(encoded), {}
+
+
+def terrain_input_weight_snapshot(policy: SKRLPolicy) -> torch.Tensor:
+    return policy.terrain_input_weight().detach().clone()
+
+
+def terrain_input_weight_delta_l2(
+    policy: SKRLPolicy,
+    snapshot: torch.Tensor,
+) -> float:
+    delta = policy.terrain_input_weight().detach() - snapshot
+    return float(torch.linalg.vector_norm(delta).cpu())
 
 
 def parse_bool_config(value, *, default: bool) -> bool:
@@ -136,9 +297,10 @@ def scripted_gather_action(
     """Return a safety-aware local subgoal action for BC warm-up."""
     positions_xy = env.positions[..., :2]
     if visible_local:
-        pairwise = torch.cdist(positions_xy, positions_xy)
-        eye = torch.eye(env.n_agents, dtype=torch.bool, device=env.device).unsqueeze(0)
-        visible = (pairwise <= env.cfg.observation.communication_radius) & ~eye
+        visible = compute_visibility_mask(
+            env.positions,
+            float(env.cfg.observation.communication_radius),
+        )
         visible_f = visible.to(dtype=positions_xy.dtype)
         local_sum = torch.einsum("eij,ejd->eid", visible_f, positions_xy) + positions_xy
         local_count = visible_f.sum(dim=-1, keepdim=True) + 1.0
@@ -270,9 +432,10 @@ def _randomize_bc_state(
     env.last_terrain_speed_scale.fill_(1.0)
     env.last_height_delta.zero_()
     if visible_local and yaw_noise_degrees is not None:
-        pairwise = torch.cdist(env.positions[..., :2], env.positions[..., :2])
-        eye = torch.eye(env.n_agents, dtype=torch.bool, device=env.device).unsqueeze(0)
-        visible = (pairwise <= env.cfg.observation.communication_radius) & ~eye
+        visible = compute_visibility_mask(
+            env.positions,
+            float(env.cfg.observation.communication_radius),
+        )
         visible_f = visible.to(dtype=env.positions.dtype)
         local_sum = (
             torch.einsum("eij,ejd->eid", visible_f, env.positions[..., :2])
@@ -829,6 +992,40 @@ def control_safety_metadata(cfg) -> dict[str, Any]:
     }
 
 
+def environment_geometry_metadata(cfg) -> dict[str, Any]:
+    """Return map-scale metadata that does not affect checkpoint compatibility."""
+
+    world_half_width = float(cfg.safety.world_xy_limit)
+    return {
+        "world_xy_limit": world_half_width,
+        "map_size_m": 2.0 * world_half_width,
+        "terrain_crater_field_size": float(cfg.terrain.crater_field_size),
+    }
+
+
+def initial_state_metadata(cfg) -> dict[str, Any]:
+    initial_state = cfg.initial_state
+    return {
+        "spawn_radius_min": float(initial_state.spawn_radius_min),
+        "spawn_radius_max": float(initial_state.spawn_radius_max),
+        "center_xy_range": float(initial_state.center_xy_range),
+        "jitter_std": float(initial_state.jitter_std),
+        "curriculum_enabled": bool(initial_state.curriculum_enabled),
+        "curriculum_start_spawn_radius_min": float(
+            initial_state.curriculum_start_spawn_radius_min
+        ),
+        "curriculum_start_spawn_radius_max": float(
+            initial_state.curriculum_start_spawn_radius_max
+        ),
+        "curriculum_start_center_xy_range": float(
+            initial_state.curriculum_start_center_xy_range
+        ),
+        "curriculum_start_jitter_std": float(initial_state.curriculum_start_jitter_std),
+        "curriculum_warmup_timesteps": int(initial_state.curriculum_warmup_timesteps),
+        "curriculum_ramp_timesteps": int(initial_state.curriculum_ramp_timesteps),
+    }
+
+
 def terrain_sanity_metrics(cfg, device: torch.device | str, samples_per_axis: int = 61) -> dict:
     extent = 0.5 * float(cfg.terrain.crater_field_size)
     axis = torch.linspace(-extent, extent, samples_per_axis, device=device)
@@ -884,6 +1081,8 @@ def build_skrl_mappo_models(
     centralized_critic: bool = True,
     shared_value: bool = True,
     initial_log_std: float = -0.5,
+    actor_architecture: str = "mlp_v1",
+    critic_architecture: str = "mlp_v1",
 ) -> dict[str, dict[str, Model]]:
     """Build MAPPO models with project CTDE semantics.
 
@@ -894,6 +1093,8 @@ def build_skrl_mappo_models(
         raise ValueError("This project only wires SKRL MAPPO with a centralized critic state.")
     if shared_actor or shared_value:
         _validate_homogeneous_spaces(env)
+    actor_architecture = normalize_actor_architecture(actor_architecture)
+    critic_architecture = normalize_critic_architecture(critic_architecture)
 
     first_agent = env.possible_agents[0]
     shared_policy = (
@@ -902,6 +1103,7 @@ def build_skrl_mappo_models(
             env.action_spaces[first_agent],
             env.device,
             initial_log_std,
+            architecture=actor_architecture,
         )
         if shared_actor
         else None
@@ -912,6 +1114,7 @@ def build_skrl_mappo_models(
             env.state_space,
             env.action_spaces[first_agent],
             env.device,
+            architecture=critic_architecture,
         )
         if shared_value
         else None
@@ -927,6 +1130,7 @@ def build_skrl_mappo_models(
                 env.action_spaces[agent_id],
                 env.device,
                 initial_log_std,
+                architecture=actor_architecture,
             ),
             "value": shared_critic
             if shared_value
@@ -935,6 +1139,7 @@ def build_skrl_mappo_models(
                 env.state_space,
                 env.action_spaces[agent_id],
                 env.device,
+                architecture=critic_architecture,
             ),
         }
     return models
@@ -1484,6 +1689,35 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
             }
             telemetry_state["control_safety"] = safety_metrics
             _accumulate_numeric_metrics(telemetry_state, "control_safety", safety_metrics)
+        kinematics = info.get("kinematics")
+        if kinematics is not None:
+            turning_radius = kinematics["turning_radius"].detach().float()
+            finite_turning_radius = turning_radius[torch.isfinite(turning_radius)]
+            turning_radius_mean = (
+                float(finite_turning_radius.mean().cpu())
+                if finite_turning_radius.numel() > 0
+                else 0.0
+            )
+            kinematics_metrics = {
+                "kinematic_model_bicycle": float(
+                    str(kinematics.get("kinematic_model", "unicycle")) == "bicycle"
+                ),
+                "steering_angle_abs_mean": float(
+                    kinematics["steering_angle"].detach().float().abs().mean().cpu()
+                ),
+                "steering_angle_abs_max": float(
+                    kinematics["steering_angle"].detach().float().abs().amax().cpu()
+                ),
+                "actual_yaw_rate_abs_mean": float(
+                    kinematics["actual_yaw_rate"].detach().float().abs().mean().cpu()
+                ),
+                "turning_radius_finite_fraction": float(
+                    torch.isfinite(turning_radius).float().mean().cpu()
+                ),
+                "turning_radius_mean": turning_radius_mean,
+            }
+            telemetry_state["kinematics"] = kinematics_metrics
+            _accumulate_numeric_metrics(telemetry_state, "kinematics", kinematics_metrics)
         writer = telemetry_state.get("writer")
         interval = int(telemetry_state.get("interval", 0))
         if writer is not None and interval > 0 and telemetry_state["step"] % interval == 0:
@@ -1515,6 +1749,7 @@ def build_training_telemetry(
     oracle = mean_oracle_distance
     threshold = float(env.cfg.success_thresholds.dmax)
     nearest = metrics.nearest_neighbor_distance.amin(dim=-1)
+    effective_initial_state = env.core._effective_initial_state_values()
     telemetry = {
         "run_id": run_id,
         "phase": phase,
@@ -1536,6 +1771,18 @@ def build_training_telemetry(
         "observation_schema_version": env.cfg.observation.schema_version,
         "actor_obs_dim": env.cfg.actor_obs_dim,
         "critic_state_dim": env.cfg.critic_state_dim,
+        "kinematic_model": env.cfg.low_level_control.kinematic_model,
+        "trajectory_geometry_method": env.cfg.trajectory_generator.geometry_method,
+        "initial_state_curriculum_enabled": bool(
+            env.cfg.initial_state.curriculum_enabled
+        ),
+        "initial_state_progress_timestep": int(
+            env.cfg.initial_state.progress_timestep_override
+        ),
+        "initial_state_effective_spawn_radius_min": effective_initial_state[0],
+        "initial_state_effective_spawn_radius_max": effective_initial_state[1],
+        "initial_state_effective_center_xy_range": effective_initial_state[2],
+        "initial_state_effective_jitter_std": effective_initial_state[3],
         "success_threshold": {
             "dmax": float(env.cfg.success_thresholds.dmax),
             "dispersion": float(env.cfg.success_thresholds.dispersion),
@@ -1556,11 +1803,14 @@ def build_training_telemetry(
     filter_metrics.update(telemetry_state.get("action_filter_window", {}))
     control_safety_metrics = dict(telemetry_state.get("control_safety", {}))
     control_safety_metrics.update(telemetry_state.get("control_safety_window", {}))
+    kinematics_metrics = dict(telemetry_state.get("kinematics", {}))
+    kinematics_metrics.update(telemetry_state.get("kinematics_window", {}))
     telemetry.update(reward_metrics)
     telemetry.update(action_metrics)
     telemetry.update(path_metrics)
     telemetry.update(filter_metrics)
     telemetry.update(control_safety_metrics)
+    telemetry.update(kinematics_metrics)
     telemetry.update(telemetry_state.get("done_counts", _empty_done_counts()))
     telemetry.update(_stats("final_pairwise_distance", pairwise))
     telemetry.update(_stats("final_oracle_distance", oracle))
@@ -1720,11 +1970,49 @@ def skrl_mappo_checkpoint_payload(
     experiment = raw_cfg.get("experiment", {}) if isinstance(raw_cfg.get("experiment", {}), dict) else {}
     algorithm = raw_cfg.get("algorithm", {}) if isinstance(raw_cfg.get("algorithm", {}), dict) else {}
     terrain = raw_cfg.get("terrain", {}) if isinstance(raw_cfg.get("terrain", {}), dict) else {}
+    low_level_control = (
+        raw_cfg.get("low_level_control", {})
+        if isinstance(raw_cfg.get("low_level_control", {}), dict)
+        else {}
+    )
+    trajectory_generator = (
+        raw_cfg.get("trajectory_generator", {})
+        if isinstance(raw_cfg.get("trajectory_generator", {}), dict)
+        else {}
+    )
+    model_actor_architecture = getattr(
+        models[possible_agents[0]]["policy"],
+        "architecture",
+        "mlp_v1",
+    )
+    model_critic_architecture = getattr(
+        models[possible_agents[0]]["value"],
+        "architecture",
+        "mlp_v1",
+    )
+    actor_architecture = normalize_actor_architecture(
+        algorithm.get("actor_architecture", model_actor_architecture)
+    )
+    critic_architecture = normalize_critic_architecture(
+        algorithm.get("critic_architecture", model_critic_architecture)
+    )
     payload["metadata"] = {
         "training_semantics": training_semantics,
         "backend": "skrl.mappo",
         "experiment_name": experiment.get("name"),
         "algorithm_mode": algorithm.get("mode"),
+        "actor_architecture": actor_architecture,
+        "critic_architecture": critic_architecture,
+        "observation_slices": observation_slices_metadata(),
+        "critic_state_slices": critic_state_slices_metadata(),
+        "kinematic_model": str(low_level_control.get("kinematic_model", "unicycle")),
+        "wheelbase_m": float(low_level_control.get("wheelbase_m", 0.65)),
+        "max_steer_angle_rad": float(
+            low_level_control.get("max_steer_angle_rad", 0.610865)
+        ),
+        "trajectory_geometry_method": str(
+            trajectory_generator.get("geometry_method", "line")
+        ),
         "observation_schema_version": observation_schema_version,
         "actor_obs_dim": actor_obs_dim,
         "critic_state_dim": critic_state_dim,
@@ -1854,6 +2142,12 @@ def main() -> None:
     shared_actor = parse_bool_config(algo.get("shared_actor"), default=True)
     centralized_critic = parse_bool_config(algo.get("centralized_critic"), default=True)
     shared_value = parse_bool_config(algo.get("shared_value"), default=True)
+    actor_architecture = normalize_actor_architecture(
+        algo.get("actor_architecture", "mlp_v1")
+    )
+    critic_architecture = normalize_critic_architecture(
+        algo.get("critic_architecture", "mlp_v1")
+    )
     training_semantics = resolve_training_semantics(raw_cfg)
     eval_num_envs = int(
         args.eval_num_envs
@@ -1885,6 +2179,8 @@ def main() -> None:
         centralized_critic=centralized_critic,
         shared_value=shared_value,
         initial_log_std=float(algo.get("initial_log_std", -0.5)),
+        actor_architecture=actor_architecture,
+        critic_architecture=critic_architecture,
     )
     policy = models[possible_agents[0]]["policy"]
     policy.to(env.device)
@@ -1892,7 +2188,7 @@ def main() -> None:
         parameter.detach().clone()
         for parameter in policy.parameters()
     ]
-    random_initial_first_layer_weight = policy.net[0].weight.detach().clone()
+    random_initial_terrain_weight = terrain_input_weight_snapshot(policy)
     bc_updates = int(algo.get("bc_updates", algo.get("bc_steps", 0)))
     bc_batch_size = int(algo.get("bc_batch_size", 8192))
     bc_learning_rate = float(algo.get("bc_learning_rate", 1.0e-3))
@@ -1975,7 +2271,7 @@ def main() -> None:
         parameter.detach().clone()
         for parameter in policy.parameters()
     ]
-    initial_first_layer_weight = policy.net[0].weight.detach().clone()
+    initial_terrain_weight = terrain_input_weight_snapshot(policy)
 
     if args.bc_only:
         if output_layout != "run":
@@ -2002,6 +2298,8 @@ def main() -> None:
                     "phase": "bc",
                     "update_mode": update_mode,
                     "communication_radius": cfg.observation.communication_radius,
+                    "environment_geometry": environment_geometry_metadata(cfg),
+                    "initial_state": initial_state_metadata(cfg),
                     "subgoal_filter": subgoal_filter_metadata(cfg),
                     "control_safety": control_safety_metadata(cfg),
                     "bc_updates": bc_updates,
@@ -2037,12 +2335,6 @@ def main() -> None:
             strict=True,
         ):
             parameter_delta_sq += (current.detach() - initial).square().sum()
-        terrain_start = (
-            cfg.observation.ego_dim
-            + cfg.observation.max_neighbors * cfg.observation.neighbor_dim
-        )
-        terrain_end = terrain_start + cfg.observation.terrain_dim
-        first_layer_delta = policy.net[0].weight.detach() - random_initial_first_layer_weight
         policy_eval_cfg = copy.deepcopy(cfg)
         policy_eval_cfg.simulation.num_envs = eval_num_envs
         policy_eval_cfg.seed = training_seed + eval_seed_offset
@@ -2055,9 +2347,7 @@ def main() -> None:
         diagnostics = {
             "policy_parameter_delta_l2": float(torch.sqrt(parameter_delta_sq).cpu()),
             "terrain_input_weight_delta_l2": float(
-                torch.linalg.vector_norm(
-                    first_layer_delta[:, terrain_start:terrain_end]
-                ).cpu()
+                terrain_input_weight_delta_l2(policy, random_initial_terrain_weight)
             ),
             "bc_parameter_delta_l2": float(torch.sqrt(parameter_delta_sq).cpu()),
             "bc_updates": bc_updates,
@@ -2085,6 +2375,12 @@ def main() -> None:
             "critic_state_dim": cfg.critic_state_dim,
             "update_mode": update_mode,
             "communication_radius": cfg.observation.communication_radius,
+            "environment_geometry": environment_geometry_metadata(cfg),
+            "initial_state": initial_state_metadata(cfg),
+            "actor_architecture": actor_architecture,
+            "critic_architecture": critic_architecture,
+            "kinematic_model": cfg.low_level_control.kinematic_model,
+            "trajectory_geometry_method": cfg.trajectory_generator.geometry_method,
             "terrain_sanity": terrain_sanity_metrics(cfg, env.device),
             "bc": {
                 "updates": bc_updates,
@@ -2159,6 +2455,7 @@ def main() -> None:
         _snapshot_numeric_metrics(telemetry_state, "path_terrain", "path_terrain_window")
         _snapshot_numeric_metrics(telemetry_state, "action_filter", "action_filter_window")
         _snapshot_numeric_metrics(telemetry_state, "control_safety", "control_safety_window")
+        _snapshot_numeric_metrics(telemetry_state, "kinematics", "kinematics_window")
         append_metrics_jsonl(
             telemetry_dir,
             build_training_telemetry(
@@ -2215,6 +2512,8 @@ def main() -> None:
                     "phase": "ppo",
                     "update_mode": update_mode,
                     "communication_radius": cfg.observation.communication_radius,
+                    "environment_geometry": environment_geometry_metadata(cfg),
+                    "initial_state": initial_state_metadata(cfg),
                     "subgoal_filter": subgoal_filter_metadata(cfg),
                     "control_safety": control_safety_metadata(cfg),
                     "bc_updates": bc_updates,
@@ -2236,16 +2535,22 @@ def main() -> None:
         candidate_paths.append(candidate_path)
         return candidate_path
 
-    if checkpoint_interval > 0:
-        original_post_interaction = agent.post_interaction
+    original_post_interaction = agent.post_interaction
+    use_initial_state_curriculum = bool(cfg.initial_state.curriculum_enabled)
+    if use_initial_state_curriculum:
+        cfg.initial_state.progress_timestep_override = 0
+        env.core.reset()
 
-        def post_interaction_with_checkpoint(*, timestep: int, timesteps: int) -> None:
-            original_post_interaction(timestep=timestep, timesteps=timesteps)
-            completed_timestep = timestep + 1
-            if completed_timestep % checkpoint_interval == 0:
-                save_candidate(completed_timestep)
+    def post_interaction_with_housekeeping(*, timestep: int, timesteps: int) -> None:
+        original_post_interaction(timestep=timestep, timesteps=timesteps)
+        completed_timestep = timestep + 1
+        if use_initial_state_curriculum:
+            cfg.initial_state.progress_timestep_override = completed_timestep
+        if checkpoint_interval > 0 and completed_timestep % checkpoint_interval == 0:
+            save_candidate(completed_timestep)
 
-        agent.post_interaction = post_interaction_with_checkpoint
+    if checkpoint_interval > 0 or use_initial_state_curriculum:
+        agent.post_interaction = post_interaction_with_housekeeping
 
     if env.device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(env.device)
@@ -2272,12 +2577,6 @@ def main() -> None:
     parameter_delta_sq = torch.zeros((), device=env.device)
     for initial, current in zip(initial_policy_parameters, policy.parameters(), strict=True):
         parameter_delta_sq = parameter_delta_sq + (current.detach() - initial).square().sum()
-    terrain_start = (
-        cfg.observation.ego_dim
-        + cfg.observation.max_neighbors * cfg.observation.neighbor_dim
-    )
-    terrain_end = terrain_start + cfg.observation.terrain_dim
-    first_layer_delta = policy.net[0].weight.detach() - initial_first_layer_weight
     bc_parameter_delta_sq = torch.zeros((), device=env.device)
     for initial, after_bc in zip(
         random_initial_policy_parameters,
@@ -2288,7 +2587,7 @@ def main() -> None:
     training_diagnostics = {
         "policy_parameter_delta_l2": float(torch.sqrt(parameter_delta_sq).cpu()),
         "terrain_input_weight_delta_l2": float(
-            torch.linalg.vector_norm(first_layer_delta[:, terrain_start:terrain_end]).cpu()
+            terrain_input_weight_delta_l2(policy, initial_terrain_weight)
         ),
         "bc_parameter_delta_l2": float(torch.sqrt(bc_parameter_delta_sq).cpu()),
         "bc_updates": bc_updates,
@@ -2307,6 +2606,7 @@ def main() -> None:
     _snapshot_numeric_metrics(telemetry_state, "path_terrain", "path_terrain_window")
     _snapshot_numeric_metrics(telemetry_state, "action_filter", "action_filter_window")
     _snapshot_numeric_metrics(telemetry_state, "control_safety", "control_safety_window")
+    _snapshot_numeric_metrics(telemetry_state, "kinematics", "kinematics_window")
 
     candidate_evaluations: list[dict] = []
     best_candidate = candidate_paths[-1]
@@ -2433,10 +2733,16 @@ def main() -> None:
         "shared_actor": shared_actor,
         "centralized_critic": centralized_critic,
         "shared_value": shared_value,
+        "actor_architecture": actor_architecture,
+        "critic_architecture": critic_architecture,
         "update_mode": update_mode,
         "communication_radius": cfg.observation.communication_radius,
+        "environment_geometry": environment_geometry_metadata(cfg),
+        "initial_state": initial_state_metadata(cfg),
         "subgoal_filter": subgoal_filter_metadata(cfg),
         "control_safety": control_safety_metadata(cfg),
+        "kinematic_model": cfg.low_level_control.kinematic_model,
+        "trajectory_geometry_method": cfg.trajectory_generator.geometry_method,
         "seed": training_seed,
         "num_envs": cfg.simulation.num_envs,
         "timesteps": args.timesteps,

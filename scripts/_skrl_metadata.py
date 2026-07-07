@@ -8,6 +8,8 @@ from typing import Any
 
 
 DEFAULT_TRAINING_SEMANTICS = "skrl_mappo_smoke"
+DEFAULT_ACTOR_ARCHITECTURE = "mlp_v1"
+DEFAULT_CRITIC_ARCHITECTURE = "mlp_v1"
 
 
 class CheckpointCompatibilityError(ValueError):
@@ -72,7 +74,22 @@ def observation_interface_metadata(cfg: Any) -> dict[str, Any]:
     }
 
 
-def validate_checkpoint_compatibility(checkpoint: dict[str, Any], cfg: Any) -> dict[str, Any]:
+def _metadata_value_with_default(
+    metadata: dict[str, Any],
+    key: str,
+    default: str,
+) -> str:
+    value = metadata.get(key, default)
+    return str(value)
+
+
+def validate_checkpoint_compatibility(
+    checkpoint: dict[str, Any],
+    cfg: Any,
+    *,
+    expected_actor_architecture: str | None = None,
+    expected_critic_architecture: str | None = None,
+) -> dict[str, Any]:
     metadata = checkpoint.get("metadata")
     if not isinstance(metadata, dict):
         raise CheckpointCompatibilityError(
@@ -101,4 +118,28 @@ def validate_checkpoint_compatibility(checkpoint: dict[str, Any], cfg: Any) -> d
         raise CheckpointCompatibilityError(
             f"Checkpoint observation interface is incompatible: {details}."
         )
+    if expected_actor_architecture is not None:
+        actual_actor = _metadata_value_with_default(
+            metadata,
+            "actor_architecture",
+            DEFAULT_ACTOR_ARCHITECTURE,
+        )
+        if actual_actor != expected_actor_architecture:
+            raise CheckpointCompatibilityError(
+                "Checkpoint actor architecture is incompatible: "
+                f"actor_architecture={actual_actor!r} "
+                f"(expected {expected_actor_architecture!r})."
+            )
+    if expected_critic_architecture is not None:
+        actual_critic = _metadata_value_with_default(
+            metadata,
+            "critic_architecture",
+            DEFAULT_CRITIC_ARCHITECTURE,
+        )
+        if actual_critic != expected_critic_architecture:
+            raise CheckpointCompatibilityError(
+                "Checkpoint critic architecture is incompatible: "
+                f"critic_architecture={actual_critic!r} "
+                f"(expected {expected_critic_architecture!r})."
+            )
     return metadata
