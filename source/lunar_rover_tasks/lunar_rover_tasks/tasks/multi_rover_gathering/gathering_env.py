@@ -230,6 +230,8 @@ class MultiRoverGatheringCore:
             self.communication_radius,
             self.cfg,
             terrain_grid,
+            metrics,
+            self.success_hold_count,
         )
         critic_state = build_critic_state(
             self.positions,

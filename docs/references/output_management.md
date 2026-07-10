@@ -224,6 +224,48 @@ run_manifest.json
 outputs/runs/<experiment_id>/<run_id>/metrics/final_eval_proxy.json
 ```
 
+如需诊断 checkpoint selection 或 eval seed 方差，可对同一 run 的多个 checkpoint 做 multi-seed sweep。该入口只写诊断 JSON，不覆盖标准 `final_eval_proxy.json`：
+
+```bash
+.venv_isaaclab/bin/python scripts/evaluate_proxy_checkpoint_seed_sweep.py \
+  --config outputs/runs/<experiment_id>/<run_id>/config/experiment.yaml \
+  --run-dir outputs/runs/<experiment_id>/<run_id> \
+  --checkpoint ppo_timestep_012288.pt \
+  --checkpoint ppo_timestep_013312.pt \
+  --seeds 1023,2023,3023,4023 \
+  --device cuda \
+  --num-envs 1024 \
+  --steps 320
+```
+
+默认输出：
+
+```text
+outputs/runs/<experiment_id>/<run_id>/metrics/checkpoint_seed_sweep/summary.json
+outputs/runs/<experiment_id>/<run_id>/metrics/checkpoint_seed_sweep/<checkpoint>_seed<seed>_eval.json
+```
+
+如需诊断未通过 strict gate 的 episode 具体卡在哪个 success 条件，可运行 success-gate 逐 episode 诊断。该入口只做 failure analysis，不覆盖标准 `final_eval_proxy.json`：
+
+```bash
+.venv_isaaclab/bin/python scripts/diagnose_proxy_success_gates.py \
+  --config outputs/runs/<experiment_id>/<run_id>/config/experiment.yaml \
+  --checkpoint outputs/runs/<experiment_id>/<run_id>/checkpoints/best.pt \
+  --device cuda \
+  --num-envs 1024 \
+  --steps 320 \
+  --seed 1023 \
+  --run-dir outputs/runs/<experiment_id>/<run_id>
+```
+
+默认输出：
+
+```text
+outputs/runs/<experiment_id>/<run_id>/metrics/success_gate_diagnostics.json
+```
+
+该 JSON 包含整体 `summary`、按 `done_reason` 分组的 gate rate、timeout 的 final gate failure counts，以及每个环境的 episode row。若该诊断与历史 final eval 数字略有出入，应标注为 recheck/diagnostic，不替换原有 strict gate 记录。
+
 ## 后续 PhysX / Jackal 跟踪评估
 
 优先让 `scripts/run_checkpoint_evaluation.py` 根据 `evaluation.high_fidelity_eval.trigger` 自动触发。需要手动运行底层 PhysX / Jackal tracking 时，使用 `--run-dir` 让高保真评估产物留在同一个 run：

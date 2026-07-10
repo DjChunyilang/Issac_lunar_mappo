@@ -32,18 +32,23 @@ def build_agent_global_state(
     return per_agent.flatten(start_dim=1)
 
 
-def build_team_state(metrics: TeamMetrics, success_hold_count: torch.Tensor) -> torch.Tensor:
-    return torch.cat(
-        (
-            metrics.dmax.unsqueeze(-1),
-            metrics.dispersion.unsqueeze(-1),
-            metrics.centroid,
-            metrics.mean_pairwise_distance.unsqueeze(-1),
-            metrics.mean_speed.unsqueeze(-1),
-            success_hold_count.float().unsqueeze(-1),
-        ),
-        dim=-1,
-    )
+def build_team_state(
+    metrics: TeamMetrics,
+    success_hold_count: torch.Tensor,
+    *,
+    include_terminal_min_pairwise: bool = False,
+) -> torch.Tensor:
+    parts = [
+        metrics.dmax.unsqueeze(-1),
+        metrics.dispersion.unsqueeze(-1),
+        metrics.centroid,
+        metrics.mean_pairwise_distance.unsqueeze(-1),
+        metrics.mean_speed.unsqueeze(-1),
+        success_hold_count.float().unsqueeze(-1),
+    ]
+    if include_terminal_min_pairwise:
+        parts.append(metrics.nearest_neighbor_distance.amin(dim=-1, keepdim=True))
+    return torch.cat(parts, dim=-1)
 
 
 def build_critic_state(
@@ -58,7 +63,20 @@ def build_critic_state(
     terrain_grid: torch.Tensor | None = None,
 ) -> torch.Tensor:
     agent = build_agent_global_state(positions, yaws, velocities_xy, angular_velocities)
-    team = build_team_state(metrics, success_hold_count)
+    include_terminal_min_pairwise = (
+        cfg.state.include_terminal_min_pairwise
+        or cfg.observation.schema_version == "ego_v4_terminal_gate"
+    )
+    team = build_team_state(
+        metrics,
+        success_hold_count,
+        include_terminal_min_pairwise=include_terminal_min_pairwise,
+    )
+    expected_team_dim = cfg.state.team_state_dim + (1 if include_terminal_min_pairwise else 0)
+    if team.shape[-1] != expected_team_dim:
+        raise ValueError(
+            f"Team state has dim {team.shape[-1]}, expected {expected_team_dim}."
+        )
     if terrain_grid is None:
         terrain_grid = build_local_terrain_grid(positions, yaws, cfg.terrain)
     terrain = summarize_local_terrain_grid(terrain_grid)

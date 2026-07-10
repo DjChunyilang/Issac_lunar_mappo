@@ -65,6 +65,7 @@ def compute_energy_reward(physical_action: torch.Tensor, cfg: MultiRoverGatherin
 
 def compute_safety_reward(
     positions: torch.Tensor,
+    metrics: TeamMetrics,
     done: DoneFlags,
     cfg: MultiRoverGatheringEnvCfg,
 ) -> torch.Tensor:
@@ -75,7 +76,23 @@ def compute_safety_reward(
     nearest = pairwise.masked_fill(eye, float("inf")).amin(dim=-1)
     near_penalty = torch.relu(cfg.safety.near_distance - nearest).mean(dim=-1)
     collision_penalty = done.collision.float() * coeff.inter_agent_collision
-    return -(coeff.near_distance * near_penalty + collision_penalty)
+    terminal_pairwise_penalty = torch.zeros_like(near_penalty)
+    if coeff.terminal_pairwise_gap != 0.0 and cfg.success_thresholds.min_pairwise_distance > 0.0:
+        target_distance = float(cfg.success_thresholds.min_pairwise_distance)
+        dmax_limit = float(cfg.success_thresholds.dmax) * float(
+            coeff.terminal_pairwise_dmax_multiplier
+        )
+        dispersion_limit = float(cfg.success_thresholds.dispersion) * float(
+            coeff.terminal_pairwise_dispersion_multiplier
+        )
+        near_success_zone = (metrics.dmax <= dmax_limit) & (metrics.dispersion <= dispersion_limit)
+        pairwise_gap = torch.relu(target_distance - nearest).mean(dim=-1)
+        terminal_pairwise_penalty = near_success_zone.float() * pairwise_gap
+    return -(
+        coeff.near_distance * near_penalty
+        + collision_penalty
+        + coeff.terminal_pairwise_gap * terminal_pairwise_penalty
+    )
 
 
 def compute_terrain_reward(
@@ -189,7 +206,7 @@ def compute_reward(
         cfg,
     )
     energy = compute_energy_reward(physical_action, cfg)
-    safety = compute_safety_reward(positions, done, cfg)
+    safety = compute_safety_reward(positions, metrics, done, cfg)
     terrain = compute_terrain_reward(
         terrain_features,
         cfg,

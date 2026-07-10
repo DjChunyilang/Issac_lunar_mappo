@@ -60,17 +60,45 @@ def _validate_reward_section(reward: dict) -> None:
 
 def _apply_observation_values(cfg: MultiRoverGatheringEnvCfg, values: dict) -> None:
     values = _require_mapping("observation", values)
-    supported = {"communication_radius"}
+    supported = {"communication_radius", "schema_version"}
     unknown = sorted(key for key in values if key not in supported)
     if unknown:
         unknown_keys = ", ".join(f"observation.{key}" for key in unknown)
         raise ValueError(
             f"Unsupported config key(s): {unknown_keys}. This loader only supports "
-            "'observation.communication_radius'; observation dimensions and schema "
-            "version are fixed by code."
+            "'observation.communication_radius' and 'observation.schema_version'; "
+            "observation dimensions are fixed by code."
         )
     if "communication_radius" in values:
         cfg.observation.communication_radius = float(values["communication_radius"])
+    if "schema_version" in values:
+        schema_version = str(values["schema_version"])
+        supported_schemas = {
+            "ego_v3_local_terrain_grid",
+            "ego_v4_terminal_gate",
+        }
+        if schema_version not in supported_schemas:
+            raise ValueError(
+                "observation.schema_version must be one of: "
+                f"{', '.join(sorted(supported_schemas))}."
+            )
+        cfg.observation.schema_version = schema_version
+
+
+def _apply_state_values(cfg: MultiRoverGatheringEnvCfg, values: dict) -> None:
+    values = _require_mapping("state", values)
+    supported = {"include_terminal_min_pairwise"}
+    unknown = sorted(key for key in values if key not in supported)
+    if unknown:
+        unknown_keys = ", ".join(f"state.{key}" for key in unknown)
+        raise ValueError(
+            f"Unsupported config key(s): {unknown_keys}. This loader only supports "
+            "'state.include_terminal_min_pairwise'; state dimensions are fixed by code."
+        )
+    if "include_terminal_min_pairwise" in values:
+        cfg.state.include_terminal_min_pairwise = bool(
+            values["include_terminal_min_pairwise"]
+        )
 
 
 def _apply_planner_values(cfg: MultiRoverGatheringEnvCfg, values: dict) -> None:
@@ -172,6 +200,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     terrain = _require_mapping("terrain", data.get("terrain", {}))
     reward = _require_mapping("reward", data.get("reward", {}))
     observation = _require_mapping("observation", data.get("observation", {}))
+    state = _require_mapping("state", data.get("state", {}))
     safety = _require_mapping("safety", data.get("safety", {}))
     success_thresholds = _require_mapping("success_thresholds", data.get("success_thresholds", {}))
     algorithm = _require_mapping("algorithm", data.get("algorithm", {}))
@@ -293,6 +322,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     _apply_values(cfg.reward_weights, reward.get("weights", {}), "reward.weights")
     _apply_values(cfg.reward_coefficients, reward.get("coefficients", {}), "reward.coefficients")
     _apply_observation_values(cfg, observation)
+    _apply_state_values(cfg, state)
     _apply_values(cfg.safety, safety, "safety")
     _apply_values(cfg.success_thresholds, success_thresholds, "success_thresholds")
     if cfg.success_thresholds.min_pairwise_distance > 0.0:

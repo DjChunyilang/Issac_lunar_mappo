@@ -36,6 +36,7 @@ from train_skrl_mappo import (  # noqa: E402
     build_skrl_mappo_memories,
     build_skrl_mappo_models,
     environment_geometry_metadata,
+    critic_state_slices_metadata,
     observation_slices_metadata,
     run_skrl_behavior_cloning,
     scripted_gather_action,
@@ -480,6 +481,80 @@ def test_branched_actor_and_structured_critic_use_fixed_slices() -> None:
     assert torch.allclose(policy.log_std_parameter, torch.full((2,), -1.0))
 
 
+def test_terminal_gate_actor_and_critic_use_v2_slices() -> None:
+    cfg = make_debug_cfg(num_envs=2, device="cpu")
+    cfg.observation.schema_version = "ego_v4_terminal_gate"
+    env = MultiRoverGatheringSKRLEnv(cfg)
+    models = build_skrl_mappo_models(
+        env,
+        shared_actor=True,
+        centralized_critic=True,
+        actor_architecture="branched_v2",
+        critic_architecture="structured_v2",
+        initial_log_std=-1.0,
+    )
+    policy = models[env.possible_agents[0]]["policy"]
+    value = models[env.possible_agents[0]]["value"]
+    actor_obs, critic_state = env.core.get_observations()
+
+    assert policy.architecture == "branched_v2"
+    assert value.architecture == "structured_v2"
+    assert env.cfg.actor_obs_dim == 91
+    assert env.cfg.critic_state_dim == 55
+    assert policy.terminal_gate_encoder[0].in_features == 5
+    assert policy.trunk[0].in_features == 176
+    assert value.team_encoder[0].in_features == 9
+    assert observation_slices_metadata(91)["terminal_gate"] == {
+        "start": 86,
+        "end": 91,
+        "dim": 5,
+    }
+    assert critic_state_slices_metadata(55)["team"] == {"start": 32, "end": 41, "dim": 9}
+
+    means, _ = policy.compute(
+        {"observations": actor_obs.reshape(-1, env.cfg.actor_obs_dim)},
+        role="policy",
+    )
+    values, _ = value.compute({"states": critic_state}, role="value")
+
+    assert means.shape == (env.num_envs * env.cfg.task.n_agents, 2)
+    assert values.shape == (env.num_envs, 1)
+
+
+def test_exp051_actor_can_pair_with_terminal_min_pairwise_critic_state() -> None:
+    cfg = make_debug_cfg(num_envs=2, device="cpu")
+    cfg.state.include_terminal_min_pairwise = True
+    env = MultiRoverGatheringSKRLEnv(cfg)
+    models = build_skrl_mappo_models(
+        env,
+        shared_actor=True,
+        centralized_critic=True,
+        actor_architecture="branched_v1",
+        critic_architecture="structured_v2",
+    )
+    policy = models[env.possible_agents[0]]["policy"]
+    value = models[env.possible_agents[0]]["value"]
+    actor_obs, critic_state = env.core.get_observations()
+
+    assert env.cfg.observation.schema_version == "ego_v3_local_terrain_grid"
+    assert env.cfg.actor_obs_dim == 86
+    assert env.cfg.critic_state_dim == 55
+    assert policy.architecture == "branched_v1"
+    assert value.architecture == "structured_v2"
+    assert policy.aggregation_encoder[0].in_features == 5
+    assert not hasattr(policy, "terminal_gate_encoder")
+    assert value.team_encoder[0].in_features == 9
+
+    means, _ = policy.compute(
+        {"observations": actor_obs.reshape(-1, env.cfg.actor_obs_dim)},
+        role="policy",
+    )
+    values, _ = value.compute({"states": critic_state}, role="value")
+
+    assert means.shape == (env.num_envs * env.cfg.task.n_agents, 2)
+    assert values.shape == (env.num_envs, 1)
+
+
 def test_branched_actor_terrain_branch_weight_updates() -> None:
     env = _make_env()
     models = build_skrl_mappo_models(
@@ -840,6 +915,136 @@ def test_exp049_config_targets_terminal_spacing_timeout_from_exp048() -> None:
     assert cfg.reward_coefficients.success_bonus == pytest.approx(135.0)
     assert cfg.terrain.crater_field_size == pytest.approx(25.0)
     assert cfg.observation.communication_radius == pytest.approx(0.0)
+    assert cfg.low_level_control.kinematic_model == "bicycle"
+    assert cfg.trajectory_generator.geometry_method == "quintic"
+
+
+def test_exp058_config_only_extends_discount_horizon_from_exp051() -> None:
+    baseline_path = ROOT / "configs/experiment/exp051_structured_bicycle_quintic_map25_ppo_stability.yaml"
+    config = ROOT / "configs/experiment/exp058_structured_bicycle_quintic_map25_gamma995.yaml"
+    baseline = load_yaml(baseline_path)
+    raw = load_yaml(config)
+    cfg = cfg_from_experiment(config)
+
+    assert raw["experiment"]["name"] == "exp058_structured_bicycle_quintic_map25_gamma995"
+    assert raw["algorithm"]["training_semantics"] == "exp058_structured_bicycle_quintic_map25_gamma995"
+    assert raw["algorithm"]["gamma"] == pytest.approx(0.995)
+    assert baseline["algorithm"]["gamma"] == pytest.approx(0.99)
+    assert raw["algorithm"]["gae_lambda"] == baseline["algorithm"]["gae_lambda"]
+    assert raw["algorithm"]["clip_epsilon"] == baseline["algorithm"]["clip_epsilon"]
+    assert raw["algorithm"]["learning_rate"] == baseline["algorithm"]["learning_rate"]
+    assert raw["algorithm"]["entropy_schedule_timesteps"] == baseline["algorithm"]["entropy_schedule_timesteps"]
+    assert raw["planner"] == baseline["planner"]
+    assert raw["low_level_control"] == baseline["low_level_control"]
+    assert raw["reward"] == baseline["reward"]
+    assert raw["success_thresholds"] == baseline["success_thresholds"]
+    assert cfg.low_level_control.kinematic_model == "bicycle"
+    assert cfg.trajectory_generator.geometry_method == "quintic"
+    assert cfg.planner.subgoal_filter.apply_probability_end == pytest.approx(0.18)
+
+
+def test_exp059_config_only_shortens_gae_trace_from_exp051() -> None:
+    baseline_path = ROOT / "configs/experiment/exp051_structured_bicycle_quintic_map25_ppo_stability.yaml"
+    config = ROOT / "configs/experiment/exp059_structured_bicycle_quintic_map25_gae090.yaml"
+    baseline = load_yaml(baseline_path)
+    raw = load_yaml(config)
+    cfg = cfg_from_experiment(config)
+
+    assert raw["experiment"]["name"] == "exp059_structured_bicycle_quintic_map25_gae090"
+    assert raw["algorithm"]["training_semantics"] == "exp059_structured_bicycle_quintic_map25_gae090"
+    assert raw["algorithm"]["gae_lambda"] == pytest.approx(0.90)
+    assert baseline["algorithm"]["gae_lambda"] == pytest.approx(0.95)
+    assert raw["algorithm"]["gamma"] == baseline["algorithm"]["gamma"]
+    assert raw["algorithm"]["clip_epsilon"] == baseline["algorithm"]["clip_epsilon"]
+    assert raw["algorithm"]["learning_rate"] == baseline["algorithm"]["learning_rate"]
+    assert raw["algorithm"]["entropy_schedule_timesteps"] == baseline["algorithm"]["entropy_schedule_timesteps"]
+    assert raw["planner"] == baseline["planner"]
+    assert raw["low_level_control"] == baseline["low_level_control"]
+    assert raw["reward"] == baseline["reward"]
+    assert raw["success_thresholds"] == baseline["success_thresholds"]
+    assert cfg.low_level_control.kinematic_model == "bicycle"
+    assert cfg.trajectory_generator.geometry_method == "quintic"
+    assert cfg.planner.subgoal_filter.apply_probability_end == pytest.approx(0.18)
+
+
+def test_exp060_config_only_raises_value_loss_from_exp051() -> None:
+    baseline_path = ROOT / "configs/experiment/exp051_structured_bicycle_quintic_map25_ppo_stability.yaml"
+    config = ROOT / "configs/experiment/exp060_structured_bicycle_quintic_map25_value075.yaml"
+    baseline = load_yaml(baseline_path)
+    raw = load_yaml(config)
+    cfg = cfg_from_experiment(config)
+
+    assert raw["experiment"]["name"] == "exp060_structured_bicycle_quintic_map25_value075"
+    assert raw["algorithm"]["training_semantics"] == "exp060_structured_bicycle_quintic_map25_value075"
+    assert raw["algorithm"]["value_loss_coef"] == pytest.approx(0.75)
+    assert baseline["algorithm"]["value_loss_coef"] == pytest.approx(0.5)
+    assert raw["algorithm"]["gamma"] == baseline["algorithm"]["gamma"]
+    assert raw["algorithm"]["gae_lambda"] == baseline["algorithm"]["gae_lambda"]
+    assert raw["algorithm"]["clip_epsilon"] == baseline["algorithm"]["clip_epsilon"]
+    assert raw["algorithm"]["learning_rate"] == baseline["algorithm"]["learning_rate"]
+    assert raw["algorithm"]["entropy_schedule_timesteps"] == baseline["algorithm"]["entropy_schedule_timesteps"]
+    assert raw["planner"] == baseline["planner"]
+    assert raw["low_level_control"] == baseline["low_level_control"]
+    assert raw["reward"] == baseline["reward"]
+    assert raw["success_thresholds"] == baseline["success_thresholds"]
+    assert cfg.low_level_control.kinematic_model == "bicycle"
+    assert cfg.trajectory_generator.geometry_method == "quintic"
+    assert cfg.planner.subgoal_filter.apply_probability_end == pytest.approx(0.18)
+
+
+def test_exp061_config_only_adds_terminal_gate_observation_from_exp051() -> None:
+    baseline_path = ROOT / "configs/experiment/exp051_structured_bicycle_quintic_map25_ppo_stability.yaml"
+    config = ROOT / "configs/experiment/exp061_structured_bicycle_quintic_map25_terminal_gate_obs.yaml"
+    baseline = load_yaml(baseline_path)
+    raw = load_yaml(config)
+    cfg = cfg_from_experiment(config)
+
+    assert raw["experiment"]["name"] == "exp061_structured_bicycle_quintic_map25_terminal_gate_obs"
+    assert raw["algorithm"]["training_semantics"] == "exp061_structured_bicycle_quintic_map25_terminal_gate_obs"
+    assert raw["observation"]["schema_version"] == "ego_v4_terminal_gate"
+    assert raw["observation"]["communication_radius"] == baseline["observation"]["communication_radius"]
+    assert raw["algorithm"]["actor_architecture"] == "branched_v2"
+    assert raw["algorithm"]["critic_architecture"] == "structured_v2"
+    assert raw["algorithm"]["gamma"] == baseline["algorithm"]["gamma"]
+    assert raw["algorithm"]["gae_lambda"] == baseline["algorithm"]["gae_lambda"]
+    assert raw["algorithm"]["clip_epsilon"] == baseline["algorithm"]["clip_epsilon"]
+    assert raw["algorithm"]["learning_rate"] == baseline["algorithm"]["learning_rate"]
+    assert raw["algorithm"]["value_loss_coef"] == baseline["algorithm"]["value_loss_coef"]
+    assert raw["planner"] == baseline["planner"]
+    assert raw["low_level_control"] == baseline["low_level_control"]
+    assert raw["reward"] == baseline["reward"]
+    assert raw["success_thresholds"] == baseline["success_thresholds"]
+    assert cfg.actor_obs_dim == 91
+    assert cfg.critic_state_dim == 55
+    assert cfg.low_level_control.kinematic_model == "bicycle"
+    assert cfg.trajectory_generator.geometry_method == "quintic"
+
+
+def test_exp062_config_only_adds_critic_minpair_state_from_exp051() -> None:
+    baseline_path = ROOT / "configs/experiment/exp051_structured_bicycle_quintic_map25_ppo_stability.yaml"
+    config = ROOT / "configs/experiment/exp062_structured_bicycle_quintic_map25_critic_minpair.yaml"
+    baseline = load_yaml(baseline_path)
+    raw = load_yaml(config)
+    cfg = cfg_from_experiment(config)
+
+    assert raw["experiment"]["name"] == "exp062_structured_bicycle_quintic_map25_critic_minpair"
+    assert raw["algorithm"]["training_semantics"] == "exp062_structured_bicycle_quintic_map25_critic_minpair"
+    assert raw["observation"] == baseline["observation"]
+    assert raw["state"]["include_terminal_min_pairwise"] is True
+    assert raw["algorithm"]["actor_architecture"] == baseline["algorithm"]["actor_architecture"]
+    assert raw["algorithm"]["critic_architecture"] == "structured_v2"
+    assert raw["algorithm"]["gamma"] == baseline["algorithm"]["gamma"]
+    assert raw["algorithm"]["gae_lambda"] == baseline["algorithm"]["gae_lambda"]
+    assert raw["algorithm"]["clip_epsilon"] == baseline["algorithm"]["clip_epsilon"]
+    assert raw["algorithm"]["learning_rate"] == baseline["algorithm"]["learning_rate"]
+    assert raw["algorithm"]["value_loss_coef"] == baseline["algorithm"]["value_loss_coef"]
+    assert raw["planner"] == baseline["planner"]
+    assert raw["low_level_control"] == baseline["low_level_control"]
+    assert raw["reward"] == baseline["reward"]
+    assert raw["success_thresholds"] == baseline["success_thresholds"]
+    assert cfg.observation.schema_version == "ego_v3_local_terrain_grid"
+    assert cfg.actor_obs_dim == 86
+    assert cfg.critic_state_dim == 55
     assert cfg.low_level_control.kinematic_model == "bicycle"
     assert cfg.trajectory_generator.geometry_method == "quintic"
 

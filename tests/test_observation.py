@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import torch
+import pytest
 
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import make_debug_cfg
@@ -79,6 +80,39 @@ def test_communication_radius_changes_neighbor_visibility_and_aggregation() -> N
     assert torch.all(small_neighbor.reshape(1, 4, 3, 7)[..., 6] == 0.0)
     assert torch.any(large_neighbor.reshape(1, 4, 3, 7)[..., 6] == 1.0)
     assert not torch.allclose(small_aggregation, large_aggregation)
+
+
+def test_terminal_gate_observation_schema_adds_success_margins() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.observation.schema_version = "ego_v4_terminal_gate"
+    cfg.success_thresholds.dmax = 2.0
+    cfg.success_thresholds.dispersion = 0.5
+    cfg.success_thresholds.speed = 0.25
+    cfg.success_thresholds.hold_steps = 8
+    cfg.success_thresholds.min_pairwise_distance = 0.42
+    env = MultiRoverGatheringCore(cfg)
+    env.positions.copy_(
+        torch.tensor(
+            [[[-0.20, 0.0, 0.0], [0.20, 0.0, 0.0], [0.0, 0.90, 0.0], [0.0, -0.90, 0.0]]],
+            device=env.device,
+        )
+    )
+    env.yaws.zero_()
+    env.velocities_xy.zero_()
+    env.angular_velocities.zero_()
+    env.success_hold_count.fill_(4)
+
+    actor_obs, critic_state = env.get_observations()
+    terminal_gate = actor_obs[..., -cfg.observation.terminal_gate_dim :]
+
+    assert cfg.actor_obs_dim == 91
+    assert cfg.critic_state_dim == 55
+    assert actor_obs.shape == (1, 4, 91)
+    assert critic_state.shape == (1, 55)
+    assert torch.allclose(terminal_gate[..., 2], torch.ones(1, 4))
+    assert torch.allclose(terminal_gate[..., 3], torch.full((1, 4), 0.5))
+    assert float(terminal_gate[0, 0, 4]) == pytest.approx((0.40 - 0.42) / 0.42)
+    assert float(critic_state[0, 40]) == pytest.approx(0.40)
 
 
 def test_zero_communication_radius_means_unlimited_visibility() -> None:

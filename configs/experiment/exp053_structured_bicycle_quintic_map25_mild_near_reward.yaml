@@ -1,0 +1,214 @@
+experiment:
+  name: exp053_structured_bicycle_quintic_map25_mild_near_reward
+  seed: 23
+  num_envs: 2048
+  device: cuda
+  rollout_steps: 64
+  output_layout: run
+  checkpoint_interval: 1024
+  telemetry_interval: 32
+  tensorboard_interval: 32
+  eval_num_envs: 1024
+  eval_steps: 320
+  eval_seed_offset: 1000
+
+simulation:
+  episode_length_s: 64.0
+  physics_dt: 0.05
+  control_decimation: 4
+
+task:
+  n_agents: 4
+
+initial_state:
+  spawn_radius_min: 2.4
+  spawn_radius_max: 3.4
+  center_xy_range: 1.0
+  jitter_std: 0.25
+  curriculum_enabled: true
+  curriculum_start_spawn_radius_min: 1.6
+  curriculum_start_spawn_radius_max: 2.4
+  curriculum_start_center_xy_range: 0.5
+  curriculum_start_jitter_std: 0.20
+  curriculum_warmup_timesteps: 4096
+  curriculum_ramp_timesteps: 8192
+
+planner:
+  rho_max: 1.6
+  beta_max: 1.0471975512
+  subgoal_filter:
+    enabled: true
+    mode: terrain_safe_candidate_hold_progress_curriculum
+    rho_scales: [0.78, 0.92, 1.0, 1.12]
+    beta_offsets_deg: [-30.0, -15.0, -7.5, 0.0, 7.5, 15.0, 30.0]
+    path_samples: 9
+    intent_deviation_weight: 0.22
+    path_terrain_mean_weight: 0.13
+    path_terrain_max_weight: 0.065
+    path_height_change_weight: 0.030
+    subgoal_terrain_weight: 0.030
+    endpoint_near_weight: 0.55
+    endpoint_collision_weight: 460.0
+    path_near_weight: 0.40
+    path_collision_weight: 360.0
+    mutual_path_near_weight: 0.75
+    mutual_path_collision_weight: 950.0
+    visible_neighbor_center_weight: 1.90
+    center_progress_weight: 3.20
+    center_progress_margin: -0.07
+    hold_zone_dmax_multiplier: 1.00
+    hold_zone_dispersion_multiplier: 1.00
+    hold_zone_rho_weight: 0.70
+    hold_zone_spacing_weight: 2.40
+    hold_zone_pairwise_distance: 0.46
+    hold_zone_override_after_warmup: true
+    endpoint_safe_distance: 0.42
+    path_safe_distance: 0.30
+    hard_endpoint_near_filter: false
+    hard_path_collision_filter: false
+    hard_center_progress_filter: false
+    center_progress_slack: 0.04
+    hard_constraint_penalty: 10000.0
+    safety_override_after_warmup: false
+    collision_override_after_warmup: true
+    warmup_timesteps: 4096
+    ramp_timesteps: 4096
+    apply_probability_end: 0.18
+    score_scale_start: 0.06
+    score_scale_end: 0.30
+    deterministic_improvement_margin: 0.05
+
+trajectory_generator:
+  n_trajectory_points: 12
+  geometry_method: quintic
+  reference_speed: 1.15
+  quintic_tangent_scale: 0.50
+  end_heading_mode: subgoal_direction
+
+low_level_control:
+  kinematic_model: bicycle
+  wheelbase_m: 0.65
+  max_steer_angle_rad: 0.785398
+  max_linear_speed: 1.35
+  max_angular_speed: 2.8
+  k_linear: 2.20
+  k_angular: 3.2
+  safety_projection_enabled: true
+  projection_activation_distance: 0.60
+  projection_stop_distance: 0.32
+  projection_horizon_s: 0.45
+  projection_strength: 0.45
+  projection_min_linear_scale: 0.65
+  projection_damp_nonclosing_near: false
+  projection_directional_agent_scale: true
+  projection_directional_agent_scale_mode: mask
+  success_zone_damping_enabled: true
+  success_zone_dmax_multiplier: 1.0
+  success_zone_dispersion_multiplier: 1.0
+  success_zone_linear_scale: 0.95
+
+observation:
+  communication_radius: 0.0
+
+safety:
+  world_xy_limit: 12.5
+  collision_distance: 0.28
+  near_distance: 0.72
+
+terrain:
+  type: lunar_crater_proxy
+  dynamics_enabled: true
+  amplitude: 0.09
+  wavelength: 2.8
+  roughness_scale: 1.0
+  traversability_slope_scale: 0.50
+  slope_speed_scale: 1.00
+  min_speed_scale: 0.25
+  crater_count: 30
+  crater_min_radius: 0.45
+  crater_max_radius: 1.30
+  crater_depth_to_diameter: 0.12
+  crater_rim_height_to_diameter: 0.025
+  crater_field_size: 25.0
+  crater_seed: 11
+  randomize_per_reset: true
+  random_translation_m: 5.0
+  random_yaw_rad: 3.14159265359
+  amplitude_scale_min: 0.90
+  amplitude_scale_max: 1.10
+  crater_radius_scale_min: 0.85
+  crater_radius_scale_max: 1.15
+  crater_depth_scale_min: 0.85
+  crater_depth_scale_max: 1.15
+
+reward:
+  weights:
+    gather: 1.0
+    oracle: 0.5
+    energy: 0.003
+    safety: 1.0
+    terrain: 0.10
+    motion: 0.004
+    consistency: 0.003
+    terminal: 1.0
+  coefficients:
+    dmax_progress: 9.5
+    dispersion_progress: 6.0
+    dmax_level: 0.13
+    dispersion_level: 0.040
+    oracle_mean_distance_progress: 4.2
+    path_length: 0.020
+    slope_cost: 0.15
+    terrain_cost: 0.15
+    subgoal_terrain_cost: 0.16
+    terrain_speed_loss_cost: 0.14
+    terrain_height_change_cost: 0.09
+    path_terrain_mean_cost: 0.26
+    path_terrain_max_cost: 0.16
+    path_height_change_cost: 0.07
+    filter_raw_path_risk_cost: 0.035
+    filter_deviation_cost: 0.012
+    turn_cost: 0.007
+    near_distance: 2.8
+    inter_agent_collision: 100.0
+    subgoal_turn: 0.007
+    subgoal_stagnation: 0.016
+    action_consistency: 0.004
+    success_hold_step: 12.0
+    success_bonus: 130.0
+    failure_penalty: 55.0
+    timeout_penalty: 80.0
+
+success_thresholds:
+  dmax: 1.25
+  dispersion: 0.30
+  speed: 0.25
+  hold_steps: 8
+  min_pairwise_distance: 0.42
+
+algorithm:
+  mode: pure_rl
+  training_semantics: exp053_structured_bicycle_quintic_map25_mild_near_reward
+  update_mode: shared_joint
+  actor_architecture: branched_v1
+  critic_architecture: structured_v1
+  shared_actor: true
+  centralized_critic: true
+  shared_value: true
+  initial_log_std: -0.95
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.18
+  value_clip: 0.20
+  ppo_epochs: 4
+  mini_batches: 16
+  learning_rate: 0.00010
+  max_grad_norm: 0.5
+  entropy_loss_scale: 0.0009
+  entropy_loss_scale_end: 0.00010
+  entropy_schedule_timesteps: 12288
+  value_loss_coef: 0.5
+  bc_updates: 0
+  teacher_mode: null
+  teacher_stop_radius: null
+  teacher_max_rho: null

@@ -7,7 +7,13 @@
 - Isaac Sim / Isaac Lab / PhysX 不作为当前主训练 loop，而作为 high-fidelity validation、迁移 sanity check、失效分析和可视化展示平台。
 - 当前 PhysX 层使用 Clearpath Jackal 作为活跃轮式资产，已替换旧占位资产。Jackal tracking 可验证轮式控制、强三维地形 mesh、姿态稳定性和输出链路，但不能证明真实月球车越障、轮壤接触或低重力动力学已经完成。
 - 视觉观测不进入 policy input；地形以车体系 `5×5×2` 局部结构化网格进入策略。
-- 当前从“暂停长训完善环境”切回新环境栈长训迭代：结构化 Actor/Critic、bicycle proxy 动力学、quintic 轨迹、`25 m × 25 m` 地图和 `communication_radius=0.0` 无限通信语义已通过 `exp042` smoke。`exp043` 直接 40M env-step 长跑已完成但没有收敛；`exp044` 改为 initial-state curriculum 后能明显缩短 dmax，但 success 仍为 0；`exp045` local-success bootstrap 首次恢复局部 success 信号但未 strict；`exp046`/`exp047` 逐步恢复 terminal convergence；`exp048` 已通过 dmax/success/collision，仅 timeout `0.0137` 未过。`exp049` 已完成但 success/timeout 退化，说明全局增强 terminal spacing 过强。
+- 当前从“暂停长训完善环境”切回新环境栈长训迭代：结构化 Actor/Critic、bicycle proxy 动力学、quintic 轨迹、`25 m × 25 m` 地图和 `communication_radius=0.0` 无限通信语义已通过 `exp042` smoke。`exp043` 直接 40M env-step 长跑已完成但没有收敛；`exp044` 改为 initial-state curriculum 后能明显缩短 dmax，但 success 仍为 0；`exp045` local-success bootstrap 首次恢复局部 success 信号但未 strict；`exp046`/`exp047` 逐步恢复 terminal convergence；`exp048` 已通过 dmax/success/collision，仅 timeout `0.0137` 未过；`exp049`/`exp050` 分别说明全局增强 spacing/filter 和增强 hold/timeout shaping 都会退化；`exp051` 回到 exp048 reward/filter/control、只隔离 PPO 稳定性后达到 dmax `0.1836`、success `0.9883`、collision `0.0020`、timeout `0.0098`，是当前新环境栈 local reset 最好候选但仍未 strict；`exp052` 早退火到 `8192` 已完成并明显退化，说明 entropy taper 不宜过早；`exp053` 轻微提高全局 near reward 后 success/timeout 大幅退化，说明不能继续提高全局安全间距惩罚；`exp054` 收窄 PPO clip 到 `0.16` 后 dmax/collision 达标，但 success `0.7168`、timeout `0.2803` 明显退化；`exp055` 放宽 PPO clip 到 `0.20` 后 dmax/success/collision 达标，但 timeout `0.0146` 差于 exp051。clip 扫描表明 `0.18` 仍是当前最好点；`exp056`/`exp057` 的 terminal pairwise reward 均未改善 timeout，当前最好仍是 exp051。
+- exp051 附近 checkpoint multi-seed 复验已完成：`012288/013312/014336` 在 `1023/2023/3023/4023` 四个 eval seed 上均未 strict，其中 `013312` 的 timeout 均值最低（`0.0134`）但 `timeout_zero_count=0/4`，说明当前 best 选点相对稳定，剩余瓶颈不是简单 checkpoint reselection。
+- exp058 已完成：回到 exp051，只把 PPO `gamma` 从 `0.99` 提高到 `0.995`，不改 action/reward/filter/control。final eval dmax `0.1991`、collision `0.0020` 达标，但 success `0.7451`、timeout `0.2529` 明显失败；说明更长折扣 horizon 拖慢 terminal convergence，不能作为下一步主线。
+- exp059 已完成：回到 exp051，只把 `gae_lambda` 从 `0.95` 降到 `0.90`，不改 action/reward/filter/control。best 仍回落到 `ppo_timestep_012288.pt`，final eval dmax `0.1927`、collision `0.0127` 达标，但 success `0.6904`、timeout `0.2988` 明显失败；说明更短 GAE trace 也不能修复 exp051 尾部 timeout，价值估计 horizon 方向暂时不作为主线。
+- exp060 已完成：回到 exp051，只把 `value_loss_coef` 从 `0.50` 提高到 `0.75`，不改 action/reward/filter/control。best 为 `ppo_timestep_012288.pt`，final eval dmax `0.1837`、success `0.9736`、collision `0.0` 达标，但 timeout `0.0264` 失败且差于 exp051；说明更强 critic loss 权重没有清掉尾部 timeout，不能作为下一步主线。
+- exp051 / exp060 success-gate 诊断已完成：exp051 recheck seed1023 的 `15` 个 timeout 中，`min_pairwise` final gate 失败 `15/15`，dmax gate 失败 `2/15`，dispersion/speed gate 均为 `0/15`；exp060 的 `19` 个 timeout 中，`min_pairwise` 失败 `18/19`。这说明尾部主要是“已经接近集合且低速，但最近邻间距没有通过 success gate”，暂时不应把 Actor 输出改成多点采样让 filter 选择。
+- exp061/exp062 已完成观测/critic 可观测性诊断，均不改 action 输出、reward、filter 或 control。exp061 给 Actor/Critic 同时加入 terminal gate 特征后明显退化：final eval dmax `0.1890` 达标，但 success `0.8506`、collision `0.0205`、timeout `0.1289` 均失败；说明直接把 gate margin 暴露给 Actor 会诱发激进/饱和动作。exp062 保持 exp051 Actor 观测和 `branched_v1`，只给 critic state 加 `min_pairwise` 并用 `structured_v2`，final eval dmax `0.1832`、success `0.9736`、collision `0.0059` 达标，但 timeout `0.0205` 失败；4-seed checkpoint sweep 的 best `016384` timeout 均值 `0.0161`，不优于 exp051 的 `0.0134`。当前最好仍是 exp051。
 - 生成结果写入 `outputs/runs/`，并由 git 忽略。
 
 ## 当前接口状态
@@ -18,7 +24,7 @@
 - centralized critic state 和 reward shaping 可以使用 oracle 信息；执行期 actor 不接收 `p*`、oracle 距离或 oracle 距离下降量。
 - 动作接口固定为低维 `[rho, beta]`，再经局部子目标、可配置 `line/quintic` 轨迹和简化速度控制器转换为运动命令。
 - 当前 proxy 动力学可配置为 `unicycle` 或 `bicycle`；旧配置默认 `unicycle`，`exp042` 显式使用 `bicycle`。二者都没有质量、惯量、轮地接触、打滑、悬挂或 PhysX contact。
-- `scripts/train_skrl_mappo.py` 支持 `actor_architecture=mlp_v1|branched_v1` 和 `critic_architecture=mlp_v1|structured_v1`；新结构保持 Actor/Critic 接口维度 `86/54` 不变。
+- `scripts/train_skrl_mappo.py` 支持 `actor_architecture=mlp_v1|branched_v1|branched_v2` 和 `critic_architecture=mlp_v1|structured_v1|structured_v2`。默认 exp051 主线仍是 `ego_v3_local_terrain_grid`、Actor/Critic `86/54`；`ego_v4_terminal_gate` 与 critic `55` 维状态仅用于 exp061/exp062 诊断，不作为当前最好主线。
 - `scripts/train_skrl_mappo.py` 使用 SKRL MAPPO 训练 proxy wrapper；`isaaclab-multi-agent` wrapper 只是接口层，不代表训练 loop 运行在 Isaac Sim / PhysX。
 - exp016 已启用项目侧 `shared_joint` 更新：共享 Actor/Critic 只使用一个 optimizer，每个 rollout 合并四个 rover 的 Actor 样本并只更新一次 Critic。
 - 当前 exp016 诊断配置把通信半径临时扩大到 `12 m`；这是训练诊断设置，不是最终通信约束。
@@ -39,7 +45,7 @@
 - exp031–exp034 已完成 control safety 投影条件迭代：简单调弱、closing-only、directional scale 和 directional mask 都未 strict；其中 exp034 的 mask 版本把 success 拉回 `0.8828`、timeout 降到 `0.0840`，但 collision `0.0361` 仍失败。
 - exp035–exp036 已完成 directional mask buffer 与 stronger hold/timeout shaping：exp035 首次让 success `0.9072` 和 collision `0.0127` 同时达标；exp036 进一步到 success `0.9336`、collision `0.0088`、timeout `0.0586`，剩余瓶颈转为 timeout/hold。
 - exp037 已完成 260-step episode/eval 诊断：timeout 从 exp036 的 `0.0586` 降到 `0.0410`，但 collision 反弹到 `0.0352`，说明单纯延长 episode 会暴露末段碰撞。
-- exp038 已完成 success-zone stabilizer + 320-step episode/eval：修正 best 后 final eval success `0.9756`、collision `0.0137`、timeout `0.0107`；当前随机地形最佳候选，strict 只剩 timeout gate 失败。
+- exp038 已完成 success-zone stabilizer + 320-step episode/eval：修正 best 后 final eval success `0.9756`、collision `0.0137`、timeout `0.0107`；旧环境栈随机地形阶段性最佳候选，strict 只剩 timeout gate 失败。
 - exp039/exp040 是基于 exp038 best 的诊断复评，不建议长训：hard near stabilizer 和 stronger soft hold stabilizer 都使 timeout 或 collision 差于 exp038。
 - exp041 已完成 hold-zone override 诊断与 CPU/CUDA smoke：在 exp038 best 上复评得到 success `0.9795`、collision `0.0107`、timeout `0.0098`，略优于 exp038，但当前已暂停长训，暂不启动 exp041。
 - exp042 已完成环境工程探针：`branched_v1` Actor、`structured_v1` Critic、`bicycle` proxy、`quintic` 轨迹生成、`25 m × 25 m` 地图和 `communication_radius=0.0` 无限可见邻居语义在 CPU `8 env / 8 timesteps` 与 CUDA `256 env / 64 timesteps` smoke 中通过；CUDA smoke 显示一个 optimizer、两次 joint update、terrain branch 权重更新 `0.1263`、动作非退化。
@@ -47,9 +53,23 @@
 - exp044 已完成：保留 `branched_v1/structured_v1`、`bicycle`、`quintic`、`25 m × 25 m` 地图和无限通信语义，并加入 `3.0–4.0 m -> 3.8–5.2 m` initial-state curriculum。final eval dmax ratio `0.4796`、success `0.0`、collision `0.00195`、timeout `0.9980`，strict 未通过；相比 exp043 明显靠拢但仍未进入 success basin。
 - exp045 已完成：保持新环境栈和 25m 地图，但把目标 reset 分布缩小到 `2.4–3.4 m`，课程起点为 `1.6–2.4 m`，同时放大 `rho/beta` 可达范围、增强 gather progress、临时降低 terrain/filter 干扰。final eval dmax ratio `0.2734`、success `0.1846`、collision `0.0`、timeout `0.8174`，说明 local-success bootstrap 有效但仍未收敛。
 - exp046 已完成：沿用 exp045 的 local reset 分布，但降低 filter/control-safety 的末端介入强度，增强 dmax/dispersion progress、success bonus 和 timeout penalty。final eval dmax ratio `0.2424`、success `0.6123`、collision `0.0`、timeout `0.3877`，strict 未通过，但证明新环境栈已进入 local success basin。
-- exp047 已完成：保持 exp046 reset 分布，进一步释放 terminal safety/filter/control damping，同时增强 dmax/dispersion/timeout/success shaping。final eval dmax ratio `0.2132`、success `0.7188`、collision `0.0059`、timeout `0.2764`，strict 未通过，但成为新环境栈 local reset 当前最好结果。
+- exp047 已完成：保持 exp046 reset 分布，进一步释放 terminal safety/filter/control damping，同时增强 dmax/dispersion/timeout/success shaping。final eval dmax ratio `0.2132`、success `0.7188`、collision `0.0059`、timeout `0.2764`，strict 未通过，但曾是新环境栈 local reset 阶段性最好结果。
 - exp048 已完成：在 exp047 附近小步提高 terminal drive、dispersion 收缩和 timeout shaping。final eval dmax ratio `0.1866`、success `0.9844`、collision `0.0020`，均通过 strict；唯一失败是 timeout `0.0137`。
 - exp049 已完成：针对 exp048 剩余最近邻安全间距灰区增强 terminal spacing。final eval dmax ratio `0.1884`、success `0.8926`、collision `0.0010`、timeout `0.1064`，strict 未通过且明显差于 exp048；说明 spacing/filter/control safety 介入过强，修复了部分间距但牺牲了成功保持。
+- exp050 已完成：回到 exp048 主体，不改 action 输出、不做多点采样、不增强低层控制规划能力；主要调整 terminal hold reward、timeout shaping、PPO 学习率/clip/探索噪声。final eval dmax ratio `0.1847`、success `0.9590`、collision `0.0059` 达标，但 timeout `0.0352` 未过且差于 exp048，说明该 RL 配置微调方向不能作为下一步主线。
+- exp051 已完成：reward、filter、control safety 全部回到 exp048，只隔离 PPO 稳定性调整（学习率、clip、entropy schedule、initial log std）。best 为 `ppo_timestep_013312.pt`，final eval dmax ratio `0.1836`、success `0.9883`、collision `0.0020` 均通过，但 timeout `0.0098` 仍失败；相对 exp048 小幅降低 timeout，相对 exp050 明显恢复 success/timeout。
+- exp051 checkpoint seed sweep 已完成：对 `012288/013312/014336` 做 `4` 个 eval seed 复验后，013312 仍是附近 timeout 均值最低的 checkpoint，但 `strict_pass_count=0/4`、`timeout_zero_count=0/4`，说明剩余问题不是简单 checkpoint reselection。
+- exp052 已完成：以 exp051 为基线，只把 entropy schedule 从 `12288` 提前到 `8192`，不改 action 输出、不新增多点采样、不改 reward/filter/control。best 为 `ppo_timestep_008192.pt`，final eval dmax ratio `0.1863`、collision `0.0059` 达标，但 success `0.8955` 和 timeout `0.0986` 失败，明显差于 exp051。
+- exp053 已完成：回到 exp051，只把 reward 中已有的 `near_distance` 安全惩罚系数从 `2.4` 小幅提高到 `2.8`，不改 action 输出、不新增多点采样、不改 filter/control/PPO schedule。best 为 `ppo_timestep_020480.pt`，final eval dmax ratio `0.2049`、success `0.6416`、collision `0.0039`、timeout `0.3545`，明显差于 exp051。
+- exp054 已完成：回到 exp051，只把 PPO `clip_epsilon` 从 `0.18` 收窄到 `0.16`，不改 action 输出、不新增多点采样、不改 reward/filter/control。best 为 `ppo_timestep_017408.pt`，final eval dmax ratio `0.1972`、collision `0.0029` 达标，但 success `0.7168` 和 timeout `0.2803` 明显失败；说明更保守 clip 过度抑制 policy update，不能作为下一步主线。
+- exp055 已完成：回到 exp051，只把 PPO `clip_epsilon` 从 `0.18` 放宽到 `0.20`，不改 action 输出、不新增多点采样、不改 reward/filter/control。best 为 `ppo_timestep_017408.pt`，final eval dmax ratio `0.1850`、success `0.9824`、collision `0.0029` 达标，但 timeout `0.0146` 仍失败且差于 exp051；说明放宽 clip 没有清掉尾部 timeout。
+- exp056 已完成：回到 exp051，不改 action 输出、不新增多点采样、不改 filter/control/PPO，只新增 reward 侧 `terminal_pairwise_gap=4.0`，并在 dmax/dispersion 接近成功区时惩罚 `nearest < min_pairwise_distance` 的 gap。best 为 `ppo_timestep_012288.pt`，final eval dmax ratio `0.1864`、success `0.9873`、collision `0.0010` 达标，但 timeout `0.0117` 仍失败且差于 exp051；说明该项方向有轻微信号但触发/强度仍不理想。
+- exp057 已完成：回到 exp051，不改 action 输出、不新增多点采样、不改 filter/control/PPO，只把 terminal pairwise reward 收窄为 `terminal_pairwise_gap=2.0` 且 dmax/dispersion multiplier `1.00/1.00`。best 为 `ppo_timestep_011264.pt`，final eval dmax ratio `0.1850`、success `0.9697`、collision `0.0059` 达标，但 timeout `0.0254` 失败且明显差于 exp051/exp056；说明即使严格触发，terminal pairwise reward 仍会扰动末端 hold。
+- exp058 已完成：回到 exp051，不改 action 输出、不新增多点采样、不改 reward/filter/control，只把 PPO `gamma` 从 `0.99` 提高到 `0.995`。best 为 `ppo_timestep_012288.pt`，final eval dmax ratio `0.1991`、collision `0.0020` 达标，但 success `0.7451`、timeout `0.2529` 明显失败；说明更长折扣 horizon 没有改善尾部 timeout，反而拖慢 terminal convergence。
+- exp059 已完成：回到 exp051，不改 action 输出、不新增多点采样、不改 reward/filter/control，只把 PPO `gae_lambda` 从 `0.95` 降到 `0.90`。best 为 `ppo_timestep_012288.pt`，final eval dmax ratio `0.1927`、collision `0.0127` 达标，但 success `0.6904`、timeout `0.2988` 明显失败；训练后期 success 还坍缩到约 `0.0122`，说明更短 advantage trace 不适合作为下一步主线。
+- exp060 已完成：回到 exp051，不改 action 输出、不新增多点采样、不改 reward/filter/control，只把 PPO `value_loss_coef` 从 `0.50` 提高到 `0.75`。best 为 `ppo_timestep_012288.pt`，final eval dmax ratio `0.1837`、success `0.9736`、collision `0.0` 达标，但 timeout `0.0264` 失败且差于 exp051；说明更强 critic loss 权重没有改善尾部 hold。
+- exp061 已完成：回到 exp051，不改 action 输出、不新增多点采样、不改 reward/filter/control，只把 Actor observation 切到 `ego_v4_terminal_gate` 并使用 `branched_v2/structured_v2`，显式加入 dmax/dispersion/speed/hold/pairwise gate 特征。best 为 `ppo_timestep_020480.pt`，final eval dmax ratio `0.1890` 达标，但 success `0.8506`、collision `0.0205`、timeout `0.1289` 失败；gate 诊断中 timeout 仍主要卡 `min_pairwise`，且动作饱和显著上升，不能作为下一步主线。
+- exp062 已完成：回到 exp051，Actor observation 和 `branched_v1` 保持不变，只给 centralized critic state 加 terminal `min_pairwise` 并使用 `structured_v2`。best 为 `ppo_timestep_016384.pt`，final eval dmax ratio `0.1832`、success `0.9736`、collision `0.0059` 达标，但 timeout `0.0205` 失败；3-checkpoint/4-seed sweep 中 `016384` timeout mean `0.0161`、`0/4` strict，不优于 exp051。
 
 ## Checkpoint 评估工作流
 
@@ -79,6 +99,37 @@ physx_evaluated
 physx_passed
 final_selected
 ```
+
+新增 checkpoint seed sweep 诊断入口，用于在不改变 policy/filter/control 的情况下比较多个 checkpoint 的 eval seed 稳定性：
+
+```bash
+.venv_isaaclab/bin/python scripts/evaluate_proxy_checkpoint_seed_sweep.py \
+  --config outputs/runs/<experiment>/<run_id>/config/experiment.yaml \
+  --run-dir outputs/runs/<experiment>/<run_id> \
+  --checkpoint ppo_timestep_012288.pt \
+  --checkpoint ppo_timestep_013312.pt \
+  --seeds 1023,2023,3023,4023 \
+  --device cuda \
+  --num-envs 1024 \
+  --steps 320
+```
+
+该入口写入 `metrics/checkpoint_seed_sweep/summary.json` 和逐 seed eval JSON；它只用于诊断 checkpoint selection / eval 方差，不替代 strict gate。
+
+新增 success-gate 诊断入口，用于逐 episode 记录 timeout 末端到底卡在哪个 success gate：
+
+```bash
+.venv_isaaclab/bin/python scripts/diagnose_proxy_success_gates.py \
+  --config outputs/runs/<experiment>/<run_id>/config/experiment.yaml \
+  --checkpoint outputs/runs/<experiment>/<run_id>/checkpoints/best.pt \
+  --device cuda \
+  --num-envs 1024 \
+  --steps 320 \
+  --seed 1023 \
+  --run-dir outputs/runs/<experiment>/<run_id>
+```
+
+该入口写入 `metrics/success_gate_diagnostics.json`，只用于 failure analysis；若与历史 `final_eval_proxy.json` 数字略有不同，应表述为 recheck/diagnostic，不替换原 strict eval 记录。
 
 ## 已验证结果
 
@@ -114,7 +165,7 @@ final_selected
 | exp035 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + directional mask buffer | 未通过 | best final eval：success 0.9072、collision 0.0127、timeout 0.0811；success/collision 同时达标，timeout 成主瓶颈。 |
 | exp036 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + directional mask + stronger hold/timeout shaping | 未通过 | best final eval：success 0.9336、collision 0.0088、timeout 0.0586；继续改善 timeout，但 strict 仍失败。 |
 | exp037 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + directional mask + 260-step episode/eval | 未通过 | best final eval：success 0.9238、collision 0.0352、timeout 0.0410；延长 episode 降 timeout，但 collision 反弹。 |
-| exp038 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + success-zone stabilizer + 320-step episode/eval | 未通过 | 修正 best 后 final eval：success 0.9756、collision 0.0137、timeout 0.0107；当前随机地形最佳，strict 只剩 timeout 失败。 |
+| exp038 | 随机增强 lunar crater proxy | shared-joint MAPPO pure RL + success-zone stabilizer + 320-step episode/eval | 未通过 | 修正 best 后 final eval：success 0.9756、collision 0.0137、timeout 0.0107；旧环境栈随机地形阶段性最佳，strict 只剩 timeout 失败。 |
 | exp039 | 随机增强 lunar crater proxy | exp038 checkpoint + hard near stabilizer 诊断 | 未长训 | 复评 success 0.9424、collision 0.0254、timeout 0.0322，差于 exp038；不建议按原样长训。 |
 | exp040 | 随机增强 lunar crater proxy | exp038 checkpoint + stronger soft hold stabilizer 诊断 | 未长训 | 复评 success 0.9658、collision 0.0186、timeout 0.0166，timeout 差于 exp038；不建议按原样长训。 |
 | exp041 | 随机增强 lunar crater proxy | exp038 checkpoint + hold-zone override 诊断 | 暂停长训 | 复评 success 0.9795、collision 0.0107、timeout 0.0098，略优于 exp038；当前不启动长训。 |
@@ -123,9 +174,22 @@ final_selected
 | exp044 | 随机增强 lunar crater proxy | exp043 新环境栈 + initial-state curriculum | 未通过 | seed23 40M 完成；dmax 从 exp043 明显改善到 `0.4796`，但 success `0.0`、timeout `0.9980`。 |
 | exp045 | 随机增强 lunar crater proxy | exp044 新环境栈 + local-success bootstrap | 未通过 | seed23 40M 完成；success `0.1846`、collision `0.0`，证明 local bootstrap 有效但 timeout/dmax/dispersion 仍失败。 |
 | exp046 | 随机增强 lunar crater proxy | exp045 local reset + terminal hold release | 未通过 | final eval success `0.6123`、collision `0.0`，但 dmax ratio `0.2424`、timeout `0.3877` 仍失败；local terminal release 有效但不足。 |
-| exp047 | 随机增强 lunar crater proxy | exp046 local reset + terminal convergence release | 未通过 | final eval success `0.7188`、collision `0.0059`、dmax ratio `0.2132`，但 timeout `0.2764` 仍失败；当前新环境栈 local reset 最好结果。 |
-| exp048 | 随机增强 lunar crater proxy | exp047 local reset + terminal drive / dispersion tightening | 未通过 | dmax ratio `0.1866`、success `0.9844`、collision `0.0020` 均通过；唯一失败为 timeout `0.0137`，当前新环境栈 local reset 最佳。 |
+| exp047 | 随机增强 lunar crater proxy | exp046 local reset + terminal convergence release | 未通过 | final eval success `0.7188`、collision `0.0059`、dmax ratio `0.2132`，但 timeout `0.2764` 仍失败；曾是新环境栈 local reset 阶段性最好结果。 |
+| exp048 | 随机增强 lunar crater proxy | exp047 local reset + terminal drive / dispersion tightening | 未通过 | dmax ratio `0.1866`、success `0.9844`、collision `0.0020` 均通过；唯一失败为 timeout `0.0137`，此前新环境栈 local reset 最佳。 |
 | exp049 | 随机增强 lunar crater proxy | exp048 local reset + terminal spacing timeout closure | 未通过 | final eval dmax ratio `0.1884`、success `0.8926`、collision `0.0010`、timeout `0.1064`；过强 spacing 修正降低成功并抬高 timeout，不优于 exp048。 |
+| exp050 | 随机增强 lunar crater proxy | exp048 local reset + 克制 filter/control + terminal hold RL tune | 未通过 | final eval dmax ratio `0.1847`、success `0.9590`、collision `0.0059` 达标，但 timeout `0.0352` 差于 exp048；不作为主结果。 |
+| exp051 | 随机增强 lunar crater proxy | exp048 local reset + PPO stability only | 未通过 | best `013312`：dmax `0.1836`、success `0.9883`、collision `0.0020` 均通过，timeout `0.0098` 仍失败；4-seed 复验下 013312 仍是附近最好选点但 `0/4` strict。 |
+| exp052 | 随机增强 lunar crater proxy | exp051 + earlier entropy taper | 未通过 | best `008192`：dmax `0.1863`、collision `0.0059` 达标，但 success `0.8955`、timeout `0.0986` 失败；过早收窄探索明显差于 exp051。 |
+| exp053 | 随机增强 lunar crater proxy | exp051 + mild near reward | 未通过 | best `020480`：dmax `0.2049`、success `0.6416`、collision `0.0039`、timeout `0.3545`；全局 near reward 小幅增强也会推散队形，明显差于 exp051。 |
+| exp054 | 随机增强 lunar crater proxy | exp051 + PPO clip 0.16 | 未通过 | best `017408`：dmax `0.1972`、collision `0.0029` 达标，但 success `0.7168`、timeout `0.2803` 明显失败；clip 过窄，不优于 exp051。 |
+| exp055 | 随机增强 lunar crater proxy | exp051 + PPO clip 0.20 | 未通过 | best `017408`：dmax `0.1850`、success `0.9824`、collision `0.0029` 达标，但 timeout `0.0146` 失败且差于 exp051；clip `0.20` 不优于当前 best。 |
+| exp056 | 随机增强 lunar crater proxy | exp051 + terminal pairwise reward | 未通过 | best `012288`：dmax `0.1864`、success `0.9873`、collision `0.0010` 达标，但 timeout `0.0117` 失败且差于 exp051；pairwise reward 过早/偏强。 |
+| exp057 | 随机增强 lunar crater proxy | exp051 + strict terminal pairwise reward | 未通过 | best `011264`：dmax `0.1850`、success `0.9697`、collision `0.0059` 达标，但 timeout `0.0254` 明显差于 exp051；不继续该方向。 |
+| exp058 | 随机增强 lunar crater proxy | exp051 + PPO gamma 0.995 | 未通过 | best `012288`：dmax `0.1991`、collision `0.0020` 达标，但 success `0.7451`、timeout `0.2529` 明显失败；更长折扣 horizon 拖慢 terminal convergence。 |
+| exp059 | 随机增强 lunar crater proxy | exp051 + PPO GAE 0.90 | 未通过 | best `012288`：dmax `0.1927`、collision `0.0127` 达标，但 success `0.6904`、timeout `0.2988` 明显失败；更短 GAE trace 也会破坏 terminal convergence。 |
+| exp060 | 随机增强 lunar crater proxy | exp051 + PPO value loss 0.75 | 未通过 | best `012288`：dmax `0.1837`、success `0.9736`、collision `0.0` 达标，但 timeout `0.0264` 失败且差于 exp051；更强 critic loss 权重没有改善尾部 hold。 |
+| exp061 | 随机增强 lunar crater proxy | exp051 + terminal gate Actor/Critic observation | 未通过 | best `020480`：dmax `0.1890` 达标，但 success `0.8506`、collision `0.0205`、timeout `0.1289` 失败；直接暴露 gate margin 给 Actor 导致策略更激进，不作为主线。 |
+| exp062 | 随机增强 lunar crater proxy | exp051 + critic-only min_pairwise state | 未通过 | best `016384`：dmax `0.1832`、success `0.9736`、collision `0.0059` 达标，但 timeout `0.0205` 失败；4-seed sweep timeout mean `0.0161`，不优于 exp051。 |
 
 历史完整 suite checkpoint：
 
@@ -157,14 +221,25 @@ outputs/runs/exp_008_terrain3d/_suite/checkpoints/
 - exp031–exp034 可以表述为“控制层投影条件和方向性 mask 诊断”，不能写成随机地形安全收敛；exp034 是方向性 mask 的有效拐点，但 collision 仍失败。
 - exp035/exp036 可以表述为“success/collision 已同时过门槛但 timeout 仍失败”，不能写成 strict pass。
 - exp037 可以表述为“延长 episode 降 timeout 但导致 collision 反弹”，不能写成单纯时间预算不足。
-- exp038 可以表述为“当前随机地形最佳候选，strict 只剩 timeout 尾部未过”，不能写成 strict pass。
+- exp038 可以表述为“旧环境栈随机地形阶段性最佳候选，strict 只剩 timeout 尾部未过”，不能写成 strict pass。
 - exp039/exp040 只是 exp038 checkpoint 复评诊断，不能写成长训练结果。
 - exp041 可以表述为“hold-zone override 在 exp038 checkpoint 上略有改善”，不能写成 exp041 长训练完成。
 - exp042 可以表述为“训练环境三项核心改造和 25m/无限通信设置的工程探针通过”，不能写成策略训练收敛或 strict pass。
 - exp043 可以表述为“新环境栈直接长训未收敛，主要表现为集合进度不足而非碰撞或数值异常”，不能写成 strict pass。
 - exp044 可以表述为“initial-state curriculum 改善了靠拢但仍未产生 success”，不能写成 strict pass。
 - exp045 可以表述为“local-success bootstrap 把 success 从 0 提升到 0.1846，但仍未收敛”，不能写成 strict pass。
-- exp046 在完成前只能写成“local hold release 候选”，即便通过也不能直接表述为 exp044 完整难度收敛。
+- exp046/exp047 可以表述为“新环境栈 local reset 下逐步恢复 terminal convergence”，不能写成完整难度 strict 收敛。
+- exp048/exp051 可以表述为“dmax/success/collision 已过，剩余 timeout 尾部未清零”，不能写成 strict pass。
+- exp049/exp050 可以表述为“增强 spacing/filter 或增强 hold/timeout shaping 的负结果”，不能作为下一步主方向。
+- exp052/exp054 可以表述为“PPO 探索或更新过早/过强收窄会明显降低 success 并抬高 timeout”，不能作为下一步主方向。
+- exp055 可以表述为“稍微放宽 PPO clip 能恢复 exp051 附近的 success/collision，但没有改善 timeout 尾部”，不能作为当前主结果。
+- exp056/exp057 可以表述为“terminal pairwise reward 能轻微影响最近邻/碰撞，但没有改善 timeout，且严格弱化后仍扰动 success/hold”，不能作为下一步主方向。
+- exp058 可以表述为“提高 PPO gamma 到 0.995 明显拖慢 terminal convergence”，不能作为下一步主方向。
+- exp059 可以表述为“降低 GAE lambda 到 0.90 明显降低 success 并抬高 timeout，且训练后期策略质量坍缩”，不能作为下一步主方向。
+- exp060 可以表述为“提高 value loss 权重到 0.75 保留了 dmax/success/collision 达标，但 timeout 明显差于 exp051”，不能作为下一步主方向。
+- exp061 可以表述为“terminal gate 特征直接进入 Actor 会导致动作更激进、success/collision/timeout 同时退化”，不能作为下一步主方向。
+- exp062 可以表述为“critic-only 显式 min_pairwise state 保留了 dmax/success/collision 达标，但 timeout 仍差于 exp051”，不能作为当前主结果。
+- exp051 没有改变 Actor 输出语义，也没有引入多点采样；当前主线仍是单点 `[rho, beta]` 子目标输出加原有 filter/control 兜底。exp051 multi-seed 复验只改变评估采样，不改变 policy 或底层约束。
 - GIF、截图和 TensorBoard 曲线只能用于展示和诊断；严格结论以 `_suite/metrics/strict_acceptance.json`、`metrics/final_eval_proxy.json` 和 `metrics/checkpoint_status.json` 为准。
 
 ## Jackal 跟踪验证
@@ -209,10 +284,10 @@ outputs/runs/physx_jackal_tracking/strong_lunar_crater_final_v2/
 
 ## 下一步
 
-1. 当前随机地形最佳综合候选是 exp038：success/collision 已过 strict，仅 timeout `0.0107` 未过。
-2. exp038 的剩余 timeout 不是整体不可达，而是少量 episode 卡在 `collision_distance=0.28 m` 与 `success_thresholds.min_pairwise_distance=0.42 m` 之间的最近邻灰区，hold count 接近完成但未稳定达标。
-3. 不建议继续全局加硬 near/hold filter；exp039/exp040 已说明会扰动 success 或 timeout。
-4. exp049 说明不能继续全局增强 terminal spacing/filter/control safety；这会把部分本可成功的 episode 推出 hold 区，timeout 从 exp048 的 `0.0137` 升到 `0.1064`。
-5. 下一轮应回退到 exp048 主体，只加入窄触发 terminal spacing：仅在 dmax/dispersion 已接近成功、且最近邻落入 `0.28–0.42 m` 灰区时轻推开，避免全局改变子目标。
+1. 当前新环境栈 local reset 最好候选是 exp051：dmax/success/collision 已过 strict，仅 timeout `0.0098` 未过。
+2. exp051 说明 PPO 稳定性调整有小收益；exp050 说明增强 terminal hold / timeout shaping 会抬高 timeout，不能作为主线。
+3. 暂时维持原动作输出，不改为多点采样让 filter 选择；下一轮仍应把 RL policy 作为主体，filter/control 只保留原有兜底语义。exp051/exp060 gate 诊断显示 timeout 主要卡在 terminal `min_pairwise` gate，而不是轨迹速度或 dispersion，因此把 filter 升级成候选选择器会偏离当前“RL 主体、filter 兜底”的口径。
+4. 不建议继续全局加硬 near/hold filter；exp039/exp040 和 exp049 已说明会扰动 success 或 timeout。
+5. exp052 说明不能把 entropy taper 提前到 `8192`；exp053 说明不能继续提高全局 near reward；exp054/exp055 完成 clip 两侧扫描，当前最好仍是 exp051 的 `clip_epsilon=0.18`；exp056/exp057 说明 terminal pairwise reward 不是有效收敛方向；exp058/exp059 说明拉长 `gamma` 或缩短 `gae_lambda` 都会拖慢或破坏 terminal convergence；exp060 说明单纯提高 `value_loss_coef` 也不能清掉 timeout；exp061/exp062 说明直接加 terminal gate Actor 特征或 critic-only min_pairwise state 都不优于 exp051。下一轮仍应回到 exp051，避免继续扩张安全间距项、filter/control 权限或直接 gate 特征，优先考虑更保守的训练稳定性/seed 稳健性诊断，或只做非常窄的末端 hold 学习信号对照；checkpoint selection 继续只作为诊断，不作为主修复。
 6. 保留 exp017 作为固定地图 pure RL baseline，保留 exp018–exp041 作为随机地形 failure analysis，不把它们扩写为多 seed 或 PhysX 收敛。
 7. 为 PhysX / Jackal 后续接入同布局 raycast / height scanner，保持 proxy 与高保真观测接口一致。

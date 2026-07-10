@@ -202,6 +202,9 @@ class RewardCoefficientsCfg:
     filter_deviation_cost: float = 0.0
     inter_agent_collision: float = 8.0
     near_distance: float = 0.5
+    terminal_pairwise_gap: float = 0.0
+    terminal_pairwise_dmax_multiplier: float = 1.0
+    terminal_pairwise_dispersion_multiplier: float = 1.0
     subgoal_turn: float = 0.05
     subgoal_stagnation: float = 0.1
     action_consistency: float = 0.02
@@ -238,12 +241,19 @@ class ObservationCfg:
     aggregation_dim: int = 5
 
     @property
+    def terminal_gate_dim(self) -> int:
+        if self.schema_version == "ego_v4_terminal_gate":
+            return 5
+        return 0
+
+    @property
     def actor_obs_dim(self) -> int:
         return (
             self.ego_dim
             + self.max_neighbors * self.neighbor_dim
             + self.terrain_dim
             + self.aggregation_dim
+            + self.terminal_gate_dim
         )
 
 
@@ -253,6 +263,7 @@ class StateCfg:
     team_state_dim: int = 8
     terrain_state_dim: int = 5
     oracle_state_dim: int = 9
+    include_terminal_min_pairwise: bool = False
 
 
 @dataclass(slots=True)
@@ -278,9 +289,16 @@ class MultiRoverGatheringEnvCfg:
 
     @property
     def critic_state_dim(self) -> int:
+        terminal_team_dim = (
+            1
+            if self.state.include_terminal_min_pairwise
+            or self.observation.schema_version == "ego_v4_terminal_gate"
+            else 0
+        )
         return (
             self.task.n_agents * self.state.agent_state_dim
             + self.state.team_state_dim
+            + terminal_team_dim
             + self.state.terrain_state_dim
             + self.state.oracle_state_dim
         )

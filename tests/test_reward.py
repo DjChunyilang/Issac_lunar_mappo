@@ -14,6 +14,7 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.reward import (
     RewardTerms,
     compute_gather_reward,
     compute_oracle_reward,
+    compute_safety_reward,
     compute_terrain_reward,
     compute_terminal_reward,
 )
@@ -91,6 +92,38 @@ def test_timeout_penalty_only_applies_to_pure_timeout_truncation() -> None:
     reward = compute_terminal_reward(flags, cfg)
 
     assert torch.allclose(reward, torch.tensor([-2.0, -4.5, -4.5]))
+
+
+def test_terminal_pairwise_gap_penalty_only_applies_near_success_geometry() -> None:
+    cfg = MultiRoverGatheringEnvCfg()
+    cfg.reward_coefficients.near_distance = 0.0
+    cfg.reward_coefficients.inter_agent_collision = 0.0
+    cfg.reward_coefficients.terminal_pairwise_gap = 4.0
+    cfg.success_thresholds.min_pairwise_distance = 0.42
+    done = DoneFlags(
+        success=torch.tensor([False, False, False]),
+        collision=torch.tensor([False, False, False]),
+        out_of_bounds=torch.tensor([False, False, False]),
+        timeout=torch.tensor([False, False, False]),
+        terminated=torch.tensor([False, False, False]),
+        truncated=torch.tensor([False, False, False]),
+        done=torch.tensor([False, False, False]),
+    )
+    positions = torch.tensor(
+        [
+            [[-0.15, 0.0, 0.0], [0.20, 0.0, 0.0], [0.0, 0.22, 0.0], [0.0, -0.22, 0.0]],
+            [[-0.50, 0.0, 0.0], [0.50, 0.0, 0.0], [0.0, 0.50, 0.0], [0.0, -0.50, 0.0]],
+            [[-3.0, 0.0, 0.0], [-2.65, 0.0, 0.0], [3.0, 0.0, 0.0], [0.0, 3.0, 0.0]],
+        ],
+        dtype=torch.float32,
+    )
+    metrics = compute_team_metrics(positions, torch.zeros(3, 4, 2))
+
+    reward = compute_safety_reward(positions, metrics, done, cfg)
+
+    assert reward[0] < 0.0
+    assert torch.allclose(reward[1], torch.tensor(0.0))
+    assert torch.allclose(reward[2], torch.tensor(0.0))
 
 
 def test_default_terrain_reward_is_zero_even_with_rough_features() -> None:
@@ -200,6 +233,9 @@ def test_reward_config_keys_match_consumed_reward_terms() -> None:
         "subgoal_turn",
         "success_bonus",
         "success_hold_step",
+        "terminal_pairwise_dispersion_multiplier",
+        "terminal_pairwise_dmax_multiplier",
+        "terminal_pairwise_gap",
         "timeout_penalty",
         "terrain_cost",
         "terrain_height_change_cost",

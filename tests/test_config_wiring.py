@@ -87,6 +87,75 @@ def test_observation_communication_radius_is_wired(tmp_path: Path) -> None:
     assert cfg.observation.communication_radius == 2.5
 
 
+def test_observation_schema_version_is_wired_to_terminal_gate_dims(tmp_path: Path) -> None:
+    config_path = tmp_path / "experiment.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "experiment": {"name": "terminal_gate_observation"},
+                "observation": {"schema_version": "ego_v4_terminal_gate"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = cfg_from_experiment(config_path)
+    assert cfg.observation.schema_version == "ego_v4_terminal_gate"
+    assert cfg.actor_obs_dim == 91
+    assert cfg.critic_state_dim == 55
+
+
+def test_unknown_observation_schema_version_fails_fast(tmp_path: Path) -> None:
+    config_path = tmp_path / "experiment.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "experiment": {"name": "bad_observation_schema"},
+                "observation": {"schema_version": "ego_v999"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"observation\.schema_version"):
+        cfg_from_experiment(config_path)
+
+
+def test_state_terminal_min_pairwise_is_wired_without_actor_schema_change(tmp_path: Path) -> None:
+    config_path = tmp_path / "experiment.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "experiment": {"name": "critic_terminal_min_pairwise"},
+                "state": {"include_terminal_min_pairwise": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = cfg_from_experiment(config_path)
+    assert cfg.observation.schema_version == "ego_v3_local_terrain_grid"
+    assert cfg.state.include_terminal_min_pairwise is True
+    assert cfg.actor_obs_dim == 86
+    assert cfg.critic_state_dim == 55
+
+
+def test_state_dimension_keys_are_not_opened(tmp_path: Path) -> None:
+    config_path = tmp_path / "experiment.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "experiment": {"name": "bad_state_dim"},
+                "state": {"team_state_dim": 9},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"state\.team_state_dim"):
+        cfg_from_experiment(config_path)
+
+
 def test_observation_dimension_keys_are_not_opened(tmp_path: Path) -> None:
     config_path = tmp_path / "experiment.yaml"
     config_path.write_text(

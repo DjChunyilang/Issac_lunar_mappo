@@ -46,20 +46,48 @@ from shared_policy_mappo import SharedPolicyMAPPO
 
 TRAINING_SEMANTICS = DEFAULT_TRAINING_SEMANTICS
 
-ACTOR_ARCHITECTURES = {"mlp_v1", "branched_v1"}
-CRITIC_ARCHITECTURES = {"mlp_v1", "structured_v1"}
-ACTOR_OBSERVATION_SLICES = {
+ACTOR_ARCHITECTURES = {"mlp_v1", "branched_v1", "branched_v2"}
+CRITIC_ARCHITECTURES = {"mlp_v1", "structured_v1", "structured_v2"}
+ACTOR_OBSERVATION_SLICES_V3 = {
     "ego": (0, 10),
     "neighbors": (10, 31),
     "terrain": (31, 81),
     "aggregation": (81, 86),
 }
-CRITIC_STATE_SLICES = {
+ACTOR_OBSERVATION_SLICES_V4 = {
+    **ACTOR_OBSERVATION_SLICES_V3,
+    "terminal_gate": (86, 91),
+}
+ACTOR_OBSERVATION_SLICES = ACTOR_OBSERVATION_SLICES_V3
+CRITIC_STATE_SLICES_V3 = {
     "agents": (0, 32),
     "team": (32, 40),
     "terrain": (40, 45),
     "oracle": (45, 54),
 }
+CRITIC_STATE_SLICES_V4 = {
+    "agents": (0, 32),
+    "team": (32, 41),
+    "terrain": (41, 46),
+    "oracle": (46, 55),
+}
+CRITIC_STATE_SLICES = CRITIC_STATE_SLICES_V3
+
+
+def _actor_slices_for_dim(num_observations: int) -> dict[str, tuple[int, int]]:
+    if int(num_observations) == 86:
+        return ACTOR_OBSERVATION_SLICES_V3
+    if int(num_observations) == 91:
+        return ACTOR_OBSERVATION_SLICES_V4
+    raise ValueError(f"Unsupported actor observation dim: {num_observations}.")
+
+
+def _critic_slices_for_dim(num_states: int) -> dict[str, tuple[int, int]]:
+    if int(num_states) == 54:
+        return CRITIC_STATE_SLICES_V3
+    if int(num_states) == 55:
+        return CRITIC_STATE_SLICES_V4
+    raise ValueError(f"Unsupported critic state dim: {num_states}.")
 
 
 def _slice_metadata(slices: dict[str, tuple[int, int]]) -> dict[str, dict[str, int]]:
@@ -69,12 +97,12 @@ def _slice_metadata(slices: dict[str, tuple[int, int]]) -> dict[str, dict[str, i
     }
 
 
-def observation_slices_metadata() -> dict[str, dict[str, int]]:
-    return _slice_metadata(ACTOR_OBSERVATION_SLICES)
+def observation_slices_metadata(actor_obs_dim: int = 86) -> dict[str, dict[str, int]]:
+    return _slice_metadata(_actor_slices_for_dim(actor_obs_dim))
 
 
-def critic_state_slices_metadata() -> dict[str, dict[str, int]]:
-    metadata = _slice_metadata(CRITIC_STATE_SLICES)
+def critic_state_slices_metadata(critic_state_dim: int = 54) -> dict[str, dict[str, int]]:
+    metadata = _slice_metadata(_critic_slices_for_dim(critic_state_dim))
     metadata["agents"]["shape_agents"] = 4
     metadata["agents"]["shape_features"] = 8
     return metadata
@@ -120,7 +148,7 @@ class SKRLPolicy(GaussianMixin, Model):
                 nn.ELU(),
                 nn.Linear(128, self.num_actions),
             )
-        else:
+        elif self.architecture == "branched_v1":
             if self.num_observations != 86:
                 raise ValueError(
                     "branched_v1 actor expects the fixed ego_v3 86-dim observation."
@@ -136,6 +164,23 @@ class SKRLPolicy(GaussianMixin, Model):
                 nn.ELU(),
                 nn.Linear(128, self.num_actions),
             )
+        else:
+            if self.num_observations != 91:
+                raise ValueError(
+                    "branched_v2 actor expects the ego_v4 91-dim terminal-gate observation."
+                )
+            self.ego_encoder = nn.Sequential(nn.Linear(10, 32), nn.ELU())
+            self.neighbor_encoder = nn.Sequential(nn.Linear(21, 48), nn.ELU())
+            self.terrain_encoder = nn.Sequential(nn.Linear(50, 64), nn.ELU())
+            self.aggregation_encoder = nn.Sequential(nn.Linear(5, 16), nn.ELU())
+            self.terminal_gate_encoder = nn.Sequential(nn.Linear(5, 16), nn.ELU())
+            self.trunk = nn.Sequential(
+                nn.Linear(176, 128),
+                nn.ELU(),
+                nn.Linear(128, 128),
+                nn.ELU(),
+                nn.Linear(128, self.num_actions),
+            )
         self.log_std_parameter = nn.Parameter(
             torch.full((self.num_actions,), float(initial_log_std))
         )
@@ -145,19 +190,28 @@ class SKRLPolicy(GaussianMixin, Model):
         if self.architecture == "mlp_v1":
             logits = self.net(observations)
         else:
-            ego_start, ego_end = ACTOR_OBSERVATION_SLICES["ego"]
-            neighbor_start, neighbor_end = ACTOR_OBSERVATION_SLICES["neighbors"]
-            terrain_start, terrain_end = ACTOR_OBSERVATION_SLICES["terrain"]
-            aggregation_start, aggregation_end = ACTOR_OBSERVATION_SLICES["aggregation"]
-            encoded = torch.cat(
-                (
-                    self.ego_encoder(observations[..., ego_start:ego_end]),
-                    self.neighbor_encoder(observations[..., neighbor_start:neighbor_end]),
-                    self.terrain_encoder(observations[..., terrain_start:terrain_end]),
-                    self.aggregation_encoder(
-                        observations[..., aggregation_start:aggregation_end]
-                    ),
+            slices = _actor_slices_for_dim(self.num_observations)
+            ego_start, ego_end = slices["ego"]
+            neighbor_start, neighbor_end = slices["neighbors"]
+            terrain_start, terrain_end = slices["terrain"]
+            aggregation_start, aggregation_end = slices["aggregation"]
+            encoded_parts = [
+                self.ego_encoder(observations[..., ego_start:ego_end]),
+                self.neighbor_encoder(observations[..., neighbor_start:neighbor_end]),
+                self.terrain_encoder(observations[..., terrain_start:terrain_end]),
+                self.aggregation_encoder(
+                    observations[..., aggregation_start:aggregation_end]
                 ),
+            ]
+            if self.architecture == "branched_v2":
+                terminal_start, terminal_end = slices["terminal_gate"]
+                encoded_parts.append(
+                    self.terminal_gate_encoder(
+                        observations[..., terminal_start:terminal_end]
+                    )
+                )
+            encoded = torch.cat(
+                encoded_parts,
                 dim=-1,
             )
             logits = self.trunk(encoded)
@@ -166,7 +220,7 @@ class SKRLPolicy(GaussianMixin, Model):
 
     def terrain_input_weight(self) -> torch.Tensor:
         if self.architecture == "mlp_v1":
-            terrain_start, terrain_end = ACTOR_OBSERVATION_SLICES["terrain"]
+            terrain_start, terrain_end = _actor_slices_for_dim(self.num_observations)["terrain"]
             return self.net[0].weight[:, terrain_start:terrain_end]
         return self.terrain_encoder[0].weight
 
@@ -197,11 +251,27 @@ class SKRLValue(DeterministicMixin, Model):
                 nn.ELU(),
                 nn.Linear(128, 1),
             )
-        else:
+        elif self.architecture == "structured_v1":
             if self.num_states != 54:
                 raise ValueError("structured_v1 critic expects the fixed 54-dim state.")
             self.agent_encoder = nn.Sequential(nn.Linear(8, 32), nn.ELU())
             self.team_encoder = nn.Sequential(nn.Linear(8, 32), nn.ELU())
+            self.terrain_encoder = nn.Sequential(nn.Linear(5, 16), nn.ELU())
+            self.oracle_encoder = nn.Sequential(nn.Linear(9, 32), nn.ELU())
+            self.value_trunk = nn.Sequential(
+                nn.Linear(144, 128),
+                nn.ELU(),
+                nn.Linear(128, 128),
+                nn.ELU(),
+                nn.Linear(128, 1),
+            )
+        else:
+            if self.num_states != 55:
+                raise ValueError(
+                    "structured_v2 critic expects the ego_v4 55-dim terminal-gate state."
+                )
+            self.agent_encoder = nn.Sequential(nn.Linear(8, 32), nn.ELU())
+            self.team_encoder = nn.Sequential(nn.Linear(9, 32), nn.ELU())
             self.terrain_encoder = nn.Sequential(nn.Linear(5, 16), nn.ELU())
             self.oracle_encoder = nn.Sequential(nn.Linear(9, 32), nn.ELU())
             self.value_trunk = nn.Sequential(
@@ -216,10 +286,11 @@ class SKRLValue(DeterministicMixin, Model):
         states = inputs["states"]
         if self.architecture == "mlp_v1":
             return self.net(states), {}
-        agents_start, agents_end = CRITIC_STATE_SLICES["agents"]
-        team_start, team_end = CRITIC_STATE_SLICES["team"]
-        terrain_start, terrain_end = CRITIC_STATE_SLICES["terrain"]
-        oracle_start, oracle_end = CRITIC_STATE_SLICES["oracle"]
+        slices = _critic_slices_for_dim(self.num_states)
+        agents_start, agents_end = slices["agents"]
+        team_start, team_end = slices["team"]
+        terrain_start, terrain_end = slices["terrain"]
+        oracle_start, oracle_end = slices["oracle"]
         agent_features = states[..., agents_start:agents_end].reshape(-1, 4, 8)
         encoded_agents = self.agent_encoder(agent_features)
         agent_mean = encoded_agents.mean(dim=1)
@@ -2003,8 +2074,12 @@ def skrl_mappo_checkpoint_payload(
         "algorithm_mode": algorithm.get("mode"),
         "actor_architecture": actor_architecture,
         "critic_architecture": critic_architecture,
-        "observation_slices": observation_slices_metadata(),
-        "critic_state_slices": critic_state_slices_metadata(),
+        "observation_slices": observation_slices_metadata(
+            int(actor_obs_dim or 86)
+        ),
+        "critic_state_slices": critic_state_slices_metadata(
+            int(critic_state_dim or 54)
+        ),
         "kinematic_model": str(low_level_control.get("kinematic_model", "unicycle")),
         "wheelbase_m": float(low_level_control.get("wheelbase_m", 0.65)),
         "max_steer_angle_rad": float(
