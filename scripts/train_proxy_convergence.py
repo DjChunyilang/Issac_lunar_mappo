@@ -36,10 +36,6 @@ import matplotlib.pyplot as plt  # noqa: E402
 from _common import ROOT, cfg_from_experiment, ensure_output_dir, load_yaml
 from _skrl_metadata import observation_interface_metadata, validate_checkpoint_compatibility
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore
-from lunar_rover_tasks.tasks.multi_rover_gathering.oracle import (
-    compute_geometric_median,
-    compute_mean_oracle_distance,
-)
 from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import query_terrain_features
 from terrain_viz import add_height_heatmap, height_grid_for_extent, save_height_map
 from train import Actor, Critic
@@ -212,7 +208,7 @@ def evaluate_actor(
             first_collision_step,
         )
         collision_seen = collision_seen | (done.collision & active_before)
-        timeout_seen = timeout_seen | (done.timeout & active_before)
+        timeout_seen = timeout_seen | (done.truncated & active_before)
         nearest = metrics.nearest_neighbor_distance.amin(dim=-1)
         active_nearest = nearest[active_before]
         if active_nearest.numel() > 0:
@@ -332,10 +328,7 @@ def _randomize_bc_state(env: MultiRoverGatheringCore) -> None:
     env.previous_physical_action.zero_()
     env.step_count.zero_()
     env.success_hold_count.zero_()
-    env.oracle_point.copy_(compute_geometric_median(env.positions))
-    env.prev_mean_oracle_distance.copy_(
-        compute_mean_oracle_distance(env.positions, env.oracle_point)
-    )
+    env.refresh_oracle_point()
 
 
 def run_behavior_cloning(

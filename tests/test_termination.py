@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import SafetyCfg, SuccessThresholdsCfg
@@ -128,3 +129,109 @@ def test_success_requires_min_pairwise_distance_when_configured() -> None:
     )
     assert flags.success.tolist() == [False, True]
     assert hold.tolist() == [0, 1]
+
+
+def test_success_requires_flat_gather_point_and_resets_hold_count() -> None:
+    positions = torch.tensor(
+        [
+            [[-0.35, 0.0, 0.0], [0.35, 0.0, 0.0], [0.0, 0.35, 0.0], [0.0, -0.35, 0.0]],
+            [[-0.35, 0.0, 0.0], [0.35, 0.0, 0.0], [0.0, 0.35, 0.0], [0.0, -0.35, 0.0]],
+        ]
+    )
+    velocities = torch.zeros(2, 4, 2)
+    metrics = compute_team_metrics(positions, velocities)
+    thresholds = SuccessThresholdsCfg(
+        dmax=1.0,
+        dispersion=1.0,
+        speed=0.1,
+        hold_steps=2,
+        min_pairwise_distance=0.42,
+    )
+    flatness_ok = torch.tensor([True, False])
+
+    gates = compute_success_gates(
+        metrics,
+        velocities,
+        thresholds,
+        flatness_ok=flatness_ok,
+    )
+
+    assert gates.dmax_ok.tolist() == [True, True]
+    assert gates.dispersion_ok.tolist() == [True, True]
+    assert gates.speed_ok.tolist() == [True, True]
+    assert gates.min_pairwise_ok.tolist() == [True, True]
+    assert gates.flatness_ok.tolist() == [True, False]
+    assert gates.instant_success.tolist() == [True, False]
+
+    flags, hold = compute_done(
+        positions,
+        velocities,
+        metrics,
+        torch.ones(2, dtype=torch.long),
+        torch.zeros(2, dtype=torch.long),
+        100,
+        thresholds,
+        SafetyCfg(collision_distance=0.28),
+        flatness_ok=flatness_ok,
+    )
+
+    assert flags.success.tolist() == [True, False]
+    assert hold.tolist() == [2, 0]
+
+
+def test_flatness_gate_starts_a_new_hold_streak_after_recovery() -> None:
+    positions = torch.tensor(
+        [[[-0.35, 0.0, 0.0], [0.35, 0.0, 0.0], [0.0, 0.35, 0.0], [0.0, -0.35, 0.0]]]
+    )
+    velocities = torch.zeros(1, 4, 2)
+    metrics = compute_team_metrics(positions, velocities)
+    thresholds = SuccessThresholdsCfg(
+        dmax=1.0,
+        dispersion=1.0,
+        speed=0.1,
+        hold_steps=2,
+        min_pairwise_distance=0.42,
+    )
+
+    _, hold = compute_done(
+        positions,
+        velocities,
+        metrics,
+        torch.ones(1, dtype=torch.long),
+        torch.zeros(1, dtype=torch.long),
+        100,
+        thresholds,
+        SafetyCfg(collision_distance=0.28),
+        flatness_ok=torch.tensor([False]),
+    )
+    assert hold.tolist() == [0]
+
+    flags, hold = compute_done(
+        positions,
+        velocities,
+        metrics,
+        hold,
+        torch.zeros(1, dtype=torch.long),
+        100,
+        thresholds,
+        SafetyCfg(collision_distance=0.28),
+        flatness_ok=torch.tensor([True]),
+    )
+    assert flags.success.tolist() == [False]
+    assert hold.tolist() == [1]
+
+
+def test_success_gate_rejects_wrong_flatness_batch_shape() -> None:
+    positions = torch.tensor(
+        [[[-0.35, 0.0, 0.0], [0.35, 0.0, 0.0], [0.0, 0.35, 0.0], [0.0, -0.35, 0.0]]]
+    )
+    velocities = torch.zeros(1, 4, 2)
+    metrics = compute_team_metrics(positions, velocities)
+
+    with pytest.raises(ValueError, match="flatness_ok must have shape"):
+        compute_success_gates(
+            metrics,
+            velocities,
+            SuccessThresholdsCfg(),
+            flatness_ok=torch.tensor([[True]]),
+        )

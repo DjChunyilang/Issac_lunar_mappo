@@ -1,0 +1,10 @@
+extends: exp096_structured_bicycle_quintic_map25_flatness_center_early_radius35_time128.yaml
+
+experiment:
+  name: exp097_structured_bicycle_quintic_map25_flatness_center_early_radius35_time128_ppo_probe
+  # Retain the initialized policy and inspect two short, independent PPO
+  # updates before committing to a longer horizon run.
+  checkpoint_interval: 256
+
+algorithm:
+  training_semantics: exp097_structured_bicycle_quintic_map25_flatness_center_early_radius35_time128_ppo_probe

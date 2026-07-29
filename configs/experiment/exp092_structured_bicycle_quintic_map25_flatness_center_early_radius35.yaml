@@ -1,0 +1,12 @@
+extends: exp091_structured_bicycle_quintic_map25_flatness_center_early_radius33.yaml
+
+experiment:
+  name: exp092_structured_bicycle_quintic_map25_flatness_center_early_radius35
+
+gather_point:
+  # Interpolate the BC-reanchored 0.33 m/0.39 m Pareto pair: retain a 0.075 m
+  # nominal adjacent-spacing margin while recovering terminal reachability.
+  execution_slot_radius: 0.35
+
+algorithm:
+  training_semantics: exp092_structured_bicycle_quintic_map25_flatness_center_early_radius35

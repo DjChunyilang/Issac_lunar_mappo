@@ -1,0 +1,12 @@
+extends: exp089_structured_bicycle_quintic_map25_flatness_center_early.yaml
+
+experiment:
+  name: exp090_structured_bicycle_quintic_map25_flatness_center_early_radius37
+
+gather_point:
+  # Adjacent fixed-slot spacing is about 0.523 m, retaining more than 0.10 m
+  # margin above the 0.42 m success safety floor while tightening dmax.
+  execution_slot_radius: 0.37
+
+algorithm:
+  training_semantics: exp090_structured_bicycle_quintic_map25_flatness_center_early_radius37

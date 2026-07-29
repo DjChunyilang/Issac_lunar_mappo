@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 import yaml
@@ -27,7 +28,6 @@ from physx_jackal_common import (  # noqa: E402
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore  # noqa: E402
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import make_debug_cfg  # noqa: E402
 from lunar_rover_tasks.tasks.multi_rover_gathering.oracle import (  # noqa: E402
-    compute_geometric_median,
     compute_mean_oracle_distance,
 )
 from run_proxy_convergence_suite import build_strict_acceptance  # noqa: E402
@@ -149,24 +149,47 @@ def test_safety_aware_teacher_reduces_rho_near_centroid() -> None:
     assert safe_rho.max() < direct_rho.max()
 
 
-def test_bc_randomized_state_uses_geometric_median_oracle() -> None:
+def test_bc_randomized_state_refreshes_terrain_aware_oracle() -> None:
     cfg = make_debug_cfg(num_envs=4, device="cpu")
+    cfg.gather_point.coarse_grid_size = 3
+    cfg.gather_point.refinement_grid_size = 3
+    cfg.gather_point.refinement_levels = 0
+    cfg.gather_point.flatness_rings = 1
+    cfg.gather_point.flatness_samples_per_ring = 4
+    cfg.gather_point.path_samples = 2
     env = MultiRoverGatheringCore(cfg)
 
-    _randomize_bc_state(env)
+    with patch.object(
+        env,
+        "refresh_oracle_point",
+        wraps=env.refresh_oracle_point,
+    ) as refresh_oracle:
+        _randomize_bc_state(env)
 
-    expected_oracle = compute_geometric_median(env.positions)
-    expected_prev_distance = compute_mean_oracle_distance(env.positions, expected_oracle)
-    mean_point = env.positions.mean(dim=1)
-    assert torch.allclose(env.oracle_point, expected_oracle)
+    refresh_oracle.assert_called_once_with()
+    actual_oracle = env.oracle_point.clone()
+    actual_objective = env.oracle_search_objective.clone()
+    expected = env.refresh_oracle_point()
+    expected_prev_distance = compute_mean_oracle_distance(env.positions, expected.point)
+    assert torch.allclose(actual_oracle, expected.point)
+    assert torch.allclose(actual_objective, expected.objective)
     assert torch.allclose(env.prev_mean_oracle_distance, expected_prev_distance)
-    assert not torch.allclose(expected_oracle, mean_point, atol=1.0e-4)
 
 
 def test_evaluate_proxy_policy_outputs_finite_ratio(tmp_path: Path) -> None:
     config_path = tmp_path / "experiment.yaml"
     config_path.write_text(
-        yaml.safe_dump({"experiment": {"num_envs": 2, "device": "cpu"}, "simulation": {"episode_length_s": 2.0}}),
+        yaml.safe_dump(
+            {
+                "experiment": {"num_envs": 2, "device": "cpu"},
+                "simulation": {"episode_length_s": 2.0},
+                "planner": {
+                    "subgoal_filter": {
+                        "mode": "terrain_safe_candidate_hold_progress_curriculum",
+                    }
+                },
+            }
+        ),
         encoding="utf-8",
     )
     cfg = cfg_from_experiment(config_path)
@@ -189,8 +212,11 @@ def test_evaluate_proxy_policy_outputs_finite_ratio(tmp_path: Path) -> None:
         num_envs=2,
         steps=3,
         output=tmp_path / "eval.json",
+        filter_progress_override=7,
     )
     assert result["status"] == "ok"
+    assert result["filter_progress_override"] == 7
+    assert result["filter_progress_timestep"] == 7
     assert result["initial_dmax"] > 0.0
     assert torch.isfinite(torch.tensor(result["dmax_reduction_ratio"]))
     assert "min_nearest_distance" in result
@@ -200,13 +226,20 @@ def test_evaluate_proxy_policy_outputs_finite_ratio(tmp_path: Path) -> None:
         "dmax_ok_rate",
         "dispersion_ok_rate",
         "speed_ok_rate",
+        "flatness_ok_rate",
+        "gather_point_is_flat_rate",
         "instant_success_rate",
         "max_success_hold_count_mean",
         "final_success_hold_count_mean",
         "final_mean_speed",
+        "final_gather_point_height_range_mean",
+        "final_gather_point_max_slope_mean",
     ):
         assert key in result
         assert torch.isfinite(torch.tensor(result[key]))
+    assert result["oracle_search"]["method"] == "terrain_aware_multiresolution"
+    assert 0.0 <= result["oracle_search"]["feasible_rate"] <= 1.0
+    assert torch.isfinite(torch.tensor(result["oracle_search"]["objective_mean"]))
     assert "hold_count_histogram" in result
     assert "timeout_episode_metrics" in result
     assert result["timeout_episode_metrics"]["count"] >= 0

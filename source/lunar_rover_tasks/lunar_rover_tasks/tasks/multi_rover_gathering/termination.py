@@ -31,6 +31,7 @@ class SuccessGateDiagnostics:
     dispersion_ok: torch.Tensor
     speed_ok: torch.Tensor
     min_pairwise_ok: torch.Tensor
+    flatness_ok: torch.Tensor
     instant_success: torch.Tensor
 
 
@@ -38,6 +39,8 @@ def compute_success_gates(
     metrics: TeamMetrics,
     velocities_xy: torch.Tensor,
     thresholds: SuccessThresholdsCfg,
+    *,
+    flatness_ok: torch.Tensor | None = None,
 ) -> SuccessGateDiagnostics:
     dmax_ok = metrics.dmax <= thresholds.dmax
     dispersion_ok = metrics.dispersion <= thresholds.dispersion
@@ -47,12 +50,22 @@ def compute_success_gates(
         min_pairwise_ok = min_pairwise >= thresholds.min_pairwise_distance
     else:
         min_pairwise_ok = torch.ones_like(dmax_ok, dtype=torch.bool)
-    instant_success = dmax_ok & dispersion_ok & speed_ok & min_pairwise_ok
+    if flatness_ok is None:
+        flatness_ok = torch.ones_like(dmax_ok, dtype=torch.bool)
+    else:
+        if flatness_ok.shape != dmax_ok.shape:
+            raise ValueError(
+                f"flatness_ok must have shape {tuple(dmax_ok.shape)}, "
+                f"got {tuple(flatness_ok.shape)}."
+            )
+        flatness_ok = flatness_ok.to(device=dmax_ok.device, dtype=torch.bool)
+    instant_success = dmax_ok & dispersion_ok & speed_ok & min_pairwise_ok & flatness_ok
     return SuccessGateDiagnostics(
         dmax_ok=dmax_ok,
         dispersion_ok=dispersion_ok,
         speed_ok=speed_ok,
         min_pairwise_ok=min_pairwise_ok,
+        flatness_ok=flatness_ok,
         instant_success=instant_success,
     )
 
@@ -73,8 +86,15 @@ def update_success_hold_count(
     metrics: TeamMetrics,
     velocities_xy: torch.Tensor,
     thresholds: SuccessThresholdsCfg,
+    *,
+    flatness_ok: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    gates = compute_success_gates(metrics, velocities_xy, thresholds)
+    gates = compute_success_gates(
+        metrics,
+        velocities_xy,
+        thresholds,
+        flatness_ok=flatness_ok,
+    )
     return torch.where(gates.instant_success, hold_count + 1, torch.zeros_like(hold_count))
 
 
@@ -87,8 +107,16 @@ def compute_done(
     max_episode_steps: int,
     thresholds: SuccessThresholdsCfg,
     safety: SafetyCfg,
+    *,
+    flatness_ok: torch.Tensor | None = None,
 ) -> tuple[DoneFlags, torch.Tensor]:
-    next_hold = update_success_hold_count(hold_count, metrics, velocities_xy, thresholds)
+    next_hold = update_success_hold_count(
+        hold_count,
+        metrics,
+        velocities_xy,
+        thresholds,
+        flatness_ok=flatness_ok,
+    )
     success = next_hold >= thresholds.hold_steps
     collision = check_collision(positions, safety)
     out_of_bounds = check_out_of_bounds(positions, safety)

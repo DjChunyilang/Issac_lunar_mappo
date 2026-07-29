@@ -1,0 +1,13 @@
+extends: exp087_structured_bicycle_quintic_map25_flatness_gated_warmstart.yaml
+
+experiment:
+  name: exp088_structured_bicycle_quintic_map25_flatness_center_stronger
+
+low_level_control:
+  # Keep the correction limited to actual-flatness failures, but allow a
+  # single bounded command to move the formation centre across a crater rim.
+  formation_center_correction_max_offset: 0.50
+  formation_center_correction_gain: 0.75
+
+algorithm:
+  training_semantics: exp088_structured_bicycle_quintic_map25_flatness_center_stronger

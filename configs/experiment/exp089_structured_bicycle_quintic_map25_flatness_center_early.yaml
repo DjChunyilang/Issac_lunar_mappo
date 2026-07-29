@@ -1,0 +1,13 @@
+extends: exp088_structured_bicycle_quintic_map25_flatness_center_stronger.yaml
+
+experiment:
+  name: exp089_structured_bicycle_quintic_map25_flatness_center_early
+
+low_level_control:
+  # Include the joint flatness-and-geometry timeouts before they reach the
+  # exact terminal window; flat sites still receive no correction.
+  formation_center_activation_dmax_multiplier: 1.50
+  formation_center_activation_dispersion_multiplier: 1.50
+
+algorithm:
+  training_semantics: exp089_structured_bicycle_quintic_map25_flatness_center_early

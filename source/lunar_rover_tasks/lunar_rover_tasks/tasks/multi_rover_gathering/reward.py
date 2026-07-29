@@ -22,6 +22,7 @@ class RewardTerms:
     energy: torch.Tensor
     safety: torch.Tensor
     terrain: torch.Tensor
+    flatness: torch.Tensor
     motion: torch.Tensor
     consistency: torch.Tensor
     success_hold: torch.Tensor
@@ -48,11 +49,24 @@ def compute_oracle_reward(
     oracle_point: torch.Tensor,
     prev_mean_oracle_distance: torch.Tensor,
     cfg: MultiRoverGatheringEnvCfg,
+    *,
+    oracle_feasible: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     mean_distance = compute_mean_oracle_distance(positions, oracle_point)
     reward = cfg.reward_coefficients.oracle_mean_distance_progress * (
         prev_mean_oracle_distance - mean_distance
     )
+    if oracle_feasible is not None:
+        if oracle_feasible.shape != reward.shape:
+            raise ValueError(
+                f"oracle_feasible must have shape {tuple(reward.shape)}, "
+                f"got {tuple(oracle_feasible.shape)}."
+            )
+        reward = torch.where(
+            oracle_feasible.to(device=reward.device, dtype=torch.bool),
+            reward,
+            torch.zeros_like(reward),
+        )
     return reward, mean_distance
 
 
@@ -138,6 +152,88 @@ def compute_terrain_reward(
     return -cost
 
 
+def compute_centroid_flatness_cost(
+    height_range: torch.Tensor,
+    max_slope: torch.Tensor,
+    cfg: MultiRoverGatheringEnvCfg,
+) -> torch.Tensor:
+    """Return the normalized actual-centroid footprint cost used by the hard gate.
+
+    A cost at or below one is exactly equivalent to satisfying both configured
+    flatness thresholds. Capping extreme violations keeps the shaping signal
+    bounded without changing that acceptance boundary.
+    """
+    if height_range.shape != max_slope.shape:
+        raise ValueError(
+            "height_range and max_slope must have the same shape, got "
+            f"{tuple(height_range.shape)} and {tuple(max_slope.shape)}."
+        )
+    normalized_height = height_range / max(
+        float(cfg.gather_point.max_height_range),
+        1.0e-6,
+    )
+    normalized_slope = max_slope / max(
+        float(cfg.gather_point.max_slope),
+        1.0e-6,
+    )
+    return torch.maximum(normalized_height, normalized_slope).clamp(0.0, 3.0)
+
+
+def compute_centroid_flatness_activation(
+    dmax: torch.Tensor,
+    cfg: MultiRoverGatheringEnvCfg,
+) -> torch.Tensor:
+    """Ramp actual-centroid flatness shaping into the geometric success zone."""
+    coeff = cfg.reward_coefficients
+    threshold = max(float(cfg.success_thresholds.dmax), 1.0e-6)
+    multiplier = float(coeff.centroid_flatness_dmax_multiplier)
+    ramp_width = max((multiplier - 1.0) * threshold, 1.0e-6)
+    return ((multiplier * threshold - dmax) / ramp_width).clamp(0.0, 1.0)
+
+
+def compute_centroid_flatness_reward(
+    previous_cost: torch.Tensor,
+    current_cost: torch.Tensor,
+    previous_dmax: torch.Tensor,
+    current_dmax: torch.Tensor,
+    cfg: MultiRoverGatheringEnvCfg,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Shape flatness only once the team is close enough to form a footprint.
+
+    The activation ramps from zero at ``multiplier * dmax_threshold`` to one at
+    the geometric success threshold. The progress term rewards movement toward
+    a flatter actual centroid, while the small excess penalty removes the
+    incentive once the hard flatness gate is satisfied.
+    """
+    if not (
+        previous_cost.shape
+        == current_cost.shape
+        == previous_dmax.shape
+        == current_dmax.shape
+    ):
+        raise ValueError(
+            "previous_cost, current_cost, previous_dmax, and current_dmax must "
+            "have the same shape, got "
+            f"{tuple(previous_cost.shape)}, {tuple(current_cost.shape)}, "
+            f"{tuple(previous_dmax.shape)}, and {tuple(current_dmax.shape)}."
+        )
+    coeff = cfg.reward_coefficients
+    previous_activation = compute_centroid_flatness_activation(
+        previous_dmax,
+        cfg,
+    )
+    activation = compute_centroid_flatness_activation(current_dmax, cfg)
+    progress = (
+        previous_activation * previous_cost
+        - activation * current_cost
+    )
+    excess = torch.relu(current_cost - 1.0)
+    reward = activation * (
+        -float(coeff.centroid_flatness_excess) * excess
+    ) + float(coeff.centroid_flatness_progress) * progress
+    return reward, progress, activation
+
+
 def compute_motion_reward(physical_action: torch.Tensor, cfg: MultiRoverGatheringEnvCfg) -> torch.Tensor:
     coeff = cfg.reward_coefficients
     turn = physical_action[..., 1].square().mean(dim=-1) * coeff.subgoal_turn
@@ -188,6 +284,7 @@ def compute_reward(
     terrain_features: torch.Tensor | None,
     cfg: MultiRoverGatheringEnvCfg,
     *,
+    oracle_feasible: torch.Tensor | None = None,
     subgoal_terrain_features: torch.Tensor | None = None,
     terrain_speed_scale: torch.Tensor | None = None,
     height_delta: torch.Tensor | None = None,
@@ -196,6 +293,7 @@ def compute_reward(
     path_height_change_mean: torch.Tensor | None = None,
     filter_raw_path_risk_mean: torch.Tensor | None = None,
     filter_deviation: torch.Tensor | None = None,
+    centroid_flatness_reward: torch.Tensor | None = None,
 ) -> tuple[RewardTerms, torch.Tensor]:
     weights = cfg.reward_weights
     gather = compute_gather_reward(prev_metrics, metrics, cfg)
@@ -204,6 +302,7 @@ def compute_reward(
         oracle_point,
         prev_mean_oracle_distance,
         cfg,
+        oracle_feasible=oracle_feasible,
     )
     energy = compute_energy_reward(physical_action, cfg)
     safety = compute_safety_reward(positions, metrics, done, cfg)
@@ -220,6 +319,16 @@ def compute_reward(
         filter_raw_path_risk_mean=filter_raw_path_risk_mean,
         filter_deviation=filter_deviation,
     )
+    flatness = (
+        centroid_flatness_reward
+        if centroid_flatness_reward is not None
+        else torch.zeros_like(gather)
+    )
+    if flatness.shape != gather.shape:
+        raise ValueError(
+            f"centroid_flatness_reward must have shape {tuple(gather.shape)}, "
+            f"got {tuple(flatness.shape)}."
+        )
     motion = compute_motion_reward(physical_action, cfg)
     consistency = compute_consistency_reward(physical_action, previous_physical_action, cfg)
     success_hold = compute_success_hold_reward(success_hold_count, cfg)
@@ -230,6 +339,7 @@ def compute_reward(
         + weights.energy * energy
         + weights.safety * safety
         + weights.terrain * terrain
+        + weights.flatness * flatness
         + weights.motion * motion
         + weights.consistency * consistency
         + success_hold
@@ -242,6 +352,7 @@ def compute_reward(
             energy=energy,
             safety=safety,
             terrain=terrain,
+            flatness=flatness,
             motion=motion,
             consistency=consistency,
             success_hold=success_hold,

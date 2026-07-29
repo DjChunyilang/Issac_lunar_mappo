@@ -2,6 +2,7 @@
 
 ## 当前主线
 
+- 当前主线是“真实地形可行集合点 + 实际质心平整度 gate + 可执行局部目标”。`terrain_aware_multiresolution` 每个 reset 搜索真正的地形约束最优点；成功只认可实际团队质心的 37 点平整圆盘，绝不认可 oracle 代理点。共同质心校正由 `formation_center_correction_require_flatness_failure` 限制为“上一状态实际质心不平整”才启用，且只做全队同向平移，保持专属槽位间距和真实 success gate。exp092 的 `BC32` 重锚定策略在原 `64 s/320` step 时已经达到 dmax/collision（`0.1910/0.7002/0/0.2998`）。固定 checkpoint、1024 环境、seed `11023` 的时域扫描表明 `80/96/112/128 s` 均随时域延长而降低 timeout；按当前决策，**后续训练和正式 proxy 评估采用 exp094 的 `96 s/480` steps 时域**，其复评为 `0.1837/0.8594/0/0.1406`。这是将任务执行预算从 64 秒放宽到 96 秒，严格验收仍为 dmax `<=0.2`、success `>=0.9`、collision `<=0.02`、timeout `=0`，没有放宽。128 秒和 exp097 的 PPO probe 均作为诊断保留：前者可进一步升至 `0.1801/0.8994/0/0.1006`，但 512-step PPO 的 `t=256/512` 候选 success 降至 `0.8691/0.8418`，因此不采用其更新后的 policy。96 秒下当前推荐 checkpoint 仍为 exp092 的 **BC32 t=0 策略候选**，不是 PPO 更新策略；不触发 PhysX。下一步在 96 秒时域内直接修复“几何已收紧但实际质心不平整”和“地点平整但 dmax/dispersion 尚未收紧”的尾部状态，而不是继续放宽真实平整度或 strict timeout gate。
 - 当前主设计口径已切换为“高吞吐 proxy 训练 + Isaac Sim / Isaac Lab / PhysX 高保真闭环评估”。当前实施路线以 `docs/implementation_plan.md` 和 `docs/architecture/overall_plan_v3.md` 为准。
 - 训练主环境仍是 PyTorch / torch-vectorized proxy 环境，用于 MAPPO / PPO 采样、奖励调试、观测接口验证和大规模对照实验。
 - Isaac Sim / Isaac Lab / PhysX 不作为当前主训练 loop，而作为 high-fidelity validation、迁移 sanity check、失效分析和可视化展示平台。
@@ -18,13 +19,13 @@
 
 ## 当前接口状态
 
-- actor observation schema 为 `ego_v3_local_terrain_grid`，输入维度为 86，包含 ego、neighbor、50 维局部地形网格和 aggregation 特征，不包含 oracle 集合点。
+- 默认 actor observation schema 为 `ego_v3_local_terrain_grid`，输入维度为 86，包含 ego、neighbor、50 维局部地形网格和 aggregation 特征。exp067–075 使用显式 `ego_v6_gather_slot_goal`，输入维度为 89：只追加 rover 车体系下到专属对称槽位的相对向量与距离，不传世界坐标、搜索 score、可行性或平整度诊断。`task.execution_slot_reward_target` 默认关闭；开启时仅让 dense oracle-progress reward 对齐已分配槽位，终止条件仍只看真实团队质心。`gather_point.robustness_radius>0` 只在 reset 搜索中要求一圈可能质心偏移均平整，不能替代运行时的实际质心 gate。
 - 地形网格通道为相对高度和风险，覆盖前后 `[-0.4, 1.2] m`、横向 `[-0.8, 0.8] m`；critic 仍为 54 维，并使用 5 维网格摘要。地图面积可通过 `world_xy_limit/crater_field_size` 扩大，但本轮不扩大 Actor 局部地形观测窗口。
-- checkpoint 加载要求 schema、actor 输入维度和 critic 状态维度完全匹配；新 checkpoint metadata 还记录 Actor/Critic 架构、运动学模型和轨迹生成方法。旧 `ego_v2_speed_angular` checkpoint 不自动迁移；当前 schema 但缺少架构 metadata 的旧 checkpoint 只按 `mlp_v1` 兼容路径加载。
-- centralized critic state 和 reward shaping 可以使用 oracle 信息；执行期 actor 不接收 `p*`、oracle 距离或 oracle 距离下降量。
+- checkpoint 加载要求 schema、actor 输入维度和 critic 状态维度完全匹配；新 checkpoint metadata 还记录 Actor/Critic 架构、运动学模型和轨迹生成方法。`--init-checkpoint` 只初始化兼容模型参数、不会恢复 optimizer 或 rollout memory，并保存可筛选的 `ppo_timestep_000000.pt` 基线。旧 `ego_v2_speed_angular` checkpoint 不自动迁移；当前 schema 但缺少架构 metadata 的旧 checkpoint 只按 `mlp_v1` 兼容路径加载。
+- centralized critic state 和 reward shaping 可以使用 oracle 信息；默认 Actor 不接收 `p*`、oracle 距离或 oracle 距离下降量。显式 v5/v6 执行契约只传递从其导出的车体系局部目标三元组，Critic 仍为 54 维。
 - 动作接口固定为低维 `[rho, beta]`，再经局部子目标、可配置 `line/quintic` 轨迹和简化速度控制器转换为运动命令。
 - 当前 proxy 动力学可配置为 `unicycle` 或 `bicycle`；旧配置默认 `unicycle`，`exp042` 显式使用 `bicycle`。二者都没有质量、惯量、轮地接触、打滑、悬挂或 PhysX contact。
-- `scripts/train_skrl_mappo.py` 支持 `actor_architecture=mlp_v1|branched_v1|branched_v2` 和 `critic_architecture=mlp_v1|structured_v1|structured_v2`。默认 exp051 主线仍是 `ego_v3_local_terrain_grid`、Actor/Critic `86/54`；`ego_v4_terminal_gate` 与 critic `55` 维状态仅用于 exp061/exp062 诊断，不作为当前最好主线。
+- `scripts/train_skrl_mappo.py` 支持 `actor_architecture=mlp_v1|branched_v1|branched_v2|branched_v3|branched_v4` 和 `critic_architecture=mlp_v1|structured_v1|structured_v2`。`branched_v3` 为 89 维单目标输入增加专用 encoder；`branched_v4` 对应 92 维双目标诊断 schema。exp067 当前主候选的 Actor/Critic 为 `89/54`。
 - `scripts/train_skrl_mappo.py` 使用 SKRL MAPPO 训练 proxy wrapper；`isaaclab-multi-agent` wrapper 只是接口层，不代表训练 loop 运行在 Isaac Sim / PhysX。
 - exp016 已启用项目侧 `shared_joint` 更新：共享 Actor/Critic 只使用一个 optimizer，每个 rollout 合并四个 rover 的 Actor 样本并只更新一次 Critic。
 - 当前 exp016 诊断配置把通信半径临时扩大到 `12 m`；这是训练诊断设置，不是最终通信约束。

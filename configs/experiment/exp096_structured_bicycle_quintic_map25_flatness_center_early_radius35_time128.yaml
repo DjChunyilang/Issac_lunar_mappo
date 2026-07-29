@@ -1,0 +1,17 @@
+extends: exp095_structured_bicycle_quintic_map25_flatness_center_early_radius35_time112.yaml
+
+experiment:
+  name: exp096_structured_bicycle_quintic_map25_flatness_center_early_radius35_time128
+  eval_steps: 640
+
+evaluation:
+  proxy_eval:
+    steps: 640
+  high_fidelity_eval:
+    steps: 640
+
+simulation:
+  episode_length_s: 128.0
+
+algorithm:
+  training_semantics: exp096_structured_bicycle_quintic_map25_flatness_center_early_radius35_time128

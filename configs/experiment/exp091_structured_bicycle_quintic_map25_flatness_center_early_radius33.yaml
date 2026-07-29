@@ -1,0 +1,13 @@
+extends: exp090_structured_bicycle_quintic_map25_flatness_center_early_radius37.yaml
+
+experiment:
+  name: exp091_structured_bicycle_quintic_map25_flatness_center_early_radius33
+
+gather_point:
+  # Adjacent nominal spacing is about 0.467 m. This is the smallest screen
+  # radius that retains a 0.047 m deterministic margin above the success
+  # clearance while targeting the remaining dmax gap.
+  execution_slot_radius: 0.33
+
+algorithm:
+  training_semantics: exp091_structured_bicycle_quintic_map25_flatness_center_early_radius33

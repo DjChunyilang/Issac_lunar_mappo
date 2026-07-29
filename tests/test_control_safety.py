@@ -229,6 +229,43 @@ def test_directional_mask_projection_keeps_asymmetry_but_uses_full_pair_risk() -
     assert masked.info["pairwise_risk"][0, 1] == pytest.approx(0.0)
 
 
+def test_hard_directional_projection_stops_only_the_inward_rover_at_clearance() -> None:
+    cfg = LowLevelControlCfg(
+        safety_projection_enabled=True,
+        projection_activation_distance=0.75,
+        projection_stop_distance=0.42,
+        projection_horizon_s=0.60,
+        projection_strength=1.0,
+        projection_min_linear_scale=0.0,
+        projection_damp_nonclosing_near=True,
+        projection_directional_agent_scale=True,
+        projection_directional_agent_scale_mode="mask",
+    )
+    positions = torch.tensor([[[0.0, 0.0, 0.0], [0.40, 0.0, 0.0]]])
+    yaws = torch.zeros(1, 2)
+    control = ControlCommand(
+        linear=torch.tensor([[1.0, 0.0]]),
+        angular=torch.zeros(1, 2),
+    )
+    metrics = compute_team_metrics(positions, torch.zeros(1, 2, 2))
+
+    result = apply_control_safety_projection(
+        control,
+        positions,
+        yaws,
+        metrics,
+        cfg,
+        SuccessThresholdsCfg(min_pairwise_distance=0.42),
+        planning_dt=0.2,
+        communication_radius=12.0,
+    )
+
+    assert result.control.linear[0, 0] == pytest.approx(0.0)
+    assert result.control.linear[0, 1] == pytest.approx(0.0)
+    assert result.info["applied"][0, 0]
+    assert not result.info["applied"][0, 1]
+
+
 def test_success_zone_damping_scales_compact_safe_team() -> None:
     cfg = LowLevelControlCfg(
         success_zone_damping_enabled=True,

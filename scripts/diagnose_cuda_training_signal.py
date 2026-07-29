@@ -16,6 +16,7 @@ REWARD_COMPONENTS = (
     "energy",
     "safety",
     "terrain",
+    "flatness",
     "motion",
     "consistency",
     "success_hold",
@@ -185,12 +186,15 @@ def _next_experiment_focus(rows: list[dict[str, Any]]) -> list[str]:
 
     reward_summary = _reward_component_summary(rows)
     abs_share = reward_summary.get("abs_share", {}) if reward_summary else {}
-    gather_or_oracle = sum(float(abs_share.get(component) or 0.0) for component in ("gather", "oracle"))
+    task_signal_share = sum(
+        float(abs_share.get(component) or 0.0)
+        for component in ("gather", "oracle", "flatness")
+    )
     penalty_share = sum(
         float(abs_share.get(component) or 0.0)
         for component in ("energy", "safety", "terrain", "motion", "consistency", "terminal")
     )
-    if gather_or_oracle < 0.35 and penalty_share > gather_or_oracle:
+    if task_signal_share < 0.35 and penalty_share > task_signal_share:
         focus.append("reward_signal_balance")
 
     success_values = _series(rows, "success_rate")

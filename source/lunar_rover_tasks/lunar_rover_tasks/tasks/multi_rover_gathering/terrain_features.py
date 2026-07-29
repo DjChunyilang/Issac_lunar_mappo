@@ -60,6 +60,16 @@ class TerrainRuntime:
         )
 
 
+@dataclass(slots=True)
+class GatherPointFlatness:
+    """Local terrain-patch measurements used by search and the success gate."""
+
+    height_range: torch.Tensor
+    max_slope: torch.Tensor
+    mean_slope: torch.Tensor
+    is_flat: torch.Tensor
+
+
 def make_terrain_runtime(
     num_envs: int,
     *,
@@ -347,6 +357,105 @@ def query_terrain_features(
 ) -> torch.Tensor:
     """Return height, slope_x, slope_y, roughness, traversability at xy points."""
     return _base_features(xy, terrain_cfg, runtime)
+
+
+def gather_point_flatness_offsets(
+    radius: float,
+    *,
+    rings: int,
+    samples_per_ring: int,
+    device: torch.device | str,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Return a deterministic, symmetric disk footprint including its center."""
+    if radius < 0.0:
+        raise ValueError("Gather-point flatness radius must be non-negative.")
+    if rings <= 0:
+        raise ValueError("Gather-point flatness rings must be positive.")
+    if samples_per_ring < 4:
+        raise ValueError("Gather-point flatness samples_per_ring must be at least 4.")
+
+    angles = (
+        torch.arange(samples_per_ring, device=device, dtype=dtype)
+        * (2.0 * torch.pi / float(samples_per_ring))
+    )
+    unit_ring = torch.stack((torch.cos(angles), torch.sin(angles)), dim=-1)
+    ring_radii = torch.linspace(
+        float(radius) / float(rings),
+        float(radius),
+        rings,
+        device=device,
+        dtype=dtype,
+    )
+    ring_offsets = (ring_radii[:, None, None] * unit_ring[None, :, :]).reshape(-1, 2)
+    return torch.cat((torch.zeros(1, 2, device=device, dtype=dtype), ring_offsets), dim=0)
+
+
+def evaluate_gather_point_flatness(
+    points_xy: torch.Tensor,
+    terrain_cfg: TerrainCfg | None = None,
+    runtime: TerrainRuntime | None = None,
+    *,
+    radius: float,
+    rings: int,
+    samples_per_ring: int,
+    max_height_range: float,
+    max_slope: float,
+) -> GatherPointFlatness:
+    """Measure whether the complete gathering footprint is sufficiently flat.
+
+    ``points_xy`` may be shaped ``[E, 2]`` or ``[E, ..., 2]``. The returned
+    tensors have shape ``points_xy.shape[:-1]``. A patch must satisfy both the
+    height-range and maximum slope constraints; checking only the center slope
+    would incorrectly classify symmetric crater bottoms as flat.
+    """
+    if points_xy.ndim < 2 or points_xy.shape[-1] != 2:
+        raise ValueError("points_xy must have shape [num_envs, ..., 2].")
+    if radius < 0.0:
+        raise ValueError("Gather-point flatness radius must be non-negative.")
+    if rings <= 0:
+        raise ValueError("Gather-point flatness rings must be positive.")
+    if samples_per_ring < 4:
+        raise ValueError("Gather-point flatness samples_per_ring must be at least 4.")
+    if max_height_range < 0.0:
+        raise ValueError("Gather-point max_height_range must be non-negative.")
+    if max_slope < 0.0:
+        raise ValueError("Gather-point max_slope must be non-negative.")
+
+    output_shape = points_xy.shape[:-1]
+    if _is_flat(terrain_cfg):
+        zeros = torch.zeros(output_shape, dtype=points_xy.dtype, device=points_xy.device)
+        return GatherPointFlatness(
+            height_range=zeros,
+            max_slope=zeros.clone(),
+            mean_slope=zeros.clone(),
+            is_flat=torch.ones(output_shape, dtype=torch.bool, device=points_xy.device),
+        )
+
+    offsets = gather_point_flatness_offsets(
+        radius,
+        rings=rings,
+        samples_per_ring=samples_per_ring,
+        device=points_xy.device,
+        dtype=points_xy.dtype,
+    )
+    offset_shape = (1,) * (points_xy.ndim - 1) + offsets.shape
+    sample_xy = points_xy[..., None, :] + offsets.view(offset_shape)
+    features = query_terrain_features(sample_xy, terrain_cfg, runtime)
+    height = features[..., 0]
+    slope = torch.linalg.norm(features[..., 1:3], dim=-1)
+    height_range = height.amax(dim=-1) - height.amin(dim=-1)
+    patch_max_slope = slope.amax(dim=-1)
+    mean_patch_slope = slope.mean(dim=-1)
+    is_flat = (height_range <= float(max_height_range)) & (
+        patch_max_slope <= float(max_slope)
+    )
+    return GatherPointFlatness(
+        height_range=height_range,
+        max_slope=patch_max_slope,
+        mean_slope=mean_patch_slope,
+        is_flat=is_flat,
+    )
 
 
 def sample_path_terrain_risk(

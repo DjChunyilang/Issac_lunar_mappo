@@ -115,6 +115,103 @@ def test_terminal_gate_observation_schema_adds_success_margins() -> None:
     assert float(critic_state[0, 40]) == pytest.approx(0.40)
 
 
+def test_gather_site_goal_is_opt_in_and_rover_frame_encoded() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.task.explicit_goal_in_execution = True
+    cfg.observation.schema_version = "ego_v5_gather_site_goal"
+    env = MultiRoverGatheringCore(cfg)
+    env.positions.zero_()
+    env.yaws.copy_(
+        torch.tensor([[0.0, torch.pi / 2.0, torch.pi, -torch.pi / 2.0]])
+    )
+    env.oracle_point.copy_(torch.tensor([[2.0, 1.0, 0.0]]))
+
+    actor_obs, _ = env.get_observations()
+    target = actor_obs[..., -cfg.observation.gather_site_goal_dim :]
+    scale = max(
+        cfg.success_thresholds.dmax,
+        cfg.initial_state.spawn_radius_max + cfg.gather_point.search_margin,
+    )
+    expected_local = torch.tensor(
+        [
+            [2.0, 1.0],
+            [1.0, -2.0],
+            [-2.0, -1.0],
+            [-1.0, 2.0],
+        ]
+    ).div(scale)
+    expected_distance = torch.full((4, 1), (5.0**0.5) / scale)
+
+    assert cfg.actor_obs_dim == 89
+    assert torch.allclose(target[0, :, :2], expected_local)
+    assert torch.allclose(target[0, :, 2:], expected_distance)
+
+    before = actor_obs.clone()
+    env.oracle_point += torch.tensor([[1.0, 0.0, 0.0]])
+    changed, _ = env.get_observations()
+    assert torch.allclose(changed[..., :-3], before[..., :-3])
+    assert not torch.allclose(changed[..., -3:], before[..., -3:])
+
+
+def test_gather_slot_goal_uses_rover_specific_targets_without_global_xy() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.task.explicit_goal_in_execution = True
+    cfg.observation.schema_version = "ego_v6_gather_slot_goal"
+    env = MultiRoverGatheringCore(cfg)
+    env.positions.zero_()
+    env.yaws.zero_()
+    env.gather_slot_points.copy_(
+        torch.tensor(
+            [[[-2.0, 0.0, 0.0], [0.0, -2.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]]]
+        )
+    )
+
+    actor_obs, _ = env.get_observations()
+    target = actor_obs[..., -cfg.observation.gather_site_goal_dim :]
+    scale = max(
+        cfg.success_thresholds.dmax,
+        cfg.initial_state.spawn_radius_max + cfg.gather_point.search_margin,
+    )
+
+    assert cfg.actor_obs_dim == 89
+    assert torch.allclose(target[0, :, :2], env.gather_slot_points[0, :, :2] / scale)
+    assert torch.allclose(target[0, :, 2], torch.full((4,), 2.0 / scale))
+
+    before = actor_obs.clone()
+    env.oracle_point += torch.tensor([[4.0, 0.0, 0.0]])
+    unchanged, _ = env.get_observations()
+    assert torch.allclose(unchanged, before)
+
+
+def test_gather_site_and_slot_goal_keeps_center_and_formation_signals_separate() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.task.explicit_goal_in_execution = True
+    cfg.observation.schema_version = "ego_v7_gather_site_and_slot_goal"
+    env = MultiRoverGatheringCore(cfg)
+    env.positions.zero_()
+    env.yaws.zero_()
+    env.oracle_point.copy_(torch.tensor([[1.0, 0.0, 0.0]]))
+    env.gather_slot_points.copy_(
+        torch.tensor([[[1.4, 0.0, 0.0], [1.0, 0.4, 0.0], [0.6, 0.0, 0.0], [1.0, -0.4, 0.0]]])
+    )
+
+    actor_obs, _ = env.get_observations()
+    goal = actor_obs[..., -cfg.observation.gather_site_goal_dim :]
+    scale = max(
+        cfg.success_thresholds.dmax,
+        cfg.initial_state.spawn_radius_max + cfg.gather_point.search_margin,
+    )
+
+    assert cfg.actor_obs_dim == 92
+    assert torch.allclose(goal[0, :, :2], torch.tensor([[1.0, 0.0]]).expand(4, -1) / scale)
+    assert torch.allclose(goal[0, :, 2], torch.full((4,), 1.0 / scale))
+    assert torch.allclose(goal[0, :, 3:5], env.gather_slot_points[0, :, :2] / scale)
+    assert torch.allclose(
+        goal[0, :, 5],
+        torch.linalg.vector_norm(env.gather_slot_points[0, :, :2], dim=-1) / scale,
+    )
+
+
 def test_zero_communication_radius_means_unlimited_visibility() -> None:
     cfg = make_debug_cfg(num_envs=1, device="cpu")
     env = MultiRoverGatheringCore(cfg)

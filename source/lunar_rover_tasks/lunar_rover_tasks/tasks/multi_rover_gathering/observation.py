@@ -1,6 +1,10 @@
 """Actor observation construction.
 
-The actor observation deliberately excludes all oracle fields.
+The default actor schemas exclude all oracle fields.  The opt-in
+``ego_v5_gather_site_goal`` and ``ego_v6_gather_slot_goal`` schemas instead
+receive a rover-frame execution target produced by the terrain-aware
+gather-site planner.  They are broadcast-goal contracts, not hidden critic
+features: they contain neither global coordinates nor any search diagnostics.
 """
 
 from __future__ import annotations
@@ -105,6 +109,48 @@ def build_terminal_gate_features(
     )
 
 
+def build_gather_site_goal_features(
+    positions: torch.Tensor,
+    yaws: torch.Tensor,
+    gather_site_point: torch.Tensor,
+    cfg: MultiRoverGatheringEnvCfg,
+) -> torch.Tensor:
+    """Encode the planned gathering point in each rover's body frame.
+
+    The normalized local vector preserves the direction required for local
+    control while avoiding a global-map coordinate shortcut.  The separate
+    radial feature keeps the scale informative when either vector component is
+    small.  The local search envelope, rather than the full world bound, keeps
+    the signal numerically comparable to the other actor inputs during the
+    normal gathering curriculum.
+    """
+    shared_shape = (*positions.shape[:1], 3)
+    per_rover_shape = positions.shape
+    if gather_site_point.shape == shared_shape:
+        target_xy = gather_site_point[:, None, :2]
+    elif gather_site_point.shape == per_rover_shape:
+        target_xy = gather_site_point[..., :2]
+    else:
+        raise ValueError(
+            "gather_site_point must have shared shape "
+            f"{shared_shape} or per-rover shape {per_rover_shape}, got "
+            f"{tuple(gather_site_point.shape)}."
+        )
+    delta_world = target_xy - positions[..., :2]
+    cos_yaw = torch.cos(yaws)
+    sin_yaw = torch.sin(yaws)
+    local_x = cos_yaw * delta_world[..., 0] + sin_yaw * delta_world[..., 1]
+    local_y = -sin_yaw * delta_world[..., 0] + cos_yaw * delta_world[..., 1]
+    scale = max(
+        float(cfg.success_thresholds.dmax),
+        float(cfg.initial_state.spawn_radius_max) + float(cfg.gather_point.search_margin),
+        1.0e-6,
+    )
+    local_delta = torch.stack((local_x, local_y), dim=-1).div(scale).clamp(-2.0, 2.0)
+    distance = torch.linalg.norm(delta_world, dim=-1, keepdim=True).div(scale).clamp(0.0, 2.0)
+    return torch.cat((local_delta, distance), dim=-1)
+
+
 def build_actor_observation(
     positions: torch.Tensor,
     yaws: torch.Tensor,
@@ -115,6 +161,8 @@ def build_actor_observation(
     terrain_grid: torch.Tensor | None = None,
     metrics: TeamMetrics | None = None,
     success_hold_count: torch.Tensor | None = None,
+    gather_site_point: torch.Tensor | None = None,
+    gather_slot_point: torch.Tensor | None = None,
 ) -> torch.Tensor:
     ego = build_ego_features(positions, yaws, velocities_xy, angular_velocities)
     neighbor, _ = build_neighbor_features(
@@ -149,4 +197,33 @@ def build_actor_observation(
                 f"expected {cfg.observation.terminal_gate_dim}."
             )
         parts.append(terminal_gate)
+    if cfg.observation.gather_site_goal_dim > 0:
+        if gather_site_point is None:
+            raise ValueError(
+                "the gather-site goal schema requires a planned execution target."
+            )
+        gather_site_goal = build_gather_site_goal_features(
+            positions,
+            yaws,
+            gather_site_point,
+            cfg,
+        )
+        if cfg.observation.schema_version == "ego_v7_gather_site_and_slot_goal":
+            if gather_slot_point is None:
+                raise ValueError(
+                    "ego_v7_gather_site_and_slot_goal requires assigned gather slots."
+                )
+            gather_slot_goal = build_gather_site_goal_features(
+                positions,
+                yaws,
+                gather_slot_point,
+                cfg,
+            )
+            gather_site_goal = torch.cat((gather_site_goal, gather_slot_goal), dim=-1)
+        if gather_site_goal.shape[-1] != cfg.observation.gather_site_goal_dim:
+            raise ValueError(
+                "gather-site goal feature has unexpected dim "
+                f"{gather_site_goal.shape[-1]}."
+            )
+        parts.append(gather_site_goal)
     return torch.cat(parts, dim=-1)

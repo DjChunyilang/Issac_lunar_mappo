@@ -30,6 +30,10 @@ class TaskCfg:
     n_agents: int = 4
     scene_dim: str = "2.5D/3D"
     explicit_goal_in_execution: bool = False
+    # Opt in only when the execution observation exposes a fixed per-rover
+    # formation slot.  This lets oracle-progress shaping match the safe
+    # formation geometry rather than pulling every rover into the same point.
+    execution_slot_reward_target: bool = False
     oracle_optimal_gather_point_in_training: bool = True
     docking_considered: bool = False
 
@@ -139,6 +143,23 @@ class LowLevelControlCfg:
     success_zone_dmax_multiplier: float = 1.0
     success_zone_dispersion_multiplier: float = 1.0
     success_zone_linear_scale: float = 0.75
+    # Optional execution-layer common translation for the fixed symmetric
+    # formation. It preserves slot offsets and only biases subgoals toward the
+    # searched formation centre when the team is near terminal geometry.
+    formation_center_correction_enabled: bool = False
+    formation_center_activation_dmax_multiplier: float = 1.75
+    formation_center_activation_dispersion_multiplier: float = 1.75
+    formation_center_correction_max_offset: float = 0.35
+    formation_center_correction_gain: float = 0.55
+    # If enabled, the common translation only runs while the prior actual
+    # centroid footprint fails the same flatness gate used for success.
+    formation_center_correction_require_flatness_failure: bool = False
+    # Optional terminal capture blends the actor subgoal toward each rover's
+    # fixed assigned slot. It never uses a shared geometric midpoint.
+    terminal_slot_capture_enabled: bool = False
+    terminal_slot_capture_dmax_multiplier: float = 1.75
+    terminal_slot_capture_dispersion_multiplier: float = 1.75
+    terminal_slot_capture_blend: float = 0.65
 
 
 @dataclass(slots=True)
@@ -170,12 +191,52 @@ class TerrainCfg:
 
 
 @dataclass(slots=True)
+class GatherPointCfg:
+    """Terrain-aware oracle search and gathering-site acceptance criteria."""
+
+    search_method: str = "terrain_aware_multiresolution"
+    coarse_grid_size: int = 9
+    refinement_grid_size: int = 5
+    refinement_levels: int = 2
+    search_margin: float = 1.5
+    global_fallback_enabled: bool = True
+    global_grid_size: int = 33
+    global_beam_width: int = 32
+    global_refinement_levels: int = 2
+    global_max_envs_per_batch: int = 8
+    flatness_radius: float = 0.75
+    flatness_rings: int = 3
+    flatness_samples_per_ring: int = 12
+    max_height_range: float = 0.18
+    max_slope: float = 0.25
+    # Optional execution robustness envelope for the search only.  A positive
+    # radius requires the complete success footprint to remain flat when its
+    # center is displaced around the searched point.
+    robustness_radius: float = 0.0
+    robustness_samples: int = 8
+    mean_distance_weight: float = 1.0
+    max_distance_weight: float = 0.25
+    path_risk_weight: float = 0.75
+    path_height_change_weight: float = 0.25
+    flatness_weight: float = 0.25
+    path_samples: int = 5
+    infeasible_penalty: float = 1000.0
+    max_envs_per_batch: int = 64
+    require_flat_for_success: bool = True
+    # Execution-only formation radius around the terrain-aware search result.
+    # With four evenly-spaced slots, 0.35 m yields about 0.495 m adjacent
+    # separation, above the default 0.42 m success clearance.
+    execution_slot_radius: float = 0.35
+
+
+@dataclass(slots=True)
 class RewardWeightsCfg:
     gather: float = 1.0
     oracle: float = 0.5
     energy: float = 0.02
     safety: float = 1.0
     terrain: float = 1.0
+    flatness: float = 0.0
     motion: float = 0.05
     consistency: float = 0.02
     terminal: float = 1.0
@@ -200,6 +261,9 @@ class RewardCoefficientsCfg:
     path_height_change_cost: float = 0.0
     filter_raw_path_risk_cost: float = 0.0
     filter_deviation_cost: float = 0.0
+    centroid_flatness_progress: float = 0.0
+    centroid_flatness_excess: float = 0.0
+    centroid_flatness_dmax_multiplier: float = 2.0
     inter_agent_collision: float = 8.0
     near_distance: float = 0.5
     terminal_pairwise_gap: float = 0.0
@@ -247,6 +311,25 @@ class ObservationCfg:
         return 0
 
     @property
+    def gather_site_goal_dim(self) -> int:
+        """Dimension of the execution-time terrain-aware gather-site target.
+
+        ``ego_v5_gather_site_goal`` contains a rover-frame vector and distance
+        to the common point selected by the terrain-aware search.
+        ``ego_v6_gather_slot_goal`` has the same dimensionality, but targets a
+        rover-specific, symmetry-preserving slot around that searched point.
+        Neither schema exposes global coordinates or terrain-search internals.
+        """
+        if self.schema_version in {
+            "ego_v5_gather_site_goal",
+            "ego_v6_gather_slot_goal",
+        }:
+            return 3
+        if self.schema_version == "ego_v7_gather_site_and_slot_goal":
+            return 6
+        return 0
+
+    @property
     def actor_obs_dim(self) -> int:
         return (
             self.ego_dim
@@ -254,6 +337,7 @@ class ObservationCfg:
             + self.terrain_dim
             + self.aggregation_dim
             + self.terminal_gate_dim
+            + self.gather_site_goal_dim
         )
 
 
@@ -275,6 +359,7 @@ class MultiRoverGatheringEnvCfg:
     trajectory_generator: TrajectoryGeneratorCfg = field(default_factory=TrajectoryGeneratorCfg)
     low_level_control: LowLevelControlCfg = field(default_factory=LowLevelControlCfg)
     terrain: TerrainCfg = field(default_factory=TerrainCfg)
+    gather_point: GatherPointCfg = field(default_factory=GatherPointCfg)
     reward_weights: RewardWeightsCfg = field(default_factory=RewardWeightsCfg)
     reward_coefficients: RewardCoefficientsCfg = field(default_factory=RewardCoefficientsCfg)
     success_thresholds: SuccessThresholdsCfg = field(default_factory=SuccessThresholdsCfg)

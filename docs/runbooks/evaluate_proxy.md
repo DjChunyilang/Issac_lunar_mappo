@@ -46,6 +46,8 @@ run_manifest.json
 outputs/runs/<experiment>/<run_id>/metrics/final_eval_proxy.json
 ```
 
+如需仅用于诊断地复现某一 subgoal-filter 课程阶段，可额外传 `--filter-progress-override <nonnegative-step>`。该参数会被写入结果的 `filter_progress_override` 与 `filter_progress_timestep`，只覆盖本次评测，不能把这种后验结果表述为已经用相同调度训练出的 policy；正式结论仍使用 checkpoint metadata 的训练进度。
+
 ## 严格 Gate
 
 ```text

@@ -9,22 +9,33 @@ contracts before swapping in a true Isaac Sim robot articulation.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import permutations
 from typing import Any
 
 import numpy as np
 import torch
 
-from lunar_rover_tasks.tasks.multi_rover_gathering.action_interpreter import decode_action
+from lunar_rover_tasks.tasks.multi_rover_gathering.action_interpreter import (
+    apply_formation_center_correction,
+    apply_terminal_slot_capture,
+    decode_action,
+)
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import (
     MultiRoverGatheringEnvCfg,
 )
 from lunar_rover_tasks.tasks.multi_rover_gathering.metrics import TeamMetrics, compute_team_metrics
 from lunar_rover_tasks.tasks.multi_rover_gathering.observation import build_actor_observation
 from lunar_rover_tasks.tasks.multi_rover_gathering.oracle import (
-    compute_geometric_median,
+    OptimalGatherPointResult,
     compute_mean_oracle_distance,
+    search_optimal_gather_point,
 )
-from lunar_rover_tasks.tasks.multi_rover_gathering.reward import RewardTerms, compute_reward
+from lunar_rover_tasks.tasks.multi_rover_gathering.reward import (
+    RewardTerms,
+    compute_centroid_flatness_cost,
+    compute_centroid_flatness_reward,
+    compute_reward,
+)
 from lunar_rover_tasks.tasks.multi_rover_gathering.simple_controller import (
     ControlCommand,
     apply_control_safety_projection,
@@ -33,7 +44,9 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.simple_controller import (
 from lunar_rover_tasks.tasks.multi_rover_gathering.state import build_critic_state
 from lunar_rover_tasks.tasks.multi_rover_gathering.subgoal_filter import apply_subgoal_filter
 from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
+    GatherPointFlatness,
     build_local_terrain_grid,
+    evaluate_gather_point_flatness,
     is_flat_terrain,
     make_terrain_runtime,
     query_height,
@@ -94,8 +107,47 @@ class MultiRoverGatheringCore:
         self.global_step_count = 0
         self.success_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.oracle_point = torch.zeros(self.num_envs, 3, device=self.device)
+        # For the v6 execution contract, each rover receives one assigned
+        # member of a symmetric formation around ``oracle_point``.  The
+        # assignment is fixed for an episode, minimizing reset-time travel and
+        # preserving an exact oracle-centroid target without agent IDs.
+        self.gather_slot_points = torch.zeros(
+            self.num_envs,
+            self.n_agents,
+            3,
+            device=self.device,
+        )
+        self._execution_slot_permutations = torch.tensor(
+            list(permutations(range(self.n_agents))),
+            dtype=torch.long,
+            device=self.device,
+        )
+        self.oracle_search_objective = torch.zeros(self.num_envs, device=self.device)
+        self.oracle_search_feasible = torch.zeros(
+            self.num_envs,
+            dtype=torch.bool,
+            device=self.device,
+        )
+        self.oracle_search_mean_distance = torch.zeros(self.num_envs, device=self.device)
+        self.oracle_search_max_distance = torch.zeros(self.num_envs, device=self.device)
+        self.oracle_search_path_risk = torch.zeros(self.num_envs, device=self.device)
+        self.oracle_search_path_height_change = torch.zeros(
+            self.num_envs,
+            device=self.device,
+        )
+        self.oracle_search_height_range = torch.zeros(self.num_envs, device=self.device)
+        self.oracle_search_max_slope = torch.zeros(self.num_envs, device=self.device)
         self.prev_metrics = compute_team_metrics(self.positions, self.velocities_xy)
         self.prev_mean_oracle_distance = torch.zeros(self.num_envs, device=self.device)
+        self.prev_centroid_flatness_cost = torch.zeros(
+            self.num_envs,
+            device=self.device,
+        )
+        self.prev_gather_point_flatness_ok = torch.ones(
+            self.num_envs,
+            dtype=torch.bool,
+            device=self.device,
+        )
         self.metrics = self.prev_metrics
         self.last_trajectory: Trajectory | None = None
         self.last_control: ControlCommand | None = None
@@ -145,6 +197,124 @@ class MultiRoverGatheringCore:
             lerp(initial_state.curriculum_start_spawn_radius_max, initial_state.spawn_radius_max),
             lerp(initial_state.curriculum_start_center_xy_range, initial_state.center_xy_range),
             lerp(initial_state.curriculum_start_jitter_std, initial_state.jitter_std),
+        )
+
+    def refresh_oracle_point(
+        self,
+        env_ids: torch.Tensor | None = None,
+    ) -> OptimalGatherPointResult:
+        """Recompute the fixed per-episode terrain-aware oracle point."""
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+        env_ids = env_ids.to(device=self.device, dtype=torch.long)
+        with torch.no_grad():
+            result = search_optimal_gather_point(
+                self.positions[env_ids],
+                self.cfg.terrain,
+                self.cfg.gather_point,
+                self.terrain_runtime.subset(env_ids),
+                world_xy_limit=float(self.cfg.safety.world_xy_limit),
+            )
+        self.oracle_point[env_ids] = result.point
+        self.oracle_search_objective[env_ids] = result.objective
+        self.oracle_search_feasible[env_ids] = result.feasible
+        self.oracle_search_mean_distance[env_ids] = result.mean_distance
+        self.oracle_search_max_distance[env_ids] = result.max_distance
+        self.oracle_search_path_risk[env_ids] = result.path_risk
+        self.oracle_search_path_height_change[env_ids] = result.path_height_change
+        self.oracle_search_height_range[env_ids] = result.flatness.height_range
+        self.oracle_search_max_slope[env_ids] = result.flatness.max_slope
+        self._refresh_execution_slot_points(env_ids)
+        self.prev_mean_oracle_distance[env_ids] = compute_mean_oracle_distance(
+            self.positions[env_ids],
+            self._oracle_reward_target()[env_ids],
+        )
+        return result
+
+    def _oracle_reward_target(self) -> torch.Tensor:
+        """Select the progress-shaping target without changing the success site.
+
+        Success and terrain flatness always use the actual team centroid and
+        ``oracle_point`` remains the searched site for the critic.  The opt-in
+        slot target only changes dense oracle-progress shaping for formation
+        observation schemas that provide each rover a stable assignment.
+        """
+        if self.cfg.task.execution_slot_reward_target:
+            return self.gather_slot_points
+        return self.oracle_point
+
+    def _refresh_execution_slot_points(self, env_ids: torch.Tensor) -> None:
+        """Assign fixed symmetric execution slots around the searched point.
+
+        The brute-force assignment is intentionally small (at most ``4!`` in
+        the current task).  Slots are evenly spaced, so their arithmetic mean
+        is exactly the searched terrain-aware point.  Selecting the least-cost
+        permutation from initial rover positions avoids a learned identity or
+        global-coordinate dependency and prevents needless crossing.
+        """
+        shared_point = self.oracle_point[env_ids]
+        if self.cfg.observation.schema_version not in {
+            "ego_v6_gather_slot_goal",
+            "ego_v7_gather_site_and_slot_goal",
+        }:
+            self.gather_slot_points[env_ids] = shared_point[:, None, :]
+            return
+
+        slot_angles = torch.arange(
+            self.n_agents,
+            device=self.device,
+            dtype=self.positions.dtype,
+        ) * (2.0 * torch.pi / float(self.n_agents))
+        slot_offsets = float(self.cfg.gather_point.execution_slot_radius) * torch.stack(
+            (torch.cos(slot_angles), torch.sin(slot_angles)),
+            dim=-1,
+        )
+        unassigned_slots = shared_point[:, None, :].expand(-1, self.n_agents, -1).clone()
+        unassigned_slots[..., :2] += slot_offsets
+
+        travel_cost = (self.positions[env_ids, :, None, :2] - unassigned_slots[:, None, :, :2])
+        travel_cost = travel_cost.square().sum(dim=-1)
+        agent_ids = torch.arange(self.n_agents, device=self.device)
+        permutation_costs = torch.stack(
+            [travel_cost[:, agent_ids, permutation].sum(dim=-1)
+             for permutation in self._execution_slot_permutations],
+            dim=1,
+        )
+        assignment = self._execution_slot_permutations[permutation_costs.argmin(dim=1)]
+        self.gather_slot_points[env_ids] = torch.gather(
+            unassigned_slots,
+            dim=1,
+            index=assignment[..., None].expand(-1, -1, 3),
+        )
+
+    def evaluate_current_gather_point_flatness(
+        self,
+        metrics: TeamMetrics | None = None,
+        env_ids: torch.Tensor | None = None,
+    ) -> GatherPointFlatness:
+        """Evaluate the actual team centroid footprint on the current terrain."""
+        runtime = self.terrain_runtime
+        if env_ids is not None:
+            env_ids = env_ids.to(device=self.device, dtype=torch.long)
+            runtime = self.terrain_runtime.subset(env_ids)
+        if metrics is None:
+            positions = self.positions if env_ids is None else self.positions[env_ids]
+            velocities = (
+                self.velocities_xy
+                if env_ids is None
+                else self.velocities_xy[env_ids]
+            )
+            metrics = compute_team_metrics(positions, velocities)
+        gather_cfg = self.cfg.gather_point
+        return evaluate_gather_point_flatness(
+            metrics.centroid[..., :2],
+            self.cfg.terrain,
+            runtime,
+            radius=float(gather_cfg.flatness_radius),
+            rings=int(gather_cfg.flatness_rings),
+            samples_per_ring=int(gather_cfg.flatness_samples_per_ring),
+            max_height_range=float(gather_cfg.max_height_range),
+            max_slope=float(gather_cfg.max_slope),
         )
 
     def reset(self, env_ids: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
@@ -205,13 +375,23 @@ class MultiRoverGatheringCore:
         self.previous_physical_action[env_ids] = 0.0
         self.step_count[env_ids] = 0
         self.success_hold_count[env_ids] = 0
-        self.oracle_point[env_ids] = compute_geometric_median(self.positions[env_ids])
+        self.refresh_oracle_point(env_ids)
+        reset_metrics = compute_team_metrics(
+            self.positions[env_ids],
+            self.velocities_xy[env_ids],
+        )
+        reset_flatness = self.evaluate_current_gather_point_flatness(
+            reset_metrics,
+            env_ids=env_ids,
+        )
+        self.prev_centroid_flatness_cost[env_ids] = compute_centroid_flatness_cost(
+            reset_flatness.height_range,
+            reset_flatness.max_slope,
+            self.cfg,
+        )
+        self.prev_gather_point_flatness_ok[env_ids] = reset_flatness.is_flat
         self.metrics = compute_team_metrics(self.positions, self.velocities_xy)
         self.prev_metrics = self.metrics
-        self.prev_mean_oracle_distance[env_ids] = compute_mean_oracle_distance(
-            self.positions[env_ids],
-            self.oracle_point[env_ids],
-        )
         return self.get_observations()
 
     def get_observations(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -222,6 +402,16 @@ class MultiRoverGatheringCore:
             self.cfg.terrain,
             self.terrain_runtime,
         )
+        execution_target = None
+        execution_slot_target = None
+        if self.cfg.task.explicit_goal_in_execution:
+            schema = self.cfg.observation.schema_version
+            if schema == "ego_v6_gather_slot_goal":
+                execution_target = self.gather_slot_points
+            else:
+                execution_target = self.oracle_point
+                if schema == "ego_v7_gather_site_and_slot_goal":
+                    execution_slot_target = self.gather_slot_points
         actor_obs = build_actor_observation(
             self.positions,
             self.yaws,
@@ -232,6 +422,8 @@ class MultiRoverGatheringCore:
             terrain_grid,
             metrics,
             self.success_hold_count,
+            gather_site_point=execution_target,
+            gather_slot_point=execution_slot_target,
         )
         critic_state = build_critic_state(
             self.positions,
@@ -272,7 +464,47 @@ class MultiRoverGatheringCore:
             deterministic=bool(filter_cfg.deterministic_eval),
             generator=self.generator,
         )
-        decoded = filter_result.decoded
+        slot_capture = apply_terminal_slot_capture(
+            filter_result.decoded,
+            gather_slot_points=self.gather_slot_points,
+            dmax=self.prev_metrics.dmax,
+            dispersion=self.prev_metrics.dispersion,
+            dmax_threshold=float(self.cfg.success_thresholds.dmax),
+            dispersion_threshold=float(self.cfg.success_thresholds.dispersion),
+            enabled=bool(self.cfg.low_level_control.terminal_slot_capture_enabled),
+            activation_dmax_multiplier=float(
+                self.cfg.low_level_control.terminal_slot_capture_dmax_multiplier
+            ),
+            activation_dispersion_multiplier=float(
+                self.cfg.low_level_control.terminal_slot_capture_dispersion_multiplier
+            ),
+            blend=float(self.cfg.low_level_control.terminal_slot_capture_blend),
+        )
+        correction = apply_formation_center_correction(
+            slot_capture.decoded,
+            centroid_xy=self.prev_metrics.centroid[..., :2],
+            dmax=self.prev_metrics.dmax,
+            dispersion=self.prev_metrics.dispersion,
+            # Fixed slots are assigned once per episode and their mean equals
+            # the terrain-aware searched point exactly.
+            formation_center_xy=self.gather_slot_points[..., :2].mean(dim=1),
+            dmax_threshold=float(self.cfg.success_thresholds.dmax),
+            dispersion_threshold=float(self.cfg.success_thresholds.dispersion),
+            enabled=bool(self.cfg.low_level_control.formation_center_correction_enabled),
+            activation_dmax_multiplier=float(
+                self.cfg.low_level_control.formation_center_activation_dmax_multiplier
+            ),
+            activation_dispersion_multiplier=float(
+                self.cfg.low_level_control.formation_center_activation_dispersion_multiplier
+            ),
+            max_offset=float(self.cfg.low_level_control.formation_center_correction_max_offset),
+            gain=float(self.cfg.low_level_control.formation_center_correction_gain),
+            flatness_ok=self.prev_gather_point_flatness_ok,
+            require_flatness_failure=bool(
+                self.cfg.low_level_control.formation_center_correction_require_flatness_failure
+            ),
+        )
+        decoded = correction.decoded
         subgoal_terrain_features = (
             query_terrain_features(
                 decoded.world_subgoal[..., :2],
@@ -323,6 +555,28 @@ class MultiRoverGatheringCore:
         self.step_count += 1
 
         metrics = compute_team_metrics(self.positions, self.velocities_xy)
+        gather_point_flatness = self.evaluate_current_gather_point_flatness(metrics)
+        centroid_flatness_cost = compute_centroid_flatness_cost(
+            gather_point_flatness.height_range,
+            gather_point_flatness.max_slope,
+            self.cfg,
+        )
+        (
+            centroid_flatness_reward,
+            centroid_flatness_progress,
+            centroid_flatness_activation,
+        ) = compute_centroid_flatness_reward(
+            self.prev_centroid_flatness_cost,
+            centroid_flatness_cost,
+            self.prev_metrics.dmax,
+            metrics.dmax,
+            self.cfg,
+        )
+        flatness_ok = (
+            gather_point_flatness.is_flat
+            if self.cfg.gather_point.require_flat_for_success
+            else torch.ones_like(gather_point_flatness.is_flat)
+        )
         done, self.success_hold_count = compute_done(
             self.positions,
             self.velocities_xy,
@@ -332,11 +586,17 @@ class MultiRoverGatheringCore:
             self.max_episode_steps,
             self.cfg.success_thresholds,
             self.cfg.safety,
+            flatness_ok=flatness_ok,
         )
-        success_gates = compute_success_gates(metrics, self.velocities_xy, self.cfg.success_thresholds)
+        success_gates = compute_success_gates(
+            metrics,
+            self.velocities_xy,
+            self.cfg.success_thresholds,
+            flatness_ok=flatness_ok,
+        )
         terms, mean_oracle = compute_reward(
             self.positions,
-            self.oracle_point,
+            self._oracle_reward_target(),
             self.prev_metrics,
             metrics,
             previous_mean_oracle,
@@ -346,6 +606,7 @@ class MultiRoverGatheringCore:
             self.success_hold_count,
             self.last_terrain_features,
             self.cfg,
+            oracle_feasible=self.oracle_search_feasible,
             subgoal_terrain_features=subgoal_terrain_features,
             terrain_speed_scale=self.last_terrain_speed_scale,
             height_delta=self.last_height_delta,
@@ -368,8 +629,15 @@ class MultiRoverGatheringCore:
                 if isinstance(filter_result.info.get("suggested_subgoal_deviation"), torch.Tensor)
                 else None
             ),
+            centroid_flatness_reward=centroid_flatness_reward,
         )
         self.prev_mean_oracle_distance = mean_oracle
+        self.prev_centroid_flatness_cost = centroid_flatness_cost
+        # Keep next-step control state independent from this step's diagnostic
+        # snapshot. ``reset()`` updates selected entries in place after a done;
+        # aliasing this tensor would retroactively change success_gates for the
+        # completed step.
+        self.prev_gather_point_flatness_ok = gather_point_flatness.is_flat.clone()
         self.previous_physical_action = decoded.physical
         self.metrics = metrics
         self.last_trajectory = trajectory
@@ -386,6 +654,13 @@ class MultiRoverGatheringCore:
             key: value.clone() if isinstance(value, torch.Tensor) else value
             for key, value in filter_result.info.items()
         }
+        formation_center_correction_snapshot = {
+            "active": correction.active.clone(),
+            "offset_xy": correction.offset_xy.clone(),
+        }
+        terminal_slot_capture_snapshot = {
+            "active": slot_capture.active.clone(),
+        }
         control_safety_snapshot = {
             key: value.clone() if isinstance(value, torch.Tensor) else value
             for key, value in control_safety.info.items()
@@ -398,6 +673,29 @@ class MultiRoverGatheringCore:
         }
         terrain_runtime = self.terrain_runtime.clone()
         success_hold_count = self.success_hold_count.clone()
+        oracle_point = self.oracle_point.clone()
+        oracle_search_snapshot = {
+            "method": self.cfg.gather_point.search_method,
+            "objective": self.oracle_search_objective.clone(),
+            "feasible": self.oracle_search_feasible.clone(),
+            "mean_distance": self.oracle_search_mean_distance.clone(),
+            "max_distance": self.oracle_search_max_distance.clone(),
+            "path_risk": self.oracle_search_path_risk.clone(),
+            "path_height_change": self.oracle_search_path_height_change.clone(),
+            "height_range": self.oracle_search_height_range.clone(),
+            "max_slope": self.oracle_search_max_slope.clone(),
+        }
+        gather_point_flatness_snapshot = GatherPointFlatness(
+            height_range=gather_point_flatness.height_range.clone(),
+            max_slope=gather_point_flatness.max_slope.clone(),
+            mean_slope=gather_point_flatness.mean_slope.clone(),
+            is_flat=gather_point_flatness.is_flat.clone(),
+        )
+        centroid_flatness_reward_snapshot = {
+            "cost": centroid_flatness_cost.clone(),
+            "progress": centroid_flatness_progress.clone(),
+            "activation": centroid_flatness_activation.clone(),
+        }
 
         if done.done.any():
             env_ids = torch.nonzero(done.done, as_tuple=False).flatten()
@@ -428,8 +726,13 @@ class MultiRoverGatheringCore:
                 "height_delta": height_delta,
                 "path_terrain": path_terrain_snapshot,
                 "action_filter": action_filter_snapshot,
+                "formation_center_correction": formation_center_correction_snapshot,
+                "terminal_slot_capture": terminal_slot_capture_snapshot,
                 "terrain_runtime": terrain_runtime,
-                "oracle_point": self.oracle_point.clone(),
+                "gather_point_flatness": gather_point_flatness_snapshot,
+                "centroid_flatness_reward": centroid_flatness_reward_snapshot,
+                "oracle_point": oracle_point,
+                "oracle_search": oracle_search_snapshot,
             },
         )
 

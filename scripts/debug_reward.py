@@ -29,6 +29,8 @@ def main() -> None:
         "oracle": float(terms.oracle.mean().detach().cpu()),
         "energy": float(terms.energy.mean().detach().cpu()),
         "safety": float(terms.safety.mean().detach().cpu()),
+        "terrain": float(terms.terrain.mean().detach().cpu()),
+        "flatness": float(terms.flatness.mean().detach().cpu()),
         "motion": float(terms.motion.mean().detach().cpu()),
         "consistency": float(terms.consistency.mean().detach().cpu()),
         "success_hold": float(terms.success_hold.mean().detach().cpu()),

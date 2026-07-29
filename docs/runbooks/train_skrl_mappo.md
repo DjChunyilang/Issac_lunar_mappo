@@ -166,6 +166,26 @@ outputs/runs/exp013_action_scale_ablation/_suite/metrics/teacher_reachability_su
 - random baseline 和 post-training deterministic eval。
 - checkpoint metadata，包括 observation schema 和 SKRL-MAPPO 语义字段。
 
+## 兼容 checkpoint warm-start
+
+当新配置只改执行期控制或平整度相关门控、且 Actor/Critic 架构与观测 schema 不变时，可用已有 checkpoint 初始化模型参数：
+
+```bash
+.venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/<warmstart_config>.yaml \
+  --init-checkpoint outputs/runs/<source_experiment>/<source_run>/checkpoints/best.pt \
+  --device cuda \
+  --run-name warmstart_<source>_seed23_screen \
+  --output-layout run \
+  --timesteps 1024
+```
+
+这是**重新训练**而不是 `--resume-checkpoint`：不会恢复 optimizer、rollout memory 或 source timestep。若不显式传 `--bc-updates`，训练器会禁用 BC，并将原始策略作为 `ppo_timestep_000000.pt` 候选一并评估。只在 `metrics/final_eval_proxy.json` 和 `metrics/strict_acceptance.json` 通过后，才可把更新后的 checkpoint 作为候选；0-step 选中只能表明 PPO 没有改善 source policy。
+
+## 执行时域消融
+
+若要检验 timeout 是否由执行时间不足导致，派生 YAML 使用 `extends:` 继承基线，并把以下三处同步修改：`simulation.episode_length_s`、`experiment.eval_steps`、`evaluation.proxy_eval.steps`（高保真评估若启用，也同步 `evaluation.high_fidelity_eval.steps`）。当前本配置族采用 `96 s` 对应 control steps=`480`。这改变的是策略完成任务的时域，不改变 strict gate；仍必须满足 `timeout_rate == 0`。时域对照应固定 checkpoint、eval seed 和环境数，并把后验评测写为单独 JSON，不能覆盖正式 run 的 `final_eval_proxy.json`。
+
 ## exp016 Shared-Joint 分阶段验证
 
 运行前要求至少保留 6 GB 空闲显存：

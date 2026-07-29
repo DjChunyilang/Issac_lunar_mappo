@@ -12,6 +12,8 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import (
 from lunar_rover_tasks.tasks.multi_rover_gathering.metrics import compute_team_metrics
 from lunar_rover_tasks.tasks.multi_rover_gathering.reward import (
     RewardTerms,
+    compute_centroid_flatness_cost,
+    compute_centroid_flatness_reward,
     compute_gather_reward,
     compute_oracle_reward,
     compute_safety_reward,
@@ -41,6 +43,153 @@ def test_oracle_reward_positive_when_mean_distance_decreases() -> None:
     reward, mean_distance = compute_oracle_reward(positions, oracle, torch.tensor([2.0]), cfg)
     assert reward.item() > 0.0
     assert mean_distance.item() < 2.0
+
+
+def test_oracle_reward_accepts_per_rover_execution_slots() -> None:
+    cfg = MultiRoverGatheringEnvCfg()
+    positions = torch.tensor(
+        [[[0.5, 0.0, 0.0], [0.0, 0.5, 0.0], [-0.5, 0.0, 0.0], [0.0, -0.5, 0.0]]]
+    )
+    slots = positions.clone()
+
+    reward, mean_distance = compute_oracle_reward(
+        positions,
+        slots,
+        torch.tensor([1.0]),
+        cfg,
+    )
+
+    assert reward.item() > 0.0
+    assert torch.allclose(mean_distance, torch.zeros_like(mean_distance))
+
+
+def test_oracle_reward_masks_infeasible_environments_but_updates_distance() -> None:
+    cfg = MultiRoverGatheringEnvCfg()
+    positions = torch.tensor(
+        [
+            [[0.5, 0.0, 0.0], [0.0, 0.5, 0.0], [-0.5, 0.0, 0.0], [0.0, -0.5, 0.0]],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]],
+        ]
+    )
+    oracle = torch.zeros(2, 3)
+    previous_distance = torch.tensor([2.0, 2.0])
+
+    reward, mean_distance = compute_oracle_reward(
+        positions,
+        oracle,
+        previous_distance,
+        cfg,
+        oracle_feasible=torch.tensor([True, False]),
+    )
+
+    assert reward[0] > 0.0
+    assert reward[1] == 0.0
+    assert torch.allclose(mean_distance, torch.tensor([0.5, 1.0]))
+
+
+def test_centroid_flatness_cost_matches_the_hard_gate_boundary() -> None:
+    cfg = MultiRoverGatheringEnvCfg()
+    height_range = torch.tensor([0.18, 0.10, 0.181, 0.10])
+    max_slope = torch.tensor([0.20, 0.25, 0.20, 0.251])
+
+    cost = compute_centroid_flatness_cost(height_range, max_slope, cfg)
+    hard_gate = (
+        (height_range <= cfg.gather_point.max_height_range)
+        & (max_slope <= cfg.gather_point.max_slope)
+    )
+
+    assert torch.equal(cost <= 1.0, hard_gate)
+    assert torch.all(cost >= 0.0)
+    assert torch.all(cost <= 3.0)
+
+
+def test_centroid_flatness_reward_tracks_progress_and_geometric_activation() -> None:
+    cfg = MultiRoverGatheringEnvCfg()
+    cfg.reward_coefficients.centroid_flatness_progress = 2.0
+    cfg.reward_coefficients.centroid_flatness_excess = 0.02
+    cfg.reward_coefficients.centroid_flatness_dmax_multiplier = 2.0
+    previous = torch.tensor([1.5, 1.5, 1.5])
+    current = torch.tensor([1.4, 1.6, 1.4])
+    dmax = torch.tensor(
+        [
+            cfg.success_thresholds.dmax,
+            cfg.success_thresholds.dmax,
+            2.0 * cfg.success_thresholds.dmax,
+        ]
+    )
+
+    reward, progress, activation = compute_centroid_flatness_reward(
+        previous,
+        current,
+        dmax,
+        dmax,
+        cfg,
+    )
+
+    assert reward[0] > 0.0
+    assert reward[1] < 0.0
+    assert reward[2] == 0.0
+    assert torch.allclose(progress[:2], previous[:2] - current[:2])
+    assert progress[2] == 0.0
+    assert torch.allclose(activation, torch.tensor([1.0, 1.0, 0.0]))
+
+
+def test_default_centroid_flatness_shaping_is_behaviorally_disabled() -> None:
+    cfg = MultiRoverGatheringEnvCfg()
+    reward, _, _ = compute_centroid_flatness_reward(
+        torch.tensor([2.0]),
+        torch.tensor([1.5]),
+        torch.tensor([cfg.success_thresholds.dmax]),
+        torch.tensor([cfg.success_thresholds.dmax]),
+        cfg,
+    )
+
+    assert cfg.reward_weights.flatness == 0.0
+    assert torch.allclose(reward, torch.zeros_like(reward))
+
+
+def test_centroid_flatness_potential_closes_activation_boundary_cycle() -> None:
+    cfg = MultiRoverGatheringEnvCfg()
+    cfg.reward_coefficients.centroid_flatness_progress = 2.0
+    cfg.reward_coefficients.centroid_flatness_excess = 0.0
+    near = torch.tensor([cfg.success_thresholds.dmax])
+    far = torch.tensor(
+        [
+            cfg.reward_coefficients.centroid_flatness_dmax_multiplier
+            * cfg.success_thresholds.dmax
+        ]
+    )
+    rough = torch.tensor([2.0])
+    flat = torch.tensor([0.0])
+
+    rough_near_to_flat_near, _, _ = compute_centroid_flatness_reward(
+        rough,
+        flat,
+        near,
+        near,
+        cfg,
+    )
+    flat_near_to_rough_far, _, _ = compute_centroid_flatness_reward(
+        flat,
+        rough,
+        near,
+        far,
+        cfg,
+    )
+    rough_far_to_rough_near, _, _ = compute_centroid_flatness_reward(
+        rough,
+        rough,
+        far,
+        near,
+        cfg,
+    )
+
+    cycle_reward = (
+        rough_near_to_flat_near
+        + flat_near_to_rough_far
+        + rough_far_to_rough_near
+    )
+    assert torch.allclose(cycle_reward, torch.zeros_like(cycle_reward))
 
 
 def test_default_level_shaping_preserves_existing_gather_formula() -> None:
@@ -213,6 +362,9 @@ def test_reward_config_keys_match_consumed_reward_terms() -> None:
 
     consumed_coefficients = {
         "action_consistency",
+        "centroid_flatness_dmax_multiplier",
+        "centroid_flatness_excess",
+        "centroid_flatness_progress",
         "dispersion_level",
         "dispersion_progress",
         "dmax_level",

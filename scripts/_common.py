@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import sys
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -17,9 +19,36 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import (  #
 )
 
 
-def load_yaml(path: str | Path) -> dict:
-    with Path(path).open("r", encoding="utf-8") as stream:
-        return yaml.safe_load(stream) or {}
+def _deep_merge_yaml(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_yaml(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def load_yaml(path: str | Path, *, _ancestry: tuple[Path, ...] = ()) -> dict:
+    """Load an experiment YAML, resolving an optional relative ``extends`` base."""
+    config_path = Path(path).resolve()
+    if config_path in _ancestry:
+        chain = " -> ".join(str(item) for item in (*_ancestry, config_path))
+        raise ValueError(f"Cyclic YAML extends chain: {chain}")
+    with config_path.open("r", encoding="utf-8") as stream:
+        payload = yaml.safe_load(stream) or {}
+    if not isinstance(payload, dict):
+        raise ValueError(f"YAML config must be a mapping: {config_path}")
+    extends = payload.pop("extends", None)
+    if extends is None:
+        return payload
+    if not isinstance(extends, str) or not extends.strip():
+        raise ValueError("YAML 'extends' must be a non-empty relative or absolute path.")
+    base_path = Path(extends)
+    if not base_path.is_absolute():
+        base_path = config_path.parent / base_path
+    base = load_yaml(base_path, _ancestry=(*_ancestry, config_path))
+    return _deep_merge_yaml(base, payload)
 
 
 def _require_mapping(section: str, values) -> dict:
@@ -76,6 +105,9 @@ def _apply_observation_values(cfg: MultiRoverGatheringEnvCfg, values: dict) -> N
         supported_schemas = {
             "ego_v3_local_terrain_grid",
             "ego_v4_terminal_gate",
+            "ego_v5_gather_site_goal",
+            "ego_v6_gather_slot_goal",
+            "ego_v7_gather_site_and_slot_goal",
         }
         if schema_version not in supported_schemas:
             raise ValueError(
@@ -175,6 +207,105 @@ def _validate_low_level_control(cfg: MultiRoverGatheringEnvCfg) -> None:
         raise ValueError("low_level_control.wheelbase_m must be positive.")
     if cfg.low_level_control.max_steer_angle_rad <= 0.0:
         raise ValueError("low_level_control.max_steer_angle_rad must be positive.")
+    if cfg.low_level_control.formation_center_activation_dmax_multiplier < 1.0:
+        raise ValueError(
+            "low_level_control.formation_center_activation_dmax_multiplier "
+            "must be >= 1.0."
+        )
+    if cfg.low_level_control.formation_center_activation_dispersion_multiplier < 1.0:
+        raise ValueError(
+            "low_level_control.formation_center_activation_dispersion_multiplier "
+            "must be >= 1.0."
+        )
+    if cfg.low_level_control.formation_center_correction_max_offset < 0.0:
+        raise ValueError(
+            "low_level_control.formation_center_correction_max_offset must be non-negative."
+        )
+    if not 0.0 <= cfg.low_level_control.formation_center_correction_gain <= 1.0:
+        raise ValueError(
+            "low_level_control.formation_center_correction_gain must be in [0, 1]."
+        )
+    if cfg.low_level_control.terminal_slot_capture_dmax_multiplier < 1.0:
+        raise ValueError(
+            "low_level_control.terminal_slot_capture_dmax_multiplier must be >= 1.0."
+        )
+    if cfg.low_level_control.terminal_slot_capture_dispersion_multiplier < 1.0:
+        raise ValueError(
+            "low_level_control.terminal_slot_capture_dispersion_multiplier must be >= 1.0."
+        )
+    if not 0.0 <= cfg.low_level_control.terminal_slot_capture_blend <= 1.0:
+        raise ValueError(
+            "low_level_control.terminal_slot_capture_blend must be in [0, 1]."
+        )
+
+
+def _validate_gather_point(cfg: MultiRoverGatheringEnvCfg) -> None:
+    gather = cfg.gather_point
+    supported_methods = {
+        "terrain_aware_multiresolution",
+        "geometric_median",
+    }
+    if gather.search_method not in supported_methods:
+        raise ValueError(
+            "gather_point.search_method must be one of: "
+            f"{', '.join(sorted(supported_methods))}."
+        )
+    if gather.coarse_grid_size < 3 or gather.coarse_grid_size % 2 == 0:
+        raise ValueError("gather_point.coarse_grid_size must be an odd integer >= 3.")
+    if gather.refinement_grid_size < 3 or gather.refinement_grid_size % 2 == 0:
+        raise ValueError("gather_point.refinement_grid_size must be an odd integer >= 3.")
+    if gather.refinement_levels < 0:
+        raise ValueError("gather_point.refinement_levels must be non-negative.")
+    if gather.search_margin < 0.0:
+        raise ValueError("gather_point.search_margin must be non-negative.")
+    if gather.global_grid_size < 3 or gather.global_grid_size % 2 == 0:
+        raise ValueError("gather_point.global_grid_size must be an odd integer >= 3.")
+    if gather.global_beam_width <= 0:
+        raise ValueError("gather_point.global_beam_width must be positive.")
+    if gather.global_refinement_levels < 0:
+        raise ValueError("gather_point.global_refinement_levels must be non-negative.")
+    if gather.global_max_envs_per_batch <= 0:
+        raise ValueError("gather_point.global_max_envs_per_batch must be positive.")
+    if gather.flatness_radius <= 0.0:
+        raise ValueError("gather_point.flatness_radius must be positive.")
+    if gather.flatness_rings <= 0:
+        raise ValueError("gather_point.flatness_rings must be positive.")
+    if gather.flatness_samples_per_ring < 4:
+        raise ValueError("gather_point.flatness_samples_per_ring must be at least 4.")
+    if gather.max_height_range <= 0.0:
+        raise ValueError("gather_point.max_height_range must be positive.")
+    if gather.max_slope <= 0.0:
+        raise ValueError("gather_point.max_slope must be positive.")
+    if gather.robustness_radius < 0.0:
+        raise ValueError("gather_point.robustness_radius must be non-negative.")
+    if gather.robustness_radius > 0.0 and gather.robustness_samples < 4:
+        raise ValueError(
+            "gather_point.robustness_samples must be at least 4 when "
+            "robustness_radius is positive."
+        )
+    weights = (
+        gather.mean_distance_weight,
+        gather.max_distance_weight,
+        gather.path_risk_weight,
+        gather.path_height_change_weight,
+        gather.flatness_weight,
+    )
+    if any(weight < 0.0 for weight in weights):
+        raise ValueError("gather_point objective weights must be non-negative.")
+    if not any(weight > 0.0 for weight in weights):
+        raise ValueError("At least one gather_point objective weight must be positive.")
+    if gather.path_samples <= 0:
+        raise ValueError("gather_point.path_samples must be positive.")
+    if gather.infeasible_penalty <= 0.0:
+        raise ValueError("gather_point.infeasible_penalty must be positive.")
+    if gather.max_envs_per_batch <= 0:
+        raise ValueError("gather_point.max_envs_per_batch must be positive.")
+    if gather.execution_slot_radius <= 0.0:
+        raise ValueError("gather_point.execution_slot_radius must be positive.")
+    if gather.flatness_radius >= cfg.safety.world_xy_limit:
+        raise ValueError(
+            "gather_point.flatness_radius must be smaller than safety.world_xy_limit."
+        )
 
 
 def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
@@ -198,6 +329,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     )
     low_level_control = _require_mapping("low_level_control", data.get("low_level_control", {}))
     terrain = _require_mapping("terrain", data.get("terrain", {}))
+    gather_point = _require_mapping("gather_point", data.get("gather_point", {}))
     reward = _require_mapping("reward", data.get("reward", {}))
     observation = _require_mapping("observation", data.get("observation", {}))
     state = _require_mapping("state", data.get("state", {}))
@@ -217,7 +349,25 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     cfg.simulation.control_decimation = int(
         simulation.get("control_decimation", cfg.simulation.control_decimation)
     )
+    supported_task_keys = {
+        "n_agents",
+        "explicit_goal_in_execution",
+        "execution_slot_reward_target",
+    }
+    task_unknown = sorted(key for key in task if key not in supported_task_keys)
+    if task_unknown:
+        unknown_keys = ", ".join(f"task.{key}" for key in task_unknown)
+        raise ValueError(f"Unsupported config key(s): {unknown_keys}.")
     cfg.task.n_agents = int(task.get("n_agents", cfg.task.n_agents))
+    cfg.task.explicit_goal_in_execution = bool(
+        task.get("explicit_goal_in_execution", cfg.task.explicit_goal_in_execution)
+    )
+    cfg.task.execution_slot_reward_target = bool(
+        task.get(
+            "execution_slot_reward_target",
+            cfg.task.execution_slot_reward_target,
+        )
+    )
     _apply_values(cfg.initial_state, initial_state, "initial_state")
     if cfg.initial_state.spawn_radius_min <= 0.0:
         raise ValueError("initial_state.spawn_radius_min must be positive.")
@@ -321,9 +471,37 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     )
     _apply_values(cfg.reward_weights, reward.get("weights", {}), "reward.weights")
     _apply_values(cfg.reward_coefficients, reward.get("coefficients", {}), "reward.coefficients")
+    if cfg.reward_coefficients.centroid_flatness_progress < 0.0:
+        raise ValueError("reward.coefficients.centroid_flatness_progress must be non-negative.")
+    if cfg.reward_coefficients.centroid_flatness_excess < 0.0:
+        raise ValueError("reward.coefficients.centroid_flatness_excess must be non-negative.")
+    if cfg.reward_coefficients.centroid_flatness_dmax_multiplier <= 1.0:
+        raise ValueError(
+            "reward.coefficients.centroid_flatness_dmax_multiplier must be greater than 1."
+        )
     _apply_observation_values(cfg, observation)
+    has_gather_site_goal = cfg.observation.schema_version in {
+        "ego_v5_gather_site_goal",
+        "ego_v6_gather_slot_goal",
+        "ego_v7_gather_site_and_slot_goal",
+    }
+    if has_gather_site_goal != cfg.task.explicit_goal_in_execution:
+        raise ValueError(
+            "task.explicit_goal_in_execution must be true exactly when "
+            "observation.schema_version is an execution gather-site goal schema."
+        )
+    if cfg.task.execution_slot_reward_target and cfg.observation.schema_version not in {
+        "ego_v6_gather_slot_goal",
+        "ego_v7_gather_site_and_slot_goal",
+    }:
+        raise ValueError(
+            "task.execution_slot_reward_target requires an execution-slot "
+            "observation schema."
+        )
     _apply_state_values(cfg, state)
     _apply_values(cfg.safety, safety, "safety")
+    _apply_values(cfg.gather_point, gather_point, "gather_point")
+    _validate_gather_point(cfg)
     _apply_values(cfg.success_thresholds, success_thresholds, "success_thresholds")
     if cfg.success_thresholds.min_pairwise_distance > 0.0:
         if not (

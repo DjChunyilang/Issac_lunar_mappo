@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +40,54 @@ def _resolve_output(output: str | Path | None, run_dir: str | Path | None) -> Pa
     return path
 
 
+def _register_diagnostic_artifact(
+    run_dir: str | Path | None,
+    output_path: Path,
+) -> None:
+    """Atomically add a successful diagnostic to an existing run manifest.
+
+    Diagnostics are optional post-processing, so a missing manifest must not
+    turn a valid analysis into a failure.  When a run manifest exists, however,
+    it remains the source-of-truth index for the generated JSON.
+    """
+    if run_dir is None:
+        return
+    resolved_run_dir = Path(run_dir)
+    if not resolved_run_dir.is_absolute():
+        resolved_run_dir = ROOT / resolved_run_dir
+    manifest_path = resolved_run_dir / "run_manifest.json"
+    if not manifest_path.is_file():
+        return
+    with manifest_path.open(encoding="utf-8") as stream:
+        manifest = json.load(stream)
+    if not isinstance(manifest, dict):
+        raise ValueError(f"Run manifest must be a JSON object: {manifest_path}")
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict):
+        artifacts = {}
+        manifest["artifacts"] = artifacts
+    try:
+        artifact_path = str(output_path.relative_to(ROOT))
+    except ValueError:
+        artifact_path = str(output_path)
+    artifacts["metrics_success_gate_diagnostic"] = artifact_path
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{manifest_path.name}.",
+        suffix=".tmp",
+        dir=manifest_path.parent,
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(manifest, stream, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, manifest_path)
+    finally:
+        if os.path.exists(temporary_name):
+            os.unlink(temporary_name)
+
+
 def _mean(rows: list[dict[str, Any]], key: str) -> float | None:
     values = [float(row[key]) for row in rows if row.get(key) is not None]
     if not values:
@@ -58,6 +108,13 @@ def _rate(rows: list[dict[str, Any]], key: str) -> float | None:
     return sum(1.0 for row in rows if bool(row.get(key))) / len(rows)
 
 
+def _optional_rate(rows: list[dict[str, Any]], key: str) -> float | None:
+    values = [bool(row[key]) for row in rows if row.get(key) is not None]
+    if not values:
+        return None
+    return sum(float(value) for value in values) / len(values)
+
+
 def _group_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "count": len(rows),
@@ -73,6 +130,23 @@ def _group_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "dispersion_ok_rate": _rate(rows, "final_dispersion_ok"),
         "speed_ok_rate": _rate(rows, "final_speed_ok"),
         "min_pairwise_ok_rate": _rate(rows, "final_min_pairwise_ok"),
+        "flatness_ok_rate": _optional_rate(rows, "final_flatness_ok"),
+        "gather_point_is_flat_rate": _optional_rate(
+            rows,
+            "final_gather_point_is_flat",
+        ),
+        "final_gather_point_height_range_mean": _mean(
+            rows,
+            "final_gather_point_height_range",
+        ),
+        "final_gather_point_max_slope_mean": _mean(
+            rows,
+            "final_gather_point_max_slope",
+        ),
+        "final_gather_point_mean_slope_mean": _mean(
+            rows,
+            "final_gather_point_mean_slope",
+        ),
         "instant_success_rate": _rate(rows, "final_instant_success"),
     }
 
@@ -92,6 +166,13 @@ def summarize_episode_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
             1 for row in timeout_rows if not row["final_instant_success"]
         ),
     }
+    flatness_rows = [
+        row for row in timeout_rows if row.get("final_flatness_ok") is not None
+    ]
+    if flatness_rows:
+        gate_failure_counts["flatness"] = sum(
+            1 for row in flatness_rows if not bool(row["final_flatness_ok"])
+        )
     return {
         "num_envs": len(rows),
         "counts_by_reason": {reason: len(items) for reason, items in by_reason.items()},
@@ -151,6 +232,29 @@ def diagnose_checkpoint(
     final_success_hold = env.success_hold_count.detach().clone()
     max_success_hold = env.success_hold_count.detach().clone()
     final_terrain_speed_scale = torch.ones(env.num_envs, device=env.device)
+    initial_gather_point_flatness = env.evaluate_current_gather_point_flatness(env.metrics)
+    initial_flatness_ok = (
+        initial_gather_point_flatness.is_flat
+        if cfg.gather_point.require_flat_for_success
+        else torch.ones_like(initial_gather_point_flatness.is_flat)
+    )
+    final_flatness_ok = initial_flatness_ok.detach().clone()
+    final_gather_point_is_flat = initial_gather_point_flatness.is_flat.detach().clone()
+    final_gather_point_height_range = (
+        initial_gather_point_flatness.height_range.detach().clone()
+    )
+    final_gather_point_max_slope = initial_gather_point_flatness.max_slope.detach().clone()
+    final_gather_point_mean_slope = initial_gather_point_flatness.mean_slope.detach().clone()
+    oracle_search_feasible = env.oracle_search_feasible.detach().clone()
+    oracle_search_objective = env.oracle_search_objective.detach().clone()
+    oracle_search_mean_distance = env.oracle_search_mean_distance.detach().clone()
+    oracle_search_max_distance = env.oracle_search_max_distance.detach().clone()
+    oracle_search_path_risk = env.oracle_search_path_risk.detach().clone()
+    oracle_search_path_height_change = (
+        env.oracle_search_path_height_change.detach().clone()
+    )
+    oracle_search_height_range = env.oracle_search_height_range.detach().clone()
+    oracle_search_max_slope = env.oracle_search_max_slope.detach().clone()
     final_dmax_ok = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
     final_dispersion_ok = torch.zeros_like(final_dmax_ok)
     final_speed_ok = torch.zeros_like(final_dmax_ok)
@@ -194,6 +298,32 @@ def diagnose_checkpoint(
             gates.min_pairwise_ok,
             final_min_pairwise_ok,
         )
+        final_flatness_ok = torch.where(
+            active_before,
+            gates.flatness_ok,
+            final_flatness_ok,
+        )
+        gather_point_flatness = step_output.info["gather_point_flatness"]
+        final_gather_point_is_flat = torch.where(
+            active_before,
+            gather_point_flatness.is_flat,
+            final_gather_point_is_flat,
+        )
+        final_gather_point_height_range = torch.where(
+            active_before,
+            gather_point_flatness.height_range,
+            final_gather_point_height_range,
+        )
+        final_gather_point_max_slope = torch.where(
+            active_before,
+            gather_point_flatness.max_slope,
+            final_gather_point_max_slope,
+        )
+        final_gather_point_mean_slope = torch.where(
+            active_before,
+            gather_point_flatness.mean_slope,
+            final_gather_point_mean_slope,
+        )
         final_instant_success = torch.where(
             active_before,
             gates.instant_success,
@@ -210,7 +340,7 @@ def diagnose_checkpoint(
 
         first_done = done.done & active_before
         reason = torch.full_like(done_reason, -1)
-        reason = torch.where(done.timeout, torch.full_like(reason, 3), reason)
+        reason = torch.where(done.truncated, torch.full_like(reason, 3), reason)
         reason = torch.where(done.out_of_bounds, torch.full_like(reason, 2), reason)
         reason = torch.where(done.collision, torch.full_like(reason, 1), reason)
         reason = torch.where(done.success, torch.full_like(reason, 0), reason)
@@ -245,6 +375,19 @@ def diagnose_checkpoint(
                 "final_dispersion_ok": bool(final_dispersion_ok[env_id].detach().cpu()),
                 "final_speed_ok": bool(final_speed_ok[env_id].detach().cpu()),
                 "final_min_pairwise_ok": bool(final_min_pairwise_ok[env_id].detach().cpu()),
+                "final_flatness_ok": bool(final_flatness_ok[env_id].detach().cpu()),
+                "final_gather_point_is_flat": bool(
+                    final_gather_point_is_flat[env_id].detach().cpu()
+                ),
+                "final_gather_point_height_range": float(
+                    final_gather_point_height_range[env_id].detach().cpu()
+                ),
+                "final_gather_point_max_slope": float(
+                    final_gather_point_max_slope[env_id].detach().cpu()
+                ),
+                "final_gather_point_mean_slope": float(
+                    final_gather_point_mean_slope[env_id].detach().cpu()
+                ),
                 "final_instant_success": bool(final_instant_success[env_id].detach().cpu()),
             }
         )
@@ -265,6 +408,31 @@ def diagnose_checkpoint(
             "hold_steps": cfg.success_thresholds.hold_steps,
             "min_pairwise_distance": cfg.success_thresholds.min_pairwise_distance,
         },
+        "gather_point_flatness": {
+            "require_flat_for_success": cfg.gather_point.require_flat_for_success,
+            "radius": cfg.gather_point.flatness_radius,
+            "rings": cfg.gather_point.flatness_rings,
+            "samples_per_ring": cfg.gather_point.flatness_samples_per_ring,
+            "max_height_range": cfg.gather_point.max_height_range,
+            "max_slope": cfg.gather_point.max_slope,
+        },
+        "oracle_search": {
+            "method": cfg.gather_point.search_method,
+            "feasible_rate": float(
+                oracle_search_feasible.float().mean().detach().cpu()
+            ),
+            "objective_mean": float(oracle_search_objective.mean().detach().cpu()),
+            "mean_distance": float(oracle_search_mean_distance.mean().detach().cpu()),
+            "max_distance": float(oracle_search_max_distance.mean().detach().cpu()),
+            "path_risk_mean": float(oracle_search_path_risk.mean().detach().cpu()),
+            "path_height_change_mean": float(
+                oracle_search_path_height_change.mean().detach().cpu()
+            ),
+            "height_range_mean": float(
+                oracle_search_height_range.mean().detach().cpu()
+            ),
+            "max_slope_mean": float(oracle_search_max_slope.mean().detach().cpu()),
+        },
         "summary": summarize_episode_rows(rows),
         "episodes": rows,
     }
@@ -274,6 +442,7 @@ def diagnose_checkpoint(
         with output_path.open("w", encoding="utf-8") as stream:
             json.dump(result, stream, indent=2)
         result["artifact"] = str(output_path)
+        _register_diagnostic_artifact(run_dir, output_path)
     return result
 
 

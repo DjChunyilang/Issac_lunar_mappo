@@ -37,6 +37,7 @@ from train_skrl_mappo import (  # noqa: E402
     build_skrl_mappo_models,
     environment_geometry_metadata,
     critic_state_slices_metadata,
+    initialize_skrl_mappo_models_from_checkpoint,
     observation_slices_metadata,
     run_skrl_behavior_cloning,
     scripted_gather_action,
@@ -259,6 +260,83 @@ def test_exp016_bc_states_are_safe_and_teacher_labels_not_saturated() -> None:
     assert float((action[..., 1].abs() >= 0.95).float().mean()) < 0.05
 
 
+def test_oracle_ring_teacher_targets_spaced_slots_at_the_execution_goal() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.task.explicit_goal_in_execution = True
+    cfg.observation.schema_version = "ego_v5_gather_site_goal"
+    env = MultiRoverGatheringSKRLEnv(cfg).core
+    env.oracle_point.zero_()
+    env.positions[0, :, :2] = torch.tensor(
+        [[2.0, 0.0], [0.0, 2.0], [-2.0, 0.0], [0.0, -2.0]]
+    )
+    env.yaws.copy_(torch.tensor([[torch.pi, -torch.pi / 2.0, 0.0, torch.pi / 2.0]]))
+
+    action = scripted_gather_action(
+        env,
+        stop_radius=0.45,
+        slow_distance=0.0,
+        teacher_mode="oracle_ring",
+    )
+    rho = 0.5 * (action[..., 0] + 1.0) * cfg.planner.rho_max
+
+    assert torch.allclose(action[..., 1], torch.zeros_like(action[..., 1]), atol=1.0e-5)
+    assert torch.allclose(rho, torch.full_like(rho, cfg.planner.rho_max))
+
+    env.oracle_point[:, 0] = 1.0
+    changed = scripted_gather_action(
+        env,
+        stop_radius=0.45,
+        slow_distance=0.0,
+        teacher_mode="oracle_ring",
+    )
+    assert not torch.allclose(changed, action)
+
+
+def test_oracle_translating_ring_teacher_moves_formation_center_toward_goal() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.task.explicit_goal_in_execution = True
+    cfg.observation.schema_version = "ego_v5_gather_site_goal"
+    env = MultiRoverGatheringSKRLEnv(cfg).core
+    env.positions[0, :, :2] = torch.tensor(
+        [[-2.0, -0.4], [-2.0, 0.4], [-1.2, -0.4], [-1.2, 0.4]]
+    )
+    env.yaws.zero_()
+    env.oracle_point.copy_(torch.tensor([[2.0, 0.0, 0.0]]))
+
+    action = scripted_gather_action(
+        env,
+        stop_radius=0.45,
+        slow_distance=0.0,
+        max_rho=1.0,
+        teacher_mode="oracle_translating_ring",
+        teacher_center_step=0.65,
+    )
+
+    assert torch.all(action[..., 0] > -1.0)
+    assert torch.all(action[..., 1].abs() < 0.95)
+
+
+def test_oracle_slots_teacher_follows_fixed_symmetric_execution_targets() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.task.explicit_goal_in_execution = True
+    cfg.observation.schema_version = "ego_v6_gather_slot_goal"
+    env = MultiRoverGatheringSKRLEnv(cfg).core
+    env.positions.zero_()
+    env.yaws.copy_(torch.tensor([[0.0, torch.pi / 2.0, torch.pi, -torch.pi / 2.0]]))
+    env.gather_slot_points.copy_(
+        torch.tensor([[[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [-2.0, 0.0, 0.0], [0.0, -2.0, 0.0]]])
+    )
+
+    action = scripted_gather_action(
+        env,
+        slow_distance=0.0,
+        teacher_mode="oracle_slots",
+    )
+
+    assert torch.allclose(action[..., 1], torch.zeros_like(action[..., 1]), atol=1.0e-5)
+    assert torch.allclose(action[..., 0], torch.ones_like(action[..., 0]))
+
+
 def test_exp016_initial_log_std_and_checkpoint_metadata() -> None:
     raw = load_yaml(ROOT / "configs/experiment/exp016_shared_mappo_comm12.yaml")
     env = _make_env()
@@ -289,6 +367,59 @@ def test_exp016_initial_log_std_and_checkpoint_metadata() -> None:
     assert payload["metadata"]["update_mode"] == "shared_joint"
     assert payload["metadata"]["communication_radius"] == pytest.approx(12.0)
     assert payload["metadata"]["teacher_mode"] == "visible_local_centroid"
+
+
+def test_checkpoint_initialization_loads_weights_and_resets_training_state(
+    tmp_path: Path,
+) -> None:
+    env = _make_env()
+    raw = {"experiment": {"name": "warm_start"}, "algorithm": {}}
+    source_models = build_skrl_mappo_models(
+        env,
+        shared_actor=True,
+        centralized_critic=True,
+        shared_value=True,
+    )
+    with torch.no_grad():
+        next(source_models[env.possible_agents[0]]["policy"].parameters()).fill_(0.125)
+        next(source_models[env.possible_agents[0]]["value"].parameters()).fill_(0.25)
+    checkpoint_path = tmp_path / "source.pt"
+    torch.save(
+        skrl_mappo_checkpoint_payload(
+            source_models,
+            env.possible_agents,
+            raw_cfg=raw,
+            shared_actor=True,
+            centralized_critic=True,
+            shared_value=True,
+            timesteps=123,
+            observation_schema_version=env.cfg.observation.schema_version,
+            actor_obs_dim=env.cfg.actor_obs_dim,
+            critic_state_dim=env.cfg.critic_state_dim,
+        ),
+        checkpoint_path,
+    )
+
+    target_models = build_skrl_mappo_models(
+        env,
+        shared_actor=True,
+        centralized_critic=True,
+        shared_value=True,
+    )
+    metadata = initialize_skrl_mappo_models_from_checkpoint(
+        checkpoint_path,
+        target_models,
+        env.possible_agents,
+        env.cfg,
+        actor_architecture="mlp_v1",
+        critic_architecture="mlp_v1",
+        device=torch.device("cpu"),
+    )
+    target_policy = target_models[env.possible_agents[0]]["policy"]
+    target_value = target_models[env.possible_agents[0]]["value"]
+    assert torch.allclose(next(target_policy.parameters()), torch.full_like(next(target_policy.parameters()), 0.125))
+    assert torch.allclose(next(target_value.parameters()), torch.full_like(next(target_value.parameters()), 0.25))
+    assert metadata["init_checkpoint_source_timestep"] == 123
 
 
 def test_exp016_communication_radius_covers_standard_initial_team() -> None:
@@ -519,6 +650,76 @@ def test_terminal_gate_actor_and_critic_use_v2_slices() -> None:
 
     assert means.shape == (env.num_envs * env.cfg.task.n_agents, 2)
     assert values.shape == (env.num_envs, 1)
+
+
+def test_gather_site_goal_actor_uses_v3_slices() -> None:
+    cfg = make_debug_cfg(num_envs=2, device="cpu")
+    cfg.task.explicit_goal_in_execution = True
+    cfg.observation.schema_version = "ego_v5_gather_site_goal"
+    env = MultiRoverGatheringSKRLEnv(cfg)
+    models = build_skrl_mappo_models(
+        env,
+        shared_actor=True,
+        centralized_critic=True,
+        actor_architecture="branched_v3",
+        critic_architecture="structured_v1",
+        initial_log_std=-1.0,
+    )
+    policy = models[env.possible_agents[0]]["policy"]
+    actor_obs, critic_state = env.core.get_observations()
+
+    assert policy.architecture == "branched_v3"
+    assert env.cfg.actor_obs_dim == 89
+    assert env.cfg.critic_state_dim == 54
+    assert policy.gather_site_goal_encoder[0].in_features == 3
+    assert policy.trunk[0].in_features == 176
+    assert observation_slices_metadata(89)["gather_site_goal"] == {
+        "start": 86,
+        "end": 89,
+        "dim": 3,
+    }
+
+    means, _ = policy.compute(
+        {"observations": actor_obs.reshape(-1, env.cfg.actor_obs_dim)},
+        role="policy",
+    )
+    assert means.shape == (env.num_envs * env.cfg.task.n_agents, 2)
+    assert critic_state.shape == (env.num_envs, env.cfg.critic_state_dim)
+
+
+def test_site_and_slot_goal_actor_uses_v4_slices() -> None:
+    cfg = make_debug_cfg(num_envs=2, device="cpu")
+    cfg.task.explicit_goal_in_execution = True
+    cfg.observation.schema_version = "ego_v7_gather_site_and_slot_goal"
+    env = MultiRoverGatheringSKRLEnv(cfg)
+    models = build_skrl_mappo_models(
+        env,
+        shared_actor=True,
+        centralized_critic=True,
+        actor_architecture="branched_v4",
+        critic_architecture="structured_v1",
+        initial_log_std=-1.0,
+    )
+    policy = models[env.possible_agents[0]]["policy"]
+    actor_obs, critic_state = env.core.get_observations()
+
+    assert policy.architecture == "branched_v4"
+    assert env.cfg.actor_obs_dim == 92
+    assert env.cfg.critic_state_dim == 54
+    assert policy.gather_site_and_slot_goal_encoder[0].in_features == 6
+    assert policy.trunk[0].in_features == 176
+    assert observation_slices_metadata(92)["gather_site_and_slot_goal"] == {
+        "start": 86,
+        "end": 92,
+        "dim": 6,
+    }
+
+    means, _ = policy.compute(
+        {"observations": actor_obs.reshape(-1, env.cfg.actor_obs_dim)},
+        role="policy",
+    )
+    assert means.shape == (env.num_envs * env.cfg.task.n_agents, 2)
+    assert critic_state.shape == (env.num_envs, env.cfg.critic_state_dim)
 
 
 def test_exp051_actor_can_pair_with_terminal_min_pairwise_critic_state() -> None:
@@ -1155,6 +1356,7 @@ def test_skrl_reward_breakdown_reports_weighted_contributions() -> None:
         "energy",
         "safety",
         "terrain",
+        "flatness",
         "motion",
         "consistency",
         "success_hold",
@@ -1234,3 +1436,28 @@ def test_cuda_training_diagnosis_summarizes_action_and_reward_components(tmp_pat
     assert summary["reward_component_summary"]["dominant_positive_component"] == "gather"
     assert summary["reward_component_trends"]["gather"]["contribution"]["last"] == pytest.approx(0.3)
     assert "action_scale_ablation" in summary["next_experiment_focus"]
+
+
+def test_cuda_training_diagnosis_preserves_flatness_reward_signal(tmp_path: Path) -> None:
+    metrics_path = tmp_path / "flatness_metrics.jsonl"
+    row = {
+        "run_id": "flatness_diagnostic",
+        "mean_pairwise_distance": 1.0,
+        "mean_oracle_distance": 1.0,
+        "success_rate": 0.1,
+        "mean_reward": 0.1,
+        "reward_raw_flatness": 0.2,
+        "reward_contribution_flatness": 0.2,
+        "reward_abs_share_flatness": 0.6,
+        "reward_abs_share_gather": 0.2,
+        "reward_abs_share_oracle": 0.1,
+        "reward_abs_share_safety": 0.1,
+    }
+    metrics_path.write_text(json.dumps(row), encoding="utf-8")
+
+    summary = diagnose(metrics_path)
+
+    assert summary["reward_component_trends"]["flatness"]["raw"]["last"] == pytest.approx(0.2)
+    assert summary["reward_component_summary"]["contribution"]["flatness"] == pytest.approx(0.2)
+    assert summary["reward_component_summary"]["abs_share"]["flatness"] == pytest.approx(0.6)
+    assert "reward_signal_balance" not in summary["next_experiment_focus"]

@@ -53,6 +53,7 @@ def evaluate_checkpoint(
     seed: int | None = None,
     output: str | Path | None = None,
     run_dir: str | Path | None = None,
+    filter_progress_override: int | None = None,
 ) -> dict:
     if run_dir is not None and output is None:
         output = Path(run_dir) / "metrics" / "final_eval_proxy.json"
@@ -70,14 +71,26 @@ def evaluate_checkpoint(
         map_location = torch.device("cpu")
     checkpoint_data = torch.load(checkpoint, map_location=map_location)
     metadata = checkpoint_data.get("metadata", {}) if isinstance(checkpoint_data, dict) else {}
-    if cfg.planner.subgoal_filter.mode in {
+    curriculum_filter_modes = {
         "terrain_safe_candidate_curriculum",
         "terrain_safe_candidate_constrained_curriculum",
         "terrain_safe_candidate_soft_progress_curriculum",
         "terrain_safe_candidate_mutual_progress_curriculum",
         "terrain_safe_candidate_hold_progress_curriculum",
-    }:
-        cfg.planner.subgoal_filter.progress_timestep_override = int(metadata.get("timesteps", 0))
+    }
+    if filter_progress_override is not None and int(filter_progress_override) < 0:
+        raise ValueError("--filter-progress-override must be nonnegative.")
+    if filter_progress_override is not None and cfg.planner.subgoal_filter.mode not in curriculum_filter_modes:
+        raise ValueError(
+            "--filter-progress-override requires a curriculum subgoal-filter mode."
+        )
+    if cfg.planner.subgoal_filter.mode in curriculum_filter_modes:
+        checkpoint_progress = int(metadata.get("timesteps", 0))
+        cfg.planner.subgoal_filter.progress_timestep_override = (
+            checkpoint_progress
+            if filter_progress_override is None
+            else int(filter_progress_override)
+        )
         cfg.planner.subgoal_filter.deterministic_eval = True
 
     env = MultiRoverGatheringCore(cfg)
@@ -93,6 +106,29 @@ def evaluate_checkpoint(
     final_success_hold_count = env.success_hold_count.detach().clone()
     max_success_hold_count = env.success_hold_count.detach().clone()
     final_terrain_speed_scale = torch.ones(env.num_envs, device=env.device)
+    initial_gather_point_flatness = env.evaluate_current_gather_point_flatness(env.metrics)
+    initial_flatness_ok = (
+        initial_gather_point_flatness.is_flat
+        if env.cfg.gather_point.require_flat_for_success
+        else torch.ones_like(initial_gather_point_flatness.is_flat)
+    )
+    final_flatness_ok = initial_flatness_ok.detach().clone()
+    final_gather_point_is_flat = initial_gather_point_flatness.is_flat.detach().clone()
+    final_gather_point_height_range = (
+        initial_gather_point_flatness.height_range.detach().clone()
+    )
+    final_gather_point_max_slope = initial_gather_point_flatness.max_slope.detach().clone()
+    final_gather_point_mean_slope = initial_gather_point_flatness.mean_slope.detach().clone()
+    oracle_search_feasible = env.oracle_search_feasible.detach().clone()
+    oracle_search_objective = env.oracle_search_objective.detach().clone()
+    oracle_search_mean_distance = env.oracle_search_mean_distance.detach().clone()
+    oracle_search_max_distance = env.oracle_search_max_distance.detach().clone()
+    oracle_search_path_risk = env.oracle_search_path_risk.detach().clone()
+    oracle_search_path_height_change = (
+        env.oracle_search_path_height_change.detach().clone()
+    )
+    oracle_search_height_range = env.oracle_search_height_range.detach().clone()
+    oracle_search_max_slope = env.oracle_search_max_slope.detach().clone()
     active = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
     success_seen = torch.zeros_like(active)
     collision_seen = torch.zeros_like(active)
@@ -118,6 +154,8 @@ def evaluate_checkpoint(
     dispersion_ok_sum = torch.tensor(0.0, device=env.device)
     speed_ok_sum = torch.tensor(0.0, device=env.device)
     min_pairwise_ok_sum = torch.tensor(0.0, device=env.device)
+    flatness_ok_sum = torch.tensor(0.0, device=env.device)
+    gather_point_is_flat_sum = torch.tensor(0.0, device=env.device)
     instant_success_sum = torch.tensor(0.0, device=env.device)
     gate_sample_count = torch.tensor(0.0, device=env.device)
     path_risk_mean_sum = torch.tensor(0.0, device=env.device)
@@ -179,6 +217,12 @@ def evaluate_checkpoint(
     control_safety_predicted_nearest_sum = torch.tensor(0.0, device=env.device)
     control_safety_success_zone_sum = torch.tensor(0.0, device=env.device)
     control_safety_enabled = False
+    formation_center_correction_env_count = torch.tensor(0.0, device=env.device)
+    formation_center_correction_active_sum = torch.tensor(0.0, device=env.device)
+    formation_center_correction_offset_sum = torch.tensor(0.0, device=env.device)
+    formation_center_correction_offset_max = torch.tensor(0.0, device=env.device)
+    terminal_slot_capture_env_count = torch.tensor(0.0, device=env.device)
+    terminal_slot_capture_active_sum = torch.tensor(0.0, device=env.device)
 
     for step_id in range(steps):
         active_before = active.clone()
@@ -210,7 +254,40 @@ def evaluate_checkpoint(
         dispersion_ok_sum = dispersion_ok_sum + success_gates.dispersion_ok[active_before].float().sum()
         speed_ok_sum = speed_ok_sum + success_gates.speed_ok[active_before].float().sum()
         min_pairwise_ok_sum = min_pairwise_ok_sum + success_gates.min_pairwise_ok[active_before].float().sum()
+        flatness_ok_sum = (
+            flatness_ok_sum + success_gates.flatness_ok[active_before].float().sum()
+        )
         instant_success_sum = instant_success_sum + success_gates.instant_success[active_before].float().sum()
+        gather_point_flatness = step_output.info["gather_point_flatness"]
+        final_flatness_ok = torch.where(
+            active_before,
+            success_gates.flatness_ok,
+            final_flatness_ok,
+        )
+        final_gather_point_is_flat = torch.where(
+            active_before,
+            gather_point_flatness.is_flat,
+            final_gather_point_is_flat,
+        )
+        final_gather_point_height_range = torch.where(
+            active_before,
+            gather_point_flatness.height_range,
+            final_gather_point_height_range,
+        )
+        final_gather_point_max_slope = torch.where(
+            active_before,
+            gather_point_flatness.max_slope,
+            final_gather_point_max_slope,
+        )
+        final_gather_point_mean_slope = torch.where(
+            active_before,
+            gather_point_flatness.mean_slope,
+            final_gather_point_mean_slope,
+        )
+        gather_point_is_flat_sum = (
+            gather_point_is_flat_sum
+            + gather_point_flatness.is_flat[active_before].float().sum()
+        )
 
         first_done = done.done & active_before
         done_step = torch.where(first_done, torch.full_like(done_step, step_id + 1), done_step)
@@ -222,7 +299,7 @@ def evaluate_checkpoint(
             first_collision_step,
         )
         collision_seen = collision_seen | (done.collision & active_before)
-        timeout_seen = timeout_seen | (done.timeout & active_before)
+        timeout_seen = timeout_seen | (done.truncated & active_before)
         active_nearest = nearest[active_before]
         if active_nearest.numel() > 0:
             nearest_sum = nearest_sum + active_nearest.sum()
@@ -531,6 +608,37 @@ def evaluate_checkpoint(
                 control_safety_success_zone_sum = (
                     control_safety_success_zone_sum + active_success_zone.float().sum()
                 )
+        formation_center_correction = step_output.info.get("formation_center_correction")
+        if formation_center_correction is not None:
+            active_correction = formation_center_correction["active"][active_before]
+            active_offset = torch.linalg.norm(
+                formation_center_correction["offset_xy"][active_before],
+                dim=-1,
+            )
+            if active_correction.numel() > 0:
+                env_count = torch.tensor(float(active_correction.numel()), device=env.device)
+                formation_center_correction_env_count = (
+                    formation_center_correction_env_count + env_count
+                )
+                formation_center_correction_active_sum = (
+                    formation_center_correction_active_sum + active_correction.float().sum()
+                )
+                formation_center_correction_offset_sum = (
+                    formation_center_correction_offset_sum + active_offset.sum()
+                )
+                formation_center_correction_offset_max = torch.maximum(
+                    formation_center_correction_offset_max,
+                    active_offset.amax(),
+                )
+        terminal_slot_capture = step_output.info.get("terminal_slot_capture")
+        if terminal_slot_capture is not None:
+            active_capture = terminal_slot_capture["active"][active_before]
+            if active_capture.numel() > 0:
+                env_count = torch.tensor(float(active_capture.numel()), device=env.device)
+                terminal_slot_capture_env_count = terminal_slot_capture_env_count + env_count
+                terminal_slot_capture_active_sum = (
+                    terminal_slot_capture_active_sum + active_capture.float().sum()
+                )
         active = active & ~done.done
         if not active.any():
             break
@@ -569,6 +677,26 @@ def evaluate_checkpoint(
         )
         if timeout_seen.any() and env.cfg.success_thresholds.min_pairwise_distance > 0.0
         else None,
+        "final_flatness_ok_rate": float(
+            final_flatness_ok[timeout_seen].float().mean().detach().cpu()
+        )
+        if timeout_seen.any()
+        else None,
+        "final_gather_point_is_flat_rate": float(
+            final_gather_point_is_flat[timeout_seen].float().mean().detach().cpu()
+        )
+        if timeout_seen.any()
+        else None,
+        "final_gather_point_height_range_mean": float(
+            final_gather_point_height_range[timeout_seen].mean().detach().cpu()
+        )
+        if timeout_seen.any()
+        else None,
+        "final_gather_point_max_slope_mean": float(
+            final_gather_point_max_slope[timeout_seen].mean().detach().cpu()
+        )
+        if timeout_seen.any()
+        else None,
         "final_success_hold_count_mean": float(
             final_success_hold_count[timeout_seen].float().mean().detach().cpu()
         )
@@ -587,11 +715,12 @@ def evaluate_checkpoint(
         max_success_hold_count.clamp(max=env.cfg.success_thresholds.hold_steps).detach().cpu(),
         minlength=env.cfg.success_thresholds.hold_steps + 1,
     )
-    final_safe = (
+    final_pairwise_safe = (
         final_nearest >= float(env.cfg.success_thresholds.min_pairwise_distance)
         if env.cfg.success_thresholds.min_pairwise_distance > 0.0
         else torch.ones_like(success_seen, dtype=torch.bool)
     )
+    final_safe = final_pairwise_safe & final_flatness_ok
     result = {
         "status": "ok",
         "backend": backend,
@@ -601,6 +730,37 @@ def evaluate_checkpoint(
         "device": str(env.device),
         "num_envs": env.num_envs,
         "steps": steps,
+        "filter_progress_timestep": int(
+            env.cfg.planner.subgoal_filter.progress_timestep_override
+        ),
+        "filter_progress_override": filter_progress_override,
+        "gather_point_flatness": {
+            "require_flat_for_success": bool(
+                env.cfg.gather_point.require_flat_for_success
+            ),
+            "radius": float(env.cfg.gather_point.flatness_radius),
+            "rings": int(env.cfg.gather_point.flatness_rings),
+            "samples_per_ring": int(env.cfg.gather_point.flatness_samples_per_ring),
+            "max_height_range": float(env.cfg.gather_point.max_height_range),
+            "max_slope": float(env.cfg.gather_point.max_slope),
+        },
+        "oracle_search": {
+            "method": env.cfg.gather_point.search_method,
+            "feasible_rate": float(
+                oracle_search_feasible.float().mean().detach().cpu()
+            ),
+            "objective_mean": float(oracle_search_objective.mean().detach().cpu()),
+            "mean_distance": float(oracle_search_mean_distance.mean().detach().cpu()),
+            "max_distance": float(oracle_search_max_distance.mean().detach().cpu()),
+            "path_risk_mean": float(oracle_search_path_risk.mean().detach().cpu()),
+            "path_height_change_mean": float(
+                oracle_search_path_height_change.mean().detach().cpu()
+            ),
+            "height_range_mean": float(
+                oracle_search_height_range.mean().detach().cpu()
+            ),
+            "max_slope_mean": float(oracle_search_max_slope.mean().detach().cpu()),
+        },
         "initial_dmax": float(initial_dmax_mean.detach().cpu()),
         "final_dmax": float(final_dmax_mean.detach().cpu()),
         "dmax_reduction_ratio": float((final_dmax_mean / initial_dmax_mean.clamp_min(1.0e-6)).detach().cpu()),
@@ -608,6 +768,19 @@ def evaluate_checkpoint(
         "final_dispersion": float(final_dispersion.mean().detach().cpu()),
         "final_mean_speed": float(final_mean_speed.mean().detach().cpu()),
         "final_nearest_neighbor_distance": float(final_nearest.mean().detach().cpu()),
+        "final_flatness_ok_rate": float(final_flatness_ok.float().mean().detach().cpu()),
+        "final_gather_point_is_flat_rate": float(
+            final_gather_point_is_flat.float().mean().detach().cpu()
+        ),
+        "final_gather_point_height_range_mean": float(
+            final_gather_point_height_range.mean().detach().cpu()
+        ),
+        "final_gather_point_max_slope_mean": float(
+            final_gather_point_max_slope.mean().detach().cpu()
+        ),
+        "final_gather_point_mean_slope_mean": float(
+            final_gather_point_mean_slope.mean().detach().cpu()
+        ),
         "mean_reward": float((reward_sum / reward_count.clamp_min(1.0)).detach().cpu()),
         "success_rate": float(success_seen.float().mean().detach().cpu()),
         "safe_success_rate": float((success_seen & final_safe).float().mean().detach().cpu()),
@@ -640,6 +813,12 @@ def evaluate_checkpoint(
         "dispersion_ok_rate": float((dispersion_ok_sum / gate_sample_count.clamp_min(1.0)).detach().cpu()),
         "speed_ok_rate": float((speed_ok_sum / gate_sample_count.clamp_min(1.0)).detach().cpu()),
         "min_pairwise_ok_rate": float((min_pairwise_ok_sum / gate_sample_count.clamp_min(1.0)).detach().cpu()),
+        "flatness_ok_rate": float(
+            (flatness_ok_sum / gate_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
+        "gather_point_is_flat_rate": float(
+            (gather_point_is_flat_sum / gate_sample_count.clamp_min(1.0)).detach().cpu()
+        ),
         "instant_success_rate": float((instant_success_sum / gate_sample_count.clamp_min(1.0)).detach().cpu()),
         "path_terrain_risk_mean": float((path_risk_mean_sum / path_risk_count.clamp_min(1.0)).detach().cpu()),
         "path_terrain_risk_max": float(path_risk_max.detach().cpu()),
@@ -864,6 +1043,30 @@ def evaluate_checkpoint(
             .detach()
             .cpu()
         ),
+        "formation_center_correction_active_fraction": float(
+            (
+                formation_center_correction_active_sum
+                / formation_center_correction_env_count.clamp_min(1.0)
+            )
+            .detach()
+            .cpu()
+        ),
+        "formation_center_correction_offset_mean": float(
+            (
+                formation_center_correction_offset_sum
+                / formation_center_correction_env_count.clamp_min(1.0)
+            )
+            .detach()
+            .cpu()
+        ),
+        "formation_center_correction_offset_max": float(
+            formation_center_correction_offset_max.detach().cpu()
+        ),
+        "terminal_slot_capture_active_fraction": float(
+            (terminal_slot_capture_active_sum / terminal_slot_capture_env_count.clamp_min(1.0))
+            .detach()
+            .cpu()
+        ),
         "max_success_hold_count_mean": float(max_success_hold_count.float().mean().detach().cpu()),
         "final_success_hold_count_mean": float(final_success_hold_count.float().mean().detach().cpu()),
         "hold_count_histogram": {
@@ -889,6 +1092,12 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--output", default=None)
     parser.add_argument("--run-dir", default=None)
+    parser.add_argument(
+        "--filter-progress-override",
+        type=int,
+        default=None,
+        help="Override the subgoal-filter curriculum step for this evaluation only.",
+    )
     args = parser.parse_args()
     result = evaluate_checkpoint(
         args.config,
@@ -899,6 +1108,7 @@ def main() -> None:
         seed=args.seed,
         output=args.output,
         run_dir=args.run_dir,
+        filter_progress_override=args.filter_progress_override,
     )
     print(json.dumps(result, indent=2))
 

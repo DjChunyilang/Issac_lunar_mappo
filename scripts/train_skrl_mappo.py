@@ -24,14 +24,12 @@ from _skrl_metadata import (
     DEFAULT_TRAINING_SEMANTICS,
     resolve_checkpoint_name,
     resolve_training_semantics,
+    validate_checkpoint_compatibility,
 )
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringSKRLEnv
 from lunar_rover_tasks.tasks.multi_rover_gathering.communication import compute_visibility_mask
 from lunar_rover_tasks.tasks.multi_rover_gathering.metrics import compute_team_metrics
-from lunar_rover_tasks.tasks.multi_rover_gathering.oracle import (
-    compute_geometric_median,
-    compute_mean_oracle_distance,
-)
+from lunar_rover_tasks.tasks.multi_rover_gathering.oracle import compute_mean_oracle_distance
 from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import query_terrain_features
 from lunar_rover_tasks.tasks.multi_rover_gathering.termination import compute_success_gates
 
@@ -46,7 +44,13 @@ from shared_policy_mappo import SharedPolicyMAPPO
 
 TRAINING_SEMANTICS = DEFAULT_TRAINING_SEMANTICS
 
-ACTOR_ARCHITECTURES = {"mlp_v1", "branched_v1", "branched_v2"}
+ACTOR_ARCHITECTURES = {
+    "mlp_v1",
+    "branched_v1",
+    "branched_v2",
+    "branched_v3",
+    "branched_v4",
+}
 CRITIC_ARCHITECTURES = {"mlp_v1", "structured_v1", "structured_v2"}
 ACTOR_OBSERVATION_SLICES_V3 = {
     "ego": (0, 10),
@@ -57,6 +61,14 @@ ACTOR_OBSERVATION_SLICES_V3 = {
 ACTOR_OBSERVATION_SLICES_V4 = {
     **ACTOR_OBSERVATION_SLICES_V3,
     "terminal_gate": (86, 91),
+}
+ACTOR_OBSERVATION_SLICES_V5 = {
+    **ACTOR_OBSERVATION_SLICES_V3,
+    "gather_site_goal": (86, 89),
+}
+ACTOR_OBSERVATION_SLICES_V6 = {
+    **ACTOR_OBSERVATION_SLICES_V3,
+    "gather_site_and_slot_goal": (86, 92),
 }
 ACTOR_OBSERVATION_SLICES = ACTOR_OBSERVATION_SLICES_V3
 CRITIC_STATE_SLICES_V3 = {
@@ -79,6 +91,10 @@ def _actor_slices_for_dim(num_observations: int) -> dict[str, tuple[int, int]]:
         return ACTOR_OBSERVATION_SLICES_V3
     if int(num_observations) == 91:
         return ACTOR_OBSERVATION_SLICES_V4
+    if int(num_observations) == 89:
+        return ACTOR_OBSERVATION_SLICES_V5
+    if int(num_observations) == 92:
+        return ACTOR_OBSERVATION_SLICES_V6
     raise ValueError(f"Unsupported actor observation dim: {num_observations}.")
 
 
@@ -164,7 +180,7 @@ class SKRLPolicy(GaussianMixin, Model):
                 nn.ELU(),
                 nn.Linear(128, self.num_actions),
             )
-        else:
+        elif self.architecture == "branched_v2":
             if self.num_observations != 91:
                 raise ValueError(
                     "branched_v2 actor expects the ego_v4 91-dim terminal-gate observation."
@@ -174,6 +190,43 @@ class SKRLPolicy(GaussianMixin, Model):
             self.terrain_encoder = nn.Sequential(nn.Linear(50, 64), nn.ELU())
             self.aggregation_encoder = nn.Sequential(nn.Linear(5, 16), nn.ELU())
             self.terminal_gate_encoder = nn.Sequential(nn.Linear(5, 16), nn.ELU())
+            self.trunk = nn.Sequential(
+                nn.Linear(176, 128),
+                nn.ELU(),
+                nn.Linear(128, 128),
+                nn.ELU(),
+                nn.Linear(128, self.num_actions),
+            )
+        elif self.architecture == "branched_v3":
+            if self.num_observations != 89:
+                raise ValueError(
+                    "branched_v3 actor expects the 89-dim single-goal observation."
+                )
+            self.ego_encoder = nn.Sequential(nn.Linear(10, 32), nn.ELU())
+            self.neighbor_encoder = nn.Sequential(nn.Linear(21, 48), nn.ELU())
+            self.terrain_encoder = nn.Sequential(nn.Linear(50, 64), nn.ELU())
+            self.aggregation_encoder = nn.Sequential(nn.Linear(5, 16), nn.ELU())
+            self.gather_site_goal_encoder = nn.Sequential(nn.Linear(3, 16), nn.ELU())
+            self.trunk = nn.Sequential(
+                nn.Linear(176, 128),
+                nn.ELU(),
+                nn.Linear(128, 128),
+                nn.ELU(),
+                nn.Linear(128, self.num_actions),
+            )
+        else:
+            if self.num_observations != 92:
+                raise ValueError(
+                    "branched_v4 actor expects the ego_v7 92-dim site-and-slot observation."
+                )
+            self.ego_encoder = nn.Sequential(nn.Linear(10, 32), nn.ELU())
+            self.neighbor_encoder = nn.Sequential(nn.Linear(21, 48), nn.ELU())
+            self.terrain_encoder = nn.Sequential(nn.Linear(50, 64), nn.ELU())
+            self.aggregation_encoder = nn.Sequential(nn.Linear(5, 16), nn.ELU())
+            self.gather_site_and_slot_goal_encoder = nn.Sequential(
+                nn.Linear(6, 16),
+                nn.ELU(),
+            )
             self.trunk = nn.Sequential(
                 nn.Linear(176, 128),
                 nn.ELU(),
@@ -208,6 +261,18 @@ class SKRLPolicy(GaussianMixin, Model):
                 encoded_parts.append(
                     self.terminal_gate_encoder(
                         observations[..., terminal_start:terminal_end]
+                    )
+                )
+            elif self.architecture == "branched_v3":
+                goal_start, goal_end = slices["gather_site_goal"]
+                encoded_parts.append(
+                    self.gather_site_goal_encoder(observations[..., goal_start:goal_end])
+                )
+            elif self.architecture == "branched_v4":
+                goal_start, goal_end = slices["gather_site_and_slot_goal"]
+                encoded_parts.append(
+                    self.gather_site_and_slot_goal_encoder(
+                        observations[..., goal_start:goal_end]
                     )
                 )
             encoded = torch.cat(
@@ -340,13 +405,20 @@ def checkpoint_teacher_metadata(
     teacher_mode: str | None,
     teacher_stop_radius: float | None,
     teacher_max_rho: float | None,
+    teacher_center_step: float | None = None,
 ) -> dict:
     enabled = bc_updates > 0
-    return {
+    metadata = {
         "teacher_mode": teacher_mode if enabled else None,
         "teacher_stop_radius": teacher_stop_radius if enabled else None,
         "teacher_max_rho": teacher_max_rho if enabled else None,
     }
+    # Preserve the old pure-RL checkpoint metadata shape.  The extra field is
+    # meaningful only for BC records that actually configure the translating
+    # ring teacher.
+    if enabled and teacher_center_step is not None:
+        metadata["teacher_center_step"] = teacher_center_step
+    return metadata
 
 
 def _nearest_distances(positions: torch.Tensor) -> torch.Tensor:
@@ -364,10 +436,94 @@ def scripted_gather_action(
     max_rho: float | None = None,
     visible_local: bool = False,
     terrain_scale: bool = False,
+    teacher_mode: str = "global_centroid",
+    teacher_center_step: float = 0.65,
 ) -> torch.Tensor:
-    """Return a safety-aware local subgoal action for BC warm-up."""
+    """Return a safety-aware local subgoal action for BC warm-up.
+
+    ``oracle_ring`` is only meaningful for an execution-goal configuration: it
+    assigns each rover a radial slot around the terrain-aware planned point.
+    ``oracle_translating_ring`` first translates the current formation center
+    toward that point while shrinking it into the same ring. ``oracle_slots``
+    instead follows the fixed, minimum-travel assignment of symmetric slots
+    planned by the environment. The ring radius preserves a nonzero pairwise
+    separation instead of training every rover to collide at the same point.
+    """
+    supported_modes = {
+        "global_centroid",
+        "visible_local_centroid",
+        "oracle_ring",
+        "oracle_translating_ring",
+        "oracle_slots",
+    }
+    if teacher_mode not in supported_modes:
+        raise ValueError(
+            "teacher_mode must be one of: "
+            f"{', '.join(sorted(supported_modes))}."
+        )
     positions_xy = env.positions[..., :2]
-    if visible_local:
+    if teacher_mode == "oracle_slots":
+        if env.cfg.observation.schema_version not in {
+            "ego_v6_gather_slot_goal",
+            "ego_v7_gather_site_and_slot_goal",
+        }:
+            raise ValueError(
+                "teacher_mode=oracle_slots requires "
+                "a gather-slot execution schema."
+            )
+        target_error = env.gather_slot_points[..., :2] - positions_xy
+        world_delta = torch.where(
+            torch.linalg.vector_norm(target_error, dim=-1, keepdim=True) > 1.0e-3,
+            target_error,
+            torch.zeros_like(target_error),
+        )
+    elif teacher_mode in {"oracle_ring", "oracle_translating_ring"}:
+        if not env.cfg.task.explicit_goal_in_execution:
+            raise ValueError(
+                "teacher_mode=oracle_ring requires task.explicit_goal_in_execution=true."
+            )
+        if teacher_mode == "oracle_ring":
+            anchor_xy = env.oracle_point[:, None, :2].expand_as(positions_xy)
+        else:
+            formation_center = positions_xy.mean(dim=1, keepdim=True)
+            oracle_delta = env.oracle_point[:, None, :2] - formation_center
+            oracle_distance = torch.linalg.vector_norm(
+                oracle_delta,
+                dim=-1,
+                keepdim=True,
+            )
+            if teacher_center_step <= 0.0:
+                raise ValueError("teacher_center_step must be positive.")
+            center_shift = oracle_delta * torch.clamp(
+                float(teacher_center_step) / oracle_distance.clamp_min(1.0e-6),
+                max=1.0,
+            )
+            anchor_xy = (formation_center + center_shift).expand_as(positions_xy)
+        rel = positions_xy - anchor_xy
+        dist = torch.linalg.vector_norm(rel, dim=-1, keepdim=True)
+        fallback_angles = torch.linspace(
+            0.0,
+            2.0 * torch.pi,
+            env.n_agents + 1,
+            device=env.device,
+        )[:-1]
+        fallback = torch.stack(
+            (torch.cos(fallback_angles), torch.sin(fallback_angles)),
+            dim=-1,
+        )
+        unit = torch.where(
+            dist > 1.0e-6,
+            rel / dist.clamp_min(1.0e-6),
+            fallback[None, :, :],
+        )
+        target_xy = anchor_xy + unit * stop_radius
+        target_error = target_xy - positions_xy
+        world_delta = torch.where(
+            torch.linalg.vector_norm(target_error, dim=-1, keepdim=True) > 1.0e-3,
+            target_error,
+            torch.zeros_like(target_error),
+        )
+    elif visible_local:
         visible = compute_visibility_mask(
             env.positions,
             float(env.cfg.observation.communication_radius),
@@ -380,26 +536,34 @@ def scripted_gather_action(
     else:
         centroid_xy = positions_xy.mean(dim=1, keepdim=True).expand_as(positions_xy)
         has_neighbor = torch.ones_like(positions_xy[..., :1], dtype=torch.bool)
-    rel = positions_xy - centroid_xy
-    dist = torch.linalg.vector_norm(rel, dim=-1, keepdim=True)
-    fallback_angles = torch.linspace(
-        0.0,
-        2.0 * torch.pi,
-        env.n_agents + 1,
-        device=env.device,
-    )[:-1]
-    fallback = torch.stack((torch.cos(fallback_angles), torch.sin(fallback_angles)), dim=-1)
-    unit = torch.where(
-        dist > 1.0e-6,
-        rel / dist.clamp_min(1.0e-6),
-        fallback[None, :, :],
-    )
-    target_xy = centroid_xy + unit * stop_radius
-    world_delta = torch.where(
-        (dist > stop_radius) & has_neighbor,
-        target_xy - positions_xy,
-        torch.zeros_like(positions_xy),
-    )
+    if teacher_mode not in {
+        "oracle_ring",
+        "oracle_translating_ring",
+        "oracle_slots",
+    }:
+        rel = positions_xy - centroid_xy
+        dist = torch.linalg.vector_norm(rel, dim=-1, keepdim=True)
+        fallback_angles = torch.linspace(
+            0.0,
+            2.0 * torch.pi,
+            env.n_agents + 1,
+            device=env.device,
+        )[:-1]
+        fallback = torch.stack(
+            (torch.cos(fallback_angles), torch.sin(fallback_angles)),
+            dim=-1,
+        )
+        unit = torch.where(
+            dist > 1.0e-6,
+            rel / dist.clamp_min(1.0e-6),
+            fallback[None, :, :],
+        )
+        target_xy = centroid_xy + unit * stop_radius
+        world_delta = torch.where(
+            (dist > stop_radius) & has_neighbor,
+            target_xy - positions_xy,
+            torch.zeros_like(positions_xy),
+        )
     if slow_distance > 0.0:
         nearest = _nearest_distances(env.positions).unsqueeze(-1)
         scale = torch.clamp(
@@ -528,10 +692,7 @@ def _randomize_bc_state(
     env.previous_physical_action.zero_()
     env.step_count.zero_()
     env.success_hold_count.zero_()
-    env.oracle_point.copy_(compute_geometric_median(env.positions))
-    env.prev_mean_oracle_distance.copy_(
-        compute_mean_oracle_distance(env.positions, env.oracle_point)
-    )
+    env.refresh_oracle_point()
 
 
 def run_skrl_behavior_cloning(
@@ -546,12 +707,25 @@ def run_skrl_behavior_cloning(
     teacher_max_rho: float | None = None,
     teacher_mode: str = "global_centroid",
     teacher_terrain_scale: bool = False,
+    teacher_center_step: float = 0.65,
     bc_yaw_noise_degrees: float | None = None,
     bc_min_nearest_distance: float | None = None,
 ) -> list[dict[str, float | int | str]]:
     """Warm-start the shared SKRL actor; MAPPO itself remains teacher-loss free."""
     if updates <= 0:
         return []
+    if teacher_mode not in {
+        "global_centroid",
+        "visible_local_centroid",
+        "oracle_ring",
+        "oracle_translating_ring",
+        "oracle_slots",
+    }:
+        raise ValueError(
+            "teacher_mode must be one of: global_centroid, "
+            "visible_local_centroid, oracle_ring, oracle_translating_ring, "
+            "oracle_slots."
+        )
     bc_cfg = copy.deepcopy(cfg)
     bc_cfg.simulation.num_envs = max(
         bc_cfg.simulation.num_envs,
@@ -583,6 +757,8 @@ def run_skrl_behavior_cloning(
                 max_rho=teacher_max_rho,
                 visible_local=teacher_mode == "visible_local_centroid",
                 terrain_scale=teacher_terrain_scale,
+                teacher_mode=teacher_mode,
+                teacher_center_step=teacher_center_step,
             )
             observations.append(actor_obs.reshape(-1, actor_obs.shape[-1]).detach())
             targets.append(target.reshape(-1, target.shape[-1]).detach())
@@ -1060,6 +1236,32 @@ def control_safety_metadata(cfg) -> dict[str, Any]:
             control_cfg.success_zone_dispersion_multiplier
         ),
         "success_zone_linear_scale": float(control_cfg.success_zone_linear_scale),
+        "formation_center_correction_enabled": bool(
+            control_cfg.formation_center_correction_enabled
+        ),
+        "formation_center_activation_dmax_multiplier": float(
+            control_cfg.formation_center_activation_dmax_multiplier
+        ),
+        "formation_center_activation_dispersion_multiplier": float(
+            control_cfg.formation_center_activation_dispersion_multiplier
+        ),
+        "formation_center_correction_max_offset": float(
+            control_cfg.formation_center_correction_max_offset
+        ),
+        "formation_center_correction_gain": float(
+            control_cfg.formation_center_correction_gain
+        ),
+        "formation_center_correction_require_flatness_failure": bool(
+            control_cfg.formation_center_correction_require_flatness_failure
+        ),
+        "terminal_slot_capture_enabled": bool(control_cfg.terminal_slot_capture_enabled),
+        "terminal_slot_capture_dmax_multiplier": float(
+            control_cfg.terminal_slot_capture_dmax_multiplier
+        ),
+        "terminal_slot_capture_dispersion_multiplier": float(
+            control_cfg.terminal_slot_capture_dispersion_multiplier
+        ),
+        "terminal_slot_capture_blend": float(control_cfg.terminal_slot_capture_blend),
     }
 
 
@@ -1260,6 +1462,7 @@ REWARD_COMPONENTS = (
     "energy",
     "safety",
     "terrain",
+    "flatness",
     "motion",
     "consistency",
     "success_hold",
@@ -1325,7 +1528,7 @@ def _empty_done_counts() -> dict[str, int]:
 
 def _add_done_counts(counts: dict[str, int], done) -> None:
     success = done.success.detach().bool()
-    timeout = done.timeout.detach().bool()
+    timeout = done.truncated.detach().bool()
     collision = done.collision.detach().bool()
     out_of_bounds = done.out_of_bounds.detach().bool()
     known = success | timeout | collision | out_of_bounds
@@ -1542,6 +1745,30 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
             }
             telemetry_state["path_terrain"] = path_metrics
             _accumulate_numeric_metrics(telemetry_state, "path_terrain", path_metrics)
+        centroid_flatness = info.get("centroid_flatness_reward")
+        if centroid_flatness is not None:
+            centroid_flatness_values = (
+                torch.stack(
+                    (
+                        centroid_flatness["cost"].detach().float().mean(),
+                        centroid_flatness["progress"].detach().float().mean(),
+                        centroid_flatness["activation"].detach().float().mean(),
+                    )
+                )
+                .cpu()
+                .tolist()
+            )
+            centroid_flatness_metrics = {
+                "centroid_flatness_cost_mean": float(centroid_flatness_values[0]),
+                "centroid_flatness_progress_mean": float(centroid_flatness_values[1]),
+                "centroid_flatness_activation_mean": float(centroid_flatness_values[2]),
+            }
+            telemetry_state["centroid_flatness"] = centroid_flatness_metrics
+            _accumulate_numeric_metrics(
+                telemetry_state,
+                "centroid_flatness",
+                centroid_flatness_metrics,
+            )
         action_filter = info.get("action_filter")
         if action_filter is not None:
             filter_metrics = {
@@ -1760,6 +1987,38 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
             }
             telemetry_state["control_safety"] = safety_metrics
             _accumulate_numeric_metrics(telemetry_state, "control_safety", safety_metrics)
+        formation_center_correction = info.get("formation_center_correction")
+        if formation_center_correction is not None:
+            offset_norm = torch.linalg.norm(
+                formation_center_correction["offset_xy"].detach().float(),
+                dim=-1,
+            )
+            correction_metrics = {
+                "formation_center_correction_active_fraction": float(
+                    formation_center_correction["active"].detach().float().mean().cpu()
+                ),
+                "formation_center_correction_offset_mean": float(offset_norm.mean().cpu()),
+                "formation_center_correction_offset_max": float(offset_norm.amax().cpu()),
+            }
+            telemetry_state["formation_center_correction"] = correction_metrics
+            _accumulate_numeric_metrics(
+                telemetry_state,
+                "formation_center_correction",
+                correction_metrics,
+            )
+        terminal_slot_capture = info.get("terminal_slot_capture")
+        if terminal_slot_capture is not None:
+            capture_metrics = {
+                "terminal_slot_capture_active_fraction": float(
+                    terminal_slot_capture["active"].detach().float().mean().cpu()
+                ),
+            }
+            telemetry_state["terminal_slot_capture"] = capture_metrics
+            _accumulate_numeric_metrics(
+                telemetry_state,
+                "terminal_slot_capture",
+                capture_metrics,
+            )
         kinematics = info.get("kinematics")
         if kinematics is not None:
             turning_radius = kinematics["turning_radius"].detach().float()
@@ -1815,7 +2074,18 @@ def build_training_telemetry(
 ) -> dict:
     metrics = compute_team_metrics(env.core.positions, env.core.velocities_xy)
     mean_oracle_distance = compute_mean_oracle_distance(env.core.positions, env.core.oracle_point)
-    success_gates = compute_success_gates(metrics, env.core.velocities_xy, env.cfg.success_thresholds)
+    gather_point_flatness = env.core.evaluate_current_gather_point_flatness(metrics)
+    flatness_ok = (
+        gather_point_flatness.is_flat
+        if env.cfg.gather_point.require_flat_for_success
+        else torch.ones_like(gather_point_flatness.is_flat)
+    )
+    success_gates = compute_success_gates(
+        metrics,
+        env.core.velocities_xy,
+        env.cfg.success_thresholds,
+        flatness_ok=flatness_ok,
+    )
     pairwise = metrics.mean_pairwise_distance
     oracle = mean_oracle_distance
     threshold = float(env.cfg.success_thresholds.dmax)
@@ -1836,6 +2106,19 @@ def build_training_telemetry(
         "success_rate": float(success_gates.instant_success.float().mean().detach().cpu()),
         "safe_success_rate": float(success_gates.instant_success.float().mean().detach().cpu()),
         "min_pairwise_ok_rate": float(success_gates.min_pairwise_ok.float().mean().detach().cpu()),
+        "flatness_ok_rate": float(success_gates.flatness_ok.float().mean().detach().cpu()),
+        "gather_point_height_range_mean": float(
+            gather_point_flatness.height_range.mean().detach().cpu()
+        ),
+        "gather_point_max_slope_mean": float(
+            gather_point_flatness.max_slope.mean().detach().cpu()
+        ),
+        "oracle_search_feasible_rate": float(
+            env.core.oracle_search_feasible.float().mean().detach().cpu()
+        ),
+        "oracle_search_objective_mean": float(
+            env.core.oracle_search_objective.mean().detach().cpu()
+        ),
         "nan_flag": False,
         "checkpoint_path": str(checkpoint_path),
         "training_semantics": training_semantics,
@@ -1861,6 +2144,14 @@ def build_training_telemetry(
             "hold_steps": int(env.cfg.success_thresholds.hold_steps),
             "min_pairwise_distance": float(env.cfg.success_thresholds.min_pairwise_distance),
         },
+        "gather_point_flatness": {
+            "require_flat_for_success": bool(
+                env.cfg.gather_point.require_flat_for_success
+            ),
+            "radius": float(env.cfg.gather_point.flatness_radius),
+            "max_height_range": float(env.cfg.gather_point.max_height_range),
+            "max_slope": float(env.cfg.gather_point.max_slope),
+        },
         "peak_cuda_memory_mb": peak_cuda_memory_mb,
     }
     reward_metrics = dict(telemetry_state.get("reward_breakdown", _reward_breakdown({}, env.cfg)))
@@ -1870,17 +2161,36 @@ def build_training_telemetry(
     action_metrics.update(telemetry_state.get("action_window", {}))
     path_metrics = dict(telemetry_state.get("path_terrain", {}))
     path_metrics.update(telemetry_state.get("path_terrain_window", {}))
+    centroid_flatness_metrics = dict(
+        telemetry_state.get("centroid_flatness", {})
+    )
+    centroid_flatness_metrics.update(
+        telemetry_state.get("centroid_flatness_window", {})
+    )
     filter_metrics = dict(telemetry_state.get("action_filter", {}))
     filter_metrics.update(telemetry_state.get("action_filter_window", {}))
     control_safety_metrics = dict(telemetry_state.get("control_safety", {}))
     control_safety_metrics.update(telemetry_state.get("control_safety_window", {}))
+    formation_center_correction_metrics = dict(
+        telemetry_state.get("formation_center_correction", {})
+    )
+    formation_center_correction_metrics.update(
+        telemetry_state.get("formation_center_correction_window", {})
+    )
+    terminal_slot_capture_metrics = dict(telemetry_state.get("terminal_slot_capture", {}))
+    terminal_slot_capture_metrics.update(
+        telemetry_state.get("terminal_slot_capture_window", {})
+    )
     kinematics_metrics = dict(telemetry_state.get("kinematics", {}))
     kinematics_metrics.update(telemetry_state.get("kinematics_window", {}))
     telemetry.update(reward_metrics)
     telemetry.update(action_metrics)
     telemetry.update(path_metrics)
+    telemetry.update(centroid_flatness_metrics)
     telemetry.update(filter_metrics)
     telemetry.update(control_safety_metrics)
+    telemetry.update(formation_center_correction_metrics)
+    telemetry.update(terminal_slot_capture_metrics)
     telemetry.update(kinematics_metrics)
     telemetry.update(telemetry_state.get("done_counts", _empty_done_counts()))
     telemetry.update(_stats("final_pairwise_distance", pairwise))
@@ -2121,6 +2431,64 @@ def skrl_mappo_checkpoint_payload(
     return payload
 
 
+def initialize_skrl_mappo_models_from_checkpoint(
+    checkpoint_path: str | Path,
+    models: dict[str, dict[str, Model]],
+    possible_agents: list[str],
+    cfg,
+    *,
+    actor_architecture: str,
+    critic_architecture: str,
+    device: torch.device,
+) -> dict[str, Any]:
+    """Load compatible policy/value weights while intentionally resetting optimizers.
+
+    This is a warm-start, not a resume: rollout memories, optimizer moments and
+    scheduler state are deliberately rebuilt for the active environment/control
+    configuration.  Shared target modules are loaded only once from rover_0.
+    """
+    resolved = Path(checkpoint_path)
+    if not resolved.is_absolute():
+        resolved = ROOT / resolved
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Initial checkpoint does not exist: {resolved}")
+    checkpoint = torch.load(resolved, map_location=device)
+    if not isinstance(checkpoint, dict):
+        raise ValueError("Initial checkpoint payload must be a mapping.")
+    metadata = validate_checkpoint_compatibility(
+        checkpoint,
+        cfg,
+        expected_actor_architecture=actor_architecture,
+        expected_critic_architecture=critic_architecture,
+    )
+    missing_agents = [agent_id for agent_id in possible_agents if agent_id not in checkpoint]
+    if missing_agents:
+        raise KeyError(
+            "Initial checkpoint is missing SKRL agent entries: "
+            + ", ".join(missing_agents)
+        )
+
+    loaded_modules: set[int] = set()
+    for agent_id in possible_agents:
+        source = checkpoint[agent_id]
+        if not isinstance(source, dict) or "policy" not in source or "value" not in source:
+            raise KeyError(
+                f"Initial checkpoint entry {agent_id!r} must contain policy and value state dicts."
+            )
+        for model_name in ("policy", "value"):
+            target = models[agent_id][model_name]
+            if id(target) in loaded_modules:
+                continue
+            target.load_state_dict(source[model_name], strict=True)
+            loaded_modules.add(id(target))
+
+    return {
+        "init_checkpoint": str(resolved),
+        "init_checkpoint_source_timestep": int(metadata.get("timesteps", 0)),
+        "init_checkpoint_source_training_semantics": metadata.get("training_semantics"),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/experiment/exp_001_minimal.yaml")
@@ -2137,6 +2505,14 @@ def main() -> None:
     parser.add_argument("--rollout-steps", type=int, default=None)
     parser.add_argument("--bc-updates", type=int, default=None)
     parser.add_argument("--bc-batch-size", type=int, default=None)
+    parser.add_argument(
+        "--init-checkpoint",
+        default=None,
+        help=(
+            "Compatible SKRL checkpoint whose policy/value weights initialize this run; "
+            "optimizer and rollout state are reset."
+        ),
+    )
     parser.add_argument(
         "--selection-gate",
         choices=(
@@ -2172,6 +2548,19 @@ def main() -> None:
         algo["bc_updates"] = args.bc_updates
     if args.bc_batch_size is not None:
         algo["bc_batch_size"] = args.bc_batch_size
+    init_checkpoint_value = args.init_checkpoint or algo.get("init_checkpoint")
+    init_checkpoint_path: Path | None = None
+    if init_checkpoint_value is not None and str(init_checkpoint_value).strip():
+        init_checkpoint_path = Path(str(init_checkpoint_value))
+        if not init_checkpoint_path.is_absolute():
+            init_checkpoint_path = ROOT / init_checkpoint_path
+        if not init_checkpoint_path.is_file():
+            raise SystemExit(f"--init-checkpoint does not exist: {init_checkpoint_path}")
+        algo["init_checkpoint"] = str(init_checkpoint_path)
+        # BC teacher updates would overwrite the supplied policy before PPO.
+        # An explicit --bc-updates remains available for intentional re-BC.
+        if args.bc_updates is None:
+            algo["bc_updates"] = 0
     torch.manual_seed(cfg.seed)
     requested_device = torch.device(cfg.simulation.device)
     if requested_device.type == "cuda" and not torch.cuda.is_available():
@@ -2264,6 +2653,17 @@ def main() -> None:
         for parameter in policy.parameters()
     ]
     random_initial_terrain_weight = terrain_input_weight_snapshot(policy)
+    init_checkpoint_metadata: dict[str, Any] = {}
+    if init_checkpoint_path is not None:
+        init_checkpoint_metadata = initialize_skrl_mappo_models_from_checkpoint(
+            init_checkpoint_path,
+            models,
+            possible_agents,
+            cfg,
+            actor_architecture=actor_architecture,
+            critic_architecture=critic_architecture,
+            device=env.device,
+        )
     bc_updates = int(algo.get("bc_updates", algo.get("bc_steps", 0)))
     bc_batch_size = int(algo.get("bc_batch_size", 8192))
     bc_learning_rate = float(algo.get("bc_learning_rate", 1.0e-3))
@@ -2271,6 +2671,7 @@ def main() -> None:
     teacher_stop_radius: float | None = None
     teacher_slow_distance: float | None = None
     teacher_max_rho: float | None = None
+    teacher_center_step: float | None = None
     if bc_updates > 0:
         teacher_mode = str(algo.get("teacher_mode", "global_centroid"))
         teacher_stop_radius = float(algo.get("teacher_stop_radius", 0.45))
@@ -2280,6 +2681,7 @@ def main() -> None:
             if algo.get("teacher_max_rho") is not None
             else None
         )
+        teacher_center_step = float(algo.get("teacher_center_step", 0.65))
         bc_records = run_skrl_behavior_cloning(
             policy,
             cfg,
@@ -2294,6 +2696,7 @@ def main() -> None:
                 algo.get("teacher_terrain_scale"),
                 default=False,
             ),
+            teacher_center_step=teacher_center_step,
             bc_yaw_noise_degrees=(
                 float(algo["bc_yaw_noise_degrees"])
                 if algo.get("bc_yaw_noise_degrees") is not None
@@ -2381,11 +2784,13 @@ def main() -> None:
                     "entropy_schedule_timesteps": algo.get(
                         "entropy_schedule_timesteps"
                     ),
+                    **init_checkpoint_metadata,
                     **checkpoint_teacher_metadata(
                         bc_updates=bc_updates,
                         teacher_mode=teacher_mode,
                         teacher_stop_radius=teacher_stop_radius,
                         teacher_max_rho=teacher_max_rho,
+                        teacher_center_step=teacher_center_step,
                     ),
                 },
             ),
@@ -2528,8 +2933,23 @@ def main() -> None:
         _snapshot_numeric_metrics(telemetry_state, "action", "action_window")
         _snapshot_numeric_metrics(telemetry_state, "reward", "reward_window")
         _snapshot_numeric_metrics(telemetry_state, "path_terrain", "path_terrain_window")
+        _snapshot_numeric_metrics(
+            telemetry_state,
+            "centroid_flatness",
+            "centroid_flatness_window",
+        )
         _snapshot_numeric_metrics(telemetry_state, "action_filter", "action_filter_window")
         _snapshot_numeric_metrics(telemetry_state, "control_safety", "control_safety_window")
+        _snapshot_numeric_metrics(
+            telemetry_state,
+            "formation_center_correction",
+            "formation_center_correction_window",
+        )
+        _snapshot_numeric_metrics(
+            telemetry_state,
+            "terminal_slot_capture",
+            "terminal_slot_capture_window",
+        )
         _snapshot_numeric_metrics(telemetry_state, "kinematics", "kinematics_window")
         append_metrics_jsonl(
             telemetry_dir,
@@ -2597,11 +3017,13 @@ def main() -> None:
                     "entropy_schedule_timesteps": algo.get(
                         "entropy_schedule_timesteps"
                     ),
+                    **init_checkpoint_metadata,
                     **checkpoint_teacher_metadata(
                         bc_updates=bc_updates,
                         teacher_mode=teacher_mode,
                         teacher_stop_radius=teacher_stop_radius,
                         teacher_max_rho=teacher_max_rho,
+                        teacher_center_step=teacher_center_step,
                     ),
                 },
             ),
@@ -2609,6 +3031,12 @@ def main() -> None:
         )
         candidate_paths.append(candidate_path)
         return candidate_path
+
+    # Keep the exact initialized policy as a selectable baseline.  This makes
+    # warm-start screening falsifiable: PPO may improve it, but cannot hide a
+    # regression by comparing only post-update checkpoints.
+    if init_checkpoint_path is not None:
+        save_candidate(0)
 
     original_post_interaction = agent.post_interaction
     use_initial_state_curriculum = bool(cfg.initial_state.curriculum_enabled)
@@ -2679,8 +3107,23 @@ def main() -> None:
     _snapshot_numeric_metrics(telemetry_state, "action", "action_window")
     _snapshot_numeric_metrics(telemetry_state, "reward", "reward_window")
     _snapshot_numeric_metrics(telemetry_state, "path_terrain", "path_terrain_window")
+    _snapshot_numeric_metrics(
+        telemetry_state,
+        "centroid_flatness",
+        "centroid_flatness_window",
+    )
     _snapshot_numeric_metrics(telemetry_state, "action_filter", "action_filter_window")
     _snapshot_numeric_metrics(telemetry_state, "control_safety", "control_safety_window")
+    _snapshot_numeric_metrics(
+        telemetry_state,
+        "formation_center_correction",
+        "formation_center_correction_window",
+    )
+    _snapshot_numeric_metrics(
+        telemetry_state,
+        "terminal_slot_capture",
+        "terminal_slot_capture_window",
+    )
     _snapshot_numeric_metrics(telemetry_state, "kinematics", "kinematics_window")
 
     candidate_evaluations: list[dict] = []
