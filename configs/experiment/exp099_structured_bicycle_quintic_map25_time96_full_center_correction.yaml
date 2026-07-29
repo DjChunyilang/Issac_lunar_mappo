@@ -1,0 +1,14 @@
+extends: exp094_structured_bicycle_quintic_map25_flatness_center_early_radius35_time96.yaml
+
+experiment:
+  name: exp099_structured_bicycle_quintic_map25_time96_full_center_correction
+
+low_level_control:
+  # exp094 caps the common translation at 0.375 m after gain.  Keep the same
+  # actual-flatness and terminal-geometry gates, but allow a full 0.75 m
+  # correction toward the terrain-aware fixed-slot centre.
+  formation_center_correction_max_offset: 0.75
+  formation_center_correction_gain: 1.00
+
+algorithm:
+  training_semantics: exp099_structured_bicycle_quintic_map25_time96_full_center_correction

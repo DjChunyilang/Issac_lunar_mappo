@@ -48,6 +48,22 @@ def test_exp088_and_exp089_inherit_flatness_gated_warmstart_and_isolate_control_
         ROOT
         / "configs/experiment/exp097_structured_bicycle_quintic_map25_flatness_center_early_radius35_time128_ppo_probe.yaml"
     )
+    exp098 = load_yaml(
+        ROOT
+        / "configs/experiment/exp098_structured_bicycle_quintic_map25_time96_strict_slot_capture.yaml"
+    )
+    exp099 = load_yaml(
+        ROOT
+        / "configs/experiment/exp099_structured_bicycle_quintic_map25_time96_full_center_correction.yaml"
+    )
+    exp100 = load_yaml(
+        ROOT
+        / "configs/experiment/exp100_structured_bicycle_quintic_map25_time96_local_flatness_center.yaml"
+    )
+    exp101 = load_yaml(
+        ROOT
+        / "configs/experiment/exp101_structured_bicycle_quintic_map25_time96_local_flatness_ppo.yaml"
+    )
 
     assert exp088["low_level_control"] == {
         **exp087["low_level_control"],
@@ -99,6 +115,36 @@ def test_exp088_and_exp089_inherit_flatness_gated_warmstart_and_isolate_control_
     assert exp097["simulation"] == exp096["simulation"]
     assert exp097["experiment"]["checkpoint_interval"] == 256
     assert exp097["algorithm"]["learning_rate"] == exp096["algorithm"]["learning_rate"]
+    assert exp098["simulation"] == exp094["simulation"]
+    assert exp098["low_level_control"] == {
+        **exp094["low_level_control"],
+        "terminal_slot_capture_enabled": True,
+        "terminal_slot_capture_dmax_multiplier": 1.00,
+        "terminal_slot_capture_dispersion_multiplier": 1.00,
+        "terminal_slot_capture_blend": 0.25,
+    }
+    assert exp099["simulation"] == exp094["simulation"]
+    assert exp099["low_level_control"] == {
+        **exp094["low_level_control"],
+        "formation_center_correction_max_offset": 0.75,
+        "formation_center_correction_gain": 1.00,
+    }
+    assert exp100["simulation"] == exp094["simulation"]
+    assert exp100["low_level_control"] == {
+        **exp094["low_level_control"],
+        "formation_center_local_flatness_search_enabled": True,
+        "formation_center_local_flatness_search_radius": 0.25,
+        "formation_center_local_flatness_search_samples": 8,
+        "formation_center_correction_max_offset": 0.35,
+        "formation_center_correction_gain": 1.00,
+    }
+    assert exp101["simulation"] == exp100["simulation"]
+    assert exp101["experiment"]["checkpoint_interval"] == 512
+    assert exp101["algorithm"] == {
+        **exp100["algorithm"],
+        "learning_rate": 0.00001,
+        "training_semantics": "exp101_structured_bicycle_quintic_map25_time96_local_flatness_ppo",
+    }
     assert cfg_from_experiment(
         ROOT / "configs/experiment/exp089_structured_bicycle_quintic_map25_flatness_center_early.yaml"
     ).low_level_control.formation_center_correction_gain == pytest.approx(0.75)

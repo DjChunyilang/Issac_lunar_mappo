@@ -154,6 +154,12 @@ class LowLevelControlCfg:
     # If enabled, the common translation only runs while the prior actual
     # centroid footprint fails the same flatness gate used for success.
     formation_center_correction_require_flatness_failure: bool = False
+    # Optional terminal-only local search around the actual centroid.  A
+    # common target is replaced only when a nearby full success footprint is
+    # truly flat, preserving all fixed-slot offsets and success semantics.
+    formation_center_local_flatness_search_enabled: bool = False
+    formation_center_local_flatness_search_radius: float = 0.25
+    formation_center_local_flatness_search_samples: int = 8
     # Optional terminal capture blends the actor subgoal toward each rover's
     # fixed assigned slot. It never uses a shared geometric midpoint.
     terminal_slot_capture_enabled: bool = False

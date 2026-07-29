@@ -1,0 +1,17 @@
+extends: exp094_structured_bicycle_quintic_map25_flatness_center_early_radius35_time96.yaml
+
+experiment:
+  name: exp098_structured_bicycle_quintic_map25_time96_strict_slot_capture
+
+low_level_control:
+  # Only after the real dmax and dispersion gates hold, make a small per-rover
+  # pull toward the assigned symmetric slots. Their mean is the searched flat
+  # site, so this can resolve centroid-offset flatness failures without
+  # changing the success predicate or overriding pre-terminal behavior.
+  terminal_slot_capture_enabled: true
+  terminal_slot_capture_dmax_multiplier: 1.00
+  terminal_slot_capture_dispersion_multiplier: 1.00
+  terminal_slot_capture_blend: 0.25
+
+algorithm:
+  training_semantics: exp098_structured_bicycle_quintic_map25_time96_strict_slot_capture

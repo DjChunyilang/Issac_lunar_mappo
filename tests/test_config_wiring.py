@@ -255,6 +255,9 @@ def test_formation_center_correction_validation(tmp_path: Path) -> None:
                     "formation_center_activation_dispersion_multiplier": 1.5,
                     "formation_center_correction_max_offset": 0.35,
                     "formation_center_correction_gain": 0.55,
+                    "formation_center_local_flatness_search_enabled": True,
+                    "formation_center_local_flatness_search_radius": 0.25,
+                    "formation_center_local_flatness_search_samples": 8,
                 },
             }
         ),
@@ -263,6 +266,7 @@ def test_formation_center_correction_validation(tmp_path: Path) -> None:
     cfg = cfg_from_experiment(config_path)
     assert cfg.low_level_control.formation_center_correction_enabled
     assert cfg.low_level_control.formation_center_correction_gain == pytest.approx(0.55)
+    assert cfg.low_level_control.formation_center_local_flatness_search_enabled
 
     config_path.write_text(
         yaml.safe_dump(
@@ -276,6 +280,18 @@ def test_formation_center_correction_validation(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="formation_center_correction_gain"):
+        cfg_from_experiment(config_path)
+
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "experiment": {"name": "bad_local_flatness_search"},
+                "low_level_control": {"formation_center_local_flatness_search_samples": 3},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="formation_center_local_flatness_search_samples"):
         cfg_from_experiment(config_path)
 
 

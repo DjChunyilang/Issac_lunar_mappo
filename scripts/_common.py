@@ -225,6 +225,16 @@ def _validate_low_level_control(cfg: MultiRoverGatheringEnvCfg) -> None:
         raise ValueError(
             "low_level_control.formation_center_correction_gain must be in [0, 1]."
         )
+    if cfg.low_level_control.formation_center_local_flatness_search_radius < 0.0:
+        raise ValueError(
+            "low_level_control.formation_center_local_flatness_search_radius "
+            "must be non-negative."
+        )
+    if cfg.low_level_control.formation_center_local_flatness_search_samples < 4:
+        raise ValueError(
+            "low_level_control.formation_center_local_flatness_search_samples "
+            "must be at least 4."
+        )
     if cfg.low_level_control.terminal_slot_capture_dmax_multiplier < 1.0:
         raise ValueError(
             "low_level_control.terminal_slot_capture_dmax_multiplier must be >= 1.0."

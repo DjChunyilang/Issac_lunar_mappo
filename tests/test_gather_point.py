@@ -24,6 +24,7 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
     make_terrain_runtime,
     query_height,
     query_terrain_features,
+    search_local_flatness_center,
 )
 
 
@@ -140,6 +141,24 @@ def test_flatness_is_batched_and_flat_proxy_is_always_accepted() -> None:
     assert torch.allclose(flatness.height_range, torch.zeros_like(flatness.height_range))
     assert torch.allclose(flatness.max_slope, torch.zeros_like(flatness.max_slope))
     assert flatness.is_flat.all()
+
+
+def test_local_flatness_search_keeps_an_already_flat_centroid() -> None:
+    centers = torch.tensor([[0.25, -0.15], [-0.5, 0.4]])
+    result = search_local_flatness_center(
+        centers,
+        TerrainCfg(),
+        search_radius=0.25,
+        samples=8,
+        flatness_radius=0.75,
+        flatness_rings=3,
+        flatness_samples_per_ring=12,
+        max_height_range=0.18,
+        max_slope=0.25,
+    )
+
+    assert result.found_flat.tolist() == [True, True]
+    assert torch.allclose(result.target_xy, centers)
 
 
 def test_search_robustness_envelope_rejects_a_center_only_flat_candidate() -> None:

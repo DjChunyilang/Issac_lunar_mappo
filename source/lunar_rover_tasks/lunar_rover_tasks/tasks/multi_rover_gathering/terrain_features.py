@@ -70,6 +70,15 @@ class GatherPointFlatness:
     is_flat: torch.Tensor
 
 
+@dataclass(slots=True)
+class LocalFlatnessCenterSearch:
+    """Best nearby valid success-footprint center for each environment."""
+
+    target_xy: torch.Tensor
+    found_flat: torch.Tensor
+    flatness: GatherPointFlatness
+
+
 def make_terrain_runtime(
     num_envs: int,
     *,
@@ -455,6 +464,72 @@ def evaluate_gather_point_flatness(
         max_slope=patch_max_slope,
         mean_slope=mean_patch_slope,
         is_flat=is_flat,
+    )
+
+
+def search_local_flatness_center(
+    centers_xy: torch.Tensor,
+    terrain_cfg: TerrainCfg | None = None,
+    runtime: TerrainRuntime | None = None,
+    *,
+    search_radius: float,
+    samples: int,
+    flatness_radius: float,
+    flatness_rings: int,
+    flatness_samples_per_ring: int,
+    max_height_range: float,
+    max_slope: float,
+) -> LocalFlatnessCenterSearch:
+    """Find a nearby actually-flat footprint, preferring flatter/closer sites.
+
+    The centre itself and an evenly spaced ring are evaluated with exactly the
+    same complete-disk gate as task success.  A caller can retain its existing
+    target when ``found_flat`` is false; this helper never treats the least
+    bad non-flat candidate as valid.
+    """
+    if centers_xy.ndim != 2 or centers_xy.shape[-1] != 2:
+        raise ValueError("centers_xy must have shape [num_envs, 2].")
+    if search_radius < 0.0:
+        raise ValueError("search_radius must be non-negative.")
+    if samples < 4:
+        raise ValueError("samples must be at least 4.")
+
+    if search_radius == 0.0:
+        candidates = centers_xy[:, None, :]
+    else:
+        angles = (
+            torch.arange(samples, device=centers_xy.device, dtype=centers_xy.dtype)
+            * (2.0 * torch.pi / float(samples))
+        )
+        ring = float(search_radius) * torch.stack((torch.cos(angles), torch.sin(angles)), dim=-1)
+        candidates = torch.cat((centers_xy[:, None, :], centers_xy[:, None, :] + ring[None]), dim=1)
+
+    flatness = evaluate_gather_point_flatness(
+        candidates,
+        terrain_cfg,
+        runtime,
+        radius=flatness_radius,
+        rings=flatness_rings,
+        samples_per_ring=flatness_samples_per_ring,
+        max_height_range=max_height_range,
+        max_slope=max_slope,
+    )
+    height_cost = flatness.height_range / max(float(max_height_range), 1.0e-6)
+    slope_cost = flatness.max_slope / max(float(max_slope), 1.0e-6)
+    terrain_cost = torch.maximum(height_cost, slope_cost)
+    displacement = torch.linalg.norm(candidates - centers_xy[:, None, :], dim=-1)
+    distance_cost = displacement / max(float(search_radius), 1.0e-6)
+    # Feasible sites dominate infeasible ones. The small displacement term
+    # makes an already-flat current centre stable and breaks ring ties.
+    score = terrain_cost + 0.02 * distance_cost
+    score = torch.where(flatness.is_flat, score, torch.full_like(score, float("inf")))
+    found_flat = flatness.is_flat.any(dim=-1)
+    selected = score.argmin(dim=-1)
+    target_xy = candidates[torch.arange(centers_xy.shape[0], device=centers_xy.device), selected]
+    return LocalFlatnessCenterSearch(
+        target_xy=target_xy,
+        found_flat=found_flat,
+        flatness=flatness,
     )
 
 

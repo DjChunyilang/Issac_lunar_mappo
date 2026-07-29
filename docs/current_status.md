@@ -2,7 +2,11 @@
 
 ## 当前主线
 
-- 当前主线是“真实地形可行集合点 + 实际质心平整度 gate + 可执行局部目标”。`terrain_aware_multiresolution` 每个 reset 搜索真正的地形约束最优点；成功只认可实际团队质心的 37 点平整圆盘，绝不认可 oracle 代理点。共同质心校正由 `formation_center_correction_require_flatness_failure` 限制为“上一状态实际质心不平整”才启用，且只做全队同向平移，保持专属槽位间距和真实 success gate。exp092 的 `BC32` 重锚定策略在原 `64 s/320` step 时已经达到 dmax/collision（`0.1910/0.7002/0/0.2998`）。固定 checkpoint、1024 环境、seed `11023` 的时域扫描表明 `80/96/112/128 s` 均随时域延长而降低 timeout；按当前决策，**后续训练和正式 proxy 评估采用 exp094 的 `96 s/480` steps 时域**，其复评为 `0.1837/0.8594/0/0.1406`。这是将任务执行预算从 64 秒放宽到 96 秒，严格验收仍为 dmax `<=0.2`、success `>=0.9`、collision `<=0.02`、timeout `=0`，没有放宽。128 秒和 exp097 的 PPO probe 均作为诊断保留：前者可进一步升至 `0.1801/0.8994/0/0.1006`，但 512-step PPO 的 `t=256/512` 候选 success 降至 `0.8691/0.8418`，因此不采用其更新后的 policy。96 秒下当前推荐 checkpoint 仍为 exp092 的 **BC32 t=0 策略候选**，不是 PPO 更新策略；不触发 PhysX。下一步在 96 秒时域内直接修复“几何已收紧但实际质心不平整”和“地点平整但 dmax/dispersion 尚未收紧”的尾部状态，而不是继续放宽真实平整度或 strict timeout gate。
+- 当前主线是“真实地形可行集合点 + 实际质心平整度 gate + 可执行局部目标”。`terrain_aware_multiresolution` 每个 reset 搜索真正的地形约束最优点；成功只认可实际团队质心的 37 点平整圆盘，绝不认可 oracle 代理点。exp092 的 `BC32` 在原 `64 s/320` steps 为 `0.1910/0.7002/0/0.2998`；按当前决策，**后续训练和正式 proxy 评估固定采用 `96 s/480` steps 时域**。这是执行时间预算从 64 秒放宽到 96 秒，严格验收仍为 dmax `<=0.2`、success `>=0.9`、collision `<=0.02`、timeout `=0`，没有放宽。exp094 的基线复评为 `0.1837/0.8594/0/0.1406`；128 秒仅作为“时域仍偏紧”的诊断上界，不能替代 96 秒标准。
+
+- exp098–exp101 已在 96 秒时域完成末段干预和 PPO 诊断。严格逐槽位捕获退化；增大共同中心校正在相同 exp092 BC32 后验对照中暂时最好（exp099：`0.1843/0.8643/0/0.1357`）；真实局部平整候选搜索不再以几何中点代理目标，而对当前质心及附近环形候选运行与 success gate 相同的 37 点平整度检查。它使最终实际平整率达到 `0.9150`，但 success 仅 `0.8604`、timeout `0.1396`，未优于 exp099。以 `1e-5` 从 BC32 warm-start 的 4M environment-step PPO probe 中，`t=512/1024/1536/2048` success 依次降为 `0.8154/0.7539/0.7109/0.6621`，只保留 `t=0`，不触发 PhysX。
+
+- 最新 success-gate 诊断中，143 个 timeout 没有速度或最小两两间距失败：45 个仅实际质心不平整、58 个仅 dmax/dispersion 未收紧、40 个两类同时失败。下一步应把末段控制拆成条件分支：几何已过且不平整时只重定位至真实平整候选；地点已平整但几何未过时只收紧固定槽位/共同中心。先以 exp092 BC32 做后验对照，只有稳定增益才重新启动 PPO；不再继续全局 PPO 微调，也不放宽真实平整度或 strict timeout gate。
 - 当前主设计口径已切换为“高吞吐 proxy 训练 + Isaac Sim / Isaac Lab / PhysX 高保真闭环评估”。当前实施路线以 `docs/implementation_plan.md` 和 `docs/architecture/overall_plan_v3.md` 为准。
 - 训练主环境仍是 PyTorch / torch-vectorized proxy 环境，用于 MAPPO / PPO 采样、奖励调试、观测接口验证和大规模对照实验。
 - Isaac Sim / Isaac Lab / PhysX 不作为当前主训练 loop，而作为 high-fidelity validation、迁移 sanity check、失效分析和可视化展示平台。

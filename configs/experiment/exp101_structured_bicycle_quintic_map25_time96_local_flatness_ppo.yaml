@@ -1,0 +1,11 @@
+extends: exp100_structured_bicycle_quintic_map25_time96_local_flatness_center.yaml
+
+experiment:
+  name: exp101_structured_bicycle_quintic_map25_time96_local_flatness_ppo
+  checkpoint_interval: 512
+
+algorithm:
+  # Preserve the BC32 policy while it adapts to the new terminal-only terrain
+  # correction. The 512-step probe at 3e-5 regressed, so use a smaller update.
+  learning_rate: 0.00001
+  training_semantics: exp101_structured_bicycle_quintic_map25_time96_local_flatness_ppo

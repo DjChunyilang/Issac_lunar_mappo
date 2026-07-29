@@ -1,0 +1,17 @@
+extends: exp094_structured_bicycle_quintic_map25_flatness_center_early_radius35_time96.yaml
+
+experiment:
+  name: exp100_structured_bicycle_quintic_map25_time96_local_flatness_center
+
+low_level_control:
+  # Search the real 37-point success footprint around a non-flat terminal
+  # centroid. A flat candidate replaces the shared target only for that step;
+  # the fixed slot offsets and all success gates remain unchanged.
+  formation_center_local_flatness_search_enabled: true
+  formation_center_local_flatness_search_radius: 0.25
+  formation_center_local_flatness_search_samples: 8
+  formation_center_correction_max_offset: 0.35
+  formation_center_correction_gain: 1.00
+
+algorithm:
+  training_semantics: exp100_structured_bicycle_quintic_map25_time96_local_flatness_center

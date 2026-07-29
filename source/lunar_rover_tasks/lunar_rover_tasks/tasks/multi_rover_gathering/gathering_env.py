@@ -53,6 +53,7 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
     query_terrain_features,
     randomize_terrain_runtime,
     sample_path_terrain_risk,
+    search_local_flatness_center,
 )
 from lunar_rover_tasks.tasks.multi_rover_gathering.termination import (
     DoneFlags,
@@ -317,6 +318,58 @@ class MultiRoverGatheringCore:
             max_slope=float(gather_cfg.max_slope),
         )
 
+    def _select_terminal_formation_center(
+        self,
+        metrics: TeamMetrics,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return fixed-slot centre or a nearby truly flat terminal centre."""
+        target_xy = self.gather_slot_points[..., :2].mean(dim=1)
+        local_search_active = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        control_cfg = self.cfg.low_level_control
+        if not (
+            control_cfg.formation_center_correction_enabled
+            and control_cfg.formation_center_local_flatness_search_enabled
+            and control_cfg.formation_center_correction_max_offset > 0.0
+            and control_cfg.formation_center_correction_gain > 0.0
+        ):
+            return target_xy, local_search_active
+
+        terminal = (
+            metrics.dmax
+            <= float(self.cfg.success_thresholds.dmax)
+            * float(control_cfg.formation_center_activation_dmax_multiplier)
+        ) & (
+            metrics.dispersion
+            <= float(self.cfg.success_thresholds.dispersion)
+            * float(control_cfg.formation_center_activation_dispersion_multiplier)
+        )
+        if control_cfg.formation_center_correction_require_flatness_failure:
+            terminal = terminal & ~self.prev_gather_point_flatness_ok
+        env_ids = torch.nonzero(terminal, as_tuple=False).flatten()
+        if env_ids.numel() == 0:
+            return target_xy, local_search_active
+
+        gather_cfg = self.cfg.gather_point
+        search = search_local_flatness_center(
+            metrics.centroid[env_ids, :2],
+            self.cfg.terrain,
+            self.terrain_runtime.subset(env_ids),
+            search_radius=float(control_cfg.formation_center_local_flatness_search_radius),
+            samples=int(control_cfg.formation_center_local_flatness_search_samples),
+            flatness_radius=float(gather_cfg.flatness_radius),
+            flatness_rings=int(gather_cfg.flatness_rings),
+            flatness_samples_per_ring=int(gather_cfg.flatness_samples_per_ring),
+            max_height_range=float(gather_cfg.max_height_range),
+            max_slope=float(gather_cfg.max_slope),
+        )
+        target_xy[env_ids] = torch.where(
+            search.found_flat[:, None],
+            search.target_xy,
+            target_xy[env_ids],
+        )
+        local_search_active[env_ids] = search.found_flat
+        return target_xy, local_search_active
+
     def reset(self, env_ids: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
@@ -480,6 +533,9 @@ class MultiRoverGatheringCore:
             ),
             blend=float(self.cfg.low_level_control.terminal_slot_capture_blend),
         )
+        formation_center_xy, local_flatness_search_active = self._select_terminal_formation_center(
+            self.prev_metrics
+        )
         correction = apply_formation_center_correction(
             slot_capture.decoded,
             centroid_xy=self.prev_metrics.centroid[..., :2],
@@ -487,7 +543,7 @@ class MultiRoverGatheringCore:
             dispersion=self.prev_metrics.dispersion,
             # Fixed slots are assigned once per episode and their mean equals
             # the terrain-aware searched point exactly.
-            formation_center_xy=self.gather_slot_points[..., :2].mean(dim=1),
+            formation_center_xy=formation_center_xy,
             dmax_threshold=float(self.cfg.success_thresholds.dmax),
             dispersion_threshold=float(self.cfg.success_thresholds.dispersion),
             enabled=bool(self.cfg.low_level_control.formation_center_correction_enabled),
@@ -657,6 +713,7 @@ class MultiRoverGatheringCore:
         formation_center_correction_snapshot = {
             "active": correction.active.clone(),
             "offset_xy": correction.offset_xy.clone(),
+            "local_flatness_search_active": local_flatness_search_active.clone(),
         }
         terminal_slot_capture_snapshot = {
             "active": slot_capture.active.clone(),

@@ -221,6 +221,7 @@ def evaluate_checkpoint(
     formation_center_correction_active_sum = torch.tensor(0.0, device=env.device)
     formation_center_correction_offset_sum = torch.tensor(0.0, device=env.device)
     formation_center_correction_offset_max = torch.tensor(0.0, device=env.device)
+    formation_center_local_flatness_search_active_sum = torch.tensor(0.0, device=env.device)
     terminal_slot_capture_env_count = torch.tensor(0.0, device=env.device)
     terminal_slot_capture_active_sum = torch.tensor(0.0, device=env.device)
 
@@ -629,6 +630,14 @@ def evaluate_checkpoint(
                 formation_center_correction_offset_max = torch.maximum(
                     formation_center_correction_offset_max,
                     active_offset.amax(),
+                )
+            local_flatness_search_active = formation_center_correction.get(
+                "local_flatness_search_active"
+            )
+            if local_flatness_search_active is not None:
+                formation_center_local_flatness_search_active_sum = (
+                    formation_center_local_flatness_search_active_sum
+                    + local_flatness_search_active[active_before].float().sum()
                 )
         terminal_slot_capture = step_output.info.get("terminal_slot_capture")
         if terminal_slot_capture is not None:
@@ -1061,6 +1070,14 @@ def evaluate_checkpoint(
         ),
         "formation_center_correction_offset_max": float(
             formation_center_correction_offset_max.detach().cpu()
+        ),
+        "formation_center_local_flatness_search_active_fraction": float(
+            (
+                formation_center_local_flatness_search_active_sum
+                / formation_center_correction_env_count.clamp_min(1.0)
+            )
+            .detach()
+            .cpu()
         ),
         "terminal_slot_capture_active_fraction": float(
             (terminal_slot_capture_active_sum / terminal_slot_capture_env_count.clamp_min(1.0))
