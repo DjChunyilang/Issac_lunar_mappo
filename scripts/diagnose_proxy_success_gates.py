@@ -185,6 +185,81 @@ def summarize_episode_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def summarize_timeout_gate_trajectories(
+    rows: list[dict[str, Any]],
+    *,
+    hold_steps: int,
+) -> dict[str, Any]:
+    """Classify the temporal gate sequence for timeout episodes.
+
+    The terminal snapshot alone cannot distinguish a rover team that never
+    reached a flat footprint from one that entered it and subsequently left.
+    This summary stores only per-episode aggregate state, so it remains cheap
+    at the normal 1024-environment evaluation size.
+    """
+    timeout_rows = [row for row in rows if row["done_reason"] == "timeout"]
+    if not timeout_rows:
+        return {
+            "count": 0,
+            "never_flat_count": 0,
+            "entered_flat_count": 0,
+            "left_flat_footprint_count": 0,
+            "final_flat_count": 0,
+            "ever_geometry_count": 0,
+            "ever_instant_success_count": 0,
+            "interrupted_before_hold_count": 0,
+            "instant_at_timeout_incomplete_hold_count": 0,
+            "flat_step_fraction_mean": None,
+            "geometry_step_fraction_mean": None,
+            "instant_step_fraction_mean": None,
+            "max_flat_run_mean": None,
+            "max_geometry_run_mean": None,
+            "first_flat_step_mean": None,
+            "first_instant_success_step_mean": None,
+        }
+
+    def count(key: str) -> int:
+        return sum(1 for row in timeout_rows if bool(row[key]))
+
+    def mean(key: str) -> float | None:
+        values = [float(row[key]) for row in timeout_rows if row.get(key) is not None]
+        return sum(values) / len(values) if values else None
+
+    interrupted = sum(
+        1
+        for row in timeout_rows
+        if 0 < int(row["max_success_hold_count"]) < hold_steps
+        and int(row["final_success_hold_count"]) == 0
+    )
+    instant_at_timeout = sum(
+        1
+        for row in timeout_rows
+        if 0 < int(row["final_success_hold_count"]) < hold_steps
+    )
+    return {
+        "count": len(timeout_rows),
+        "never_flat_count": sum(1 for row in timeout_rows if not row["ever_flat"]),
+        "entered_flat_count": count("ever_flat"),
+        "left_flat_footprint_count": sum(
+            1
+            for row in timeout_rows
+            if row["ever_flat"] and not row["final_flatness_ok"]
+        ),
+        "final_flat_count": count("final_flatness_ok"),
+        "ever_geometry_count": count("ever_geometry"),
+        "ever_instant_success_count": count("ever_instant_success"),
+        "interrupted_before_hold_count": interrupted,
+        "instant_at_timeout_incomplete_hold_count": instant_at_timeout,
+        "flat_step_fraction_mean": mean("flat_step_fraction"),
+        "geometry_step_fraction_mean": mean("geometry_step_fraction"),
+        "instant_step_fraction_mean": mean("instant_step_fraction"),
+        "max_flat_run_mean": mean("max_flat_run"),
+        "max_geometry_run_mean": mean("max_geometry_run"),
+        "first_flat_step_mean": mean("first_flat_step"),
+        "first_instant_success_step_mean": mean("first_instant_success_step"),
+    }
+
+
 def diagnose_checkpoint(
     config: str | Path,
     checkpoint: str | Path,
@@ -261,6 +336,20 @@ def diagnose_checkpoint(
     final_min_pairwise_ok = torch.zeros_like(final_dmax_ok)
     final_instant_success = torch.zeros_like(final_dmax_ok)
 
+    active_step_count = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+    flat_step_count = torch.zeros_like(active_step_count)
+    geometry_step_count = torch.zeros_like(active_step_count)
+    instant_step_count = torch.zeros_like(active_step_count)
+    current_flat_run = torch.zeros_like(active_step_count)
+    max_flat_run = torch.zeros_like(active_step_count)
+    current_geometry_run = torch.zeros_like(active_step_count)
+    max_geometry_run = torch.zeros_like(active_step_count)
+    ever_flat = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    ever_geometry = torch.zeros_like(ever_flat)
+    ever_instant_success = torch.zeros_like(ever_flat)
+    first_flat_step = torch.full_like(active_step_count, -1)
+    first_instant_success_step = torch.full_like(active_step_count, -1)
+
     active = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
     done_step = torch.full((env.num_envs,), -1, dtype=torch.long, device=env.device)
     done_reason = torch.full((env.num_envs,), -1, dtype=torch.long, device=env.device)
@@ -274,6 +363,54 @@ def diagnose_checkpoint(
         metrics = step_output.info["metrics"]
         gates = step_output.info["success_gates"]
         done = step_output.info["done"]
+
+        geometry_ok = (
+            gates.dmax_ok
+            & gates.dispersion_ok
+            & gates.speed_ok
+            & gates.min_pairwise_ok
+        )
+        active_step_count = active_step_count + active_before.long()
+        flat_step_count = flat_step_count + (active_before & gates.flatness_ok).long()
+        geometry_step_count = geometry_step_count + (active_before & geometry_ok).long()
+        instant_step_count = instant_step_count + (
+            active_before & gates.instant_success
+        ).long()
+        current_flat_run = torch.where(
+            active_before & gates.flatness_ok,
+            current_flat_run + 1,
+            torch.where(active_before, torch.zeros_like(current_flat_run), current_flat_run),
+        )
+        max_flat_run = torch.maximum(max_flat_run, current_flat_run)
+        current_geometry_run = torch.where(
+            active_before & geometry_ok,
+            current_geometry_run + 1,
+            torch.where(
+                active_before,
+                torch.zeros_like(current_geometry_run),
+                current_geometry_run,
+            ),
+        )
+        max_geometry_run = torch.maximum(max_geometry_run, current_geometry_run)
+        first_flat_step = torch.where(
+            active_before
+            & gates.flatness_ok
+            & (first_flat_step < 0),
+            torch.full_like(first_flat_step, step_id + 1),
+            first_flat_step,
+        )
+        first_instant_success_step = torch.where(
+            active_before
+            & gates.instant_success
+            & (first_instant_success_step < 0),
+            torch.full_like(first_instant_success_step, step_id + 1),
+            first_instant_success_step,
+        )
+        ever_flat = ever_flat | (active_before & gates.flatness_ok)
+        ever_geometry = ever_geometry | (active_before & geometry_ok)
+        ever_instant_success = ever_instant_success | (
+            active_before & gates.instant_success
+        )
 
         nearest = metrics.nearest_neighbor_distance.amin(dim=-1)
         success_hold = step_output.info["success_hold_count"]
@@ -389,6 +526,42 @@ def diagnose_checkpoint(
                     final_gather_point_mean_slope[env_id].detach().cpu()
                 ),
                 "final_instant_success": bool(final_instant_success[env_id].detach().cpu()),
+                "active_steps": int(active_step_count[env_id].detach().cpu()),
+                "ever_flat": bool(ever_flat[env_id].detach().cpu()),
+                "ever_geometry": bool(ever_geometry[env_id].detach().cpu()),
+                "ever_instant_success": bool(
+                    ever_instant_success[env_id].detach().cpu()
+                ),
+                "flat_step_fraction": float(
+                    (
+                        flat_step_count[env_id].float()
+                        / active_step_count[env_id].clamp_min(1)
+                    ).detach().cpu()
+                ),
+                "geometry_step_fraction": float(
+                    (
+                        geometry_step_count[env_id].float()
+                        / active_step_count[env_id].clamp_min(1)
+                    ).detach().cpu()
+                ),
+                "instant_step_fraction": float(
+                    (
+                        instant_step_count[env_id].float()
+                        / active_step_count[env_id].clamp_min(1)
+                    ).detach().cpu()
+                ),
+                "max_flat_run": int(max_flat_run[env_id].detach().cpu()),
+                "max_geometry_run": int(max_geometry_run[env_id].detach().cpu()),
+                "first_flat_step": (
+                    int(first_flat_step[env_id].detach().cpu())
+                    if first_flat_step[env_id] >= 0
+                    else None
+                ),
+                "first_instant_success_step": (
+                    int(first_instant_success_step[env_id].detach().cpu())
+                    if first_instant_success_step[env_id] >= 0
+                    else None
+                ),
             }
         )
 
@@ -434,6 +607,10 @@ def diagnose_checkpoint(
             "max_slope_mean": float(oracle_search_max_slope.mean().detach().cpu()),
         },
         "summary": summarize_episode_rows(rows),
+        "timeout_gate_trajectory": summarize_timeout_gate_trajectories(
+            rows,
+            hold_steps=cfg.success_thresholds.hold_steps,
+        ),
         "episodes": rows,
     }
 

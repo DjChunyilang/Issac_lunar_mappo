@@ -1,0 +1,15 @@
+extends: exp099_structured_bicycle_quintic_map25_time96_full_center_correction.yaml
+
+experiment:
+  name: exp113_structured_bicycle_quintic_map25_time96_linear_gain26
+
+low_level_control:
+  # A 96-second trajectory diagnosis found that flatness and terminal geometry
+  # rarely overlap in time.  Increase only the local tracking gain so the
+  # unchanged BC32 action reaches its assigned fixed slot earlier; control
+  # safety, success-zone damping, terrain speed scaling and all strict gates
+  # remain active.
+  k_linear: 2.60
+
+algorithm:
+  training_semantics: exp113_structured_bicycle_quintic_map25_time96_linear_gain26

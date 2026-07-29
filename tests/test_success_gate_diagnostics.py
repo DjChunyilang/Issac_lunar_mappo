@@ -12,6 +12,7 @@ if str(SCRIPTS) not in sys.path:
 from diagnose_proxy_success_gates import (  # noqa: E402
     _register_diagnostic_artifact,
     summarize_episode_rows,
+    summarize_timeout_gate_trajectories,
 )
 
 
@@ -107,6 +108,57 @@ def test_mixed_legacy_rows_do_not_count_missing_flatness_as_failure() -> None:
 
     assert summary["by_reason"]["timeout"]["flatness_ok_rate"] == 0.5
     assert summary["timeout_final_gate_failure_counts"]["flatness"] == 1
+
+
+def test_timeout_gate_trajectory_distinguishes_never_flat_from_lost_footprint() -> None:
+    rows = [
+        {
+            "done_reason": "timeout",
+            "ever_flat": False,
+            "ever_geometry": True,
+            "ever_instant_success": False,
+            "final_flatness_ok": False,
+            "max_success_hold_count": 0,
+            "final_success_hold_count": 0,
+            "flat_step_fraction": 0.0,
+            "geometry_step_fraction": 0.5,
+            "instant_step_fraction": 0.0,
+            "max_flat_run": 0,
+            "max_geometry_run": 4,
+            "first_flat_step": None,
+            "first_instant_success_step": None,
+        },
+        {
+            "done_reason": "timeout",
+            "ever_flat": True,
+            "ever_geometry": True,
+            "ever_instant_success": True,
+            "final_flatness_ok": False,
+            "max_success_hold_count": 3,
+            "final_success_hold_count": 0,
+            "flat_step_fraction": 0.2,
+            "geometry_step_fraction": 0.7,
+            "instant_step_fraction": 0.1,
+            "max_flat_run": 2,
+            "max_geometry_run": 5,
+            "first_flat_step": 11,
+            "first_instant_success_step": 12,
+        },
+        {
+            "done_reason": "success",
+        },
+    ]
+
+    summary = summarize_timeout_gate_trajectories(rows, hold_steps=8)
+
+    assert summary["count"] == 2
+    assert summary["never_flat_count"] == 1
+    assert summary["entered_flat_count"] == 1
+    assert summary["left_flat_footprint_count"] == 1
+    assert summary["ever_instant_success_count"] == 1
+    assert summary["interrupted_before_hold_count"] == 1
+    assert summary["flat_step_fraction_mean"] == 0.1
+    assert summary["first_flat_step_mean"] == 11.0
 
 
 def test_diagnostic_registers_existing_run_manifest_atomically(tmp_path: Path) -> None:

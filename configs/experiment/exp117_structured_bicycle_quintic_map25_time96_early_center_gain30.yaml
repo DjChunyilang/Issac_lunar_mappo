@@ -1,0 +1,15 @@
+extends: exp115_structured_bicycle_quintic_map25_time96_linear_gain30.yaml
+
+experiment:
+  name: exp117_structured_bicycle_quintic_map25_time96_early_center_gain30
+
+low_level_control:
+  # At k=3.20, 91/111 timeouts still fail the actual centroid flatness gate
+  # and most have not held an instant-success state.  Start the unchanged
+  # common translation toward the terrain-aware centre earlier, while still
+  # preserving fixed slots, safety projection and every terminal predicate.
+  formation_center_activation_dmax_multiplier: 2.00
+  formation_center_activation_dispersion_multiplier: 2.00
+
+algorithm:
+  training_semantics: exp117_structured_bicycle_quintic_map25_time96_early_center_gain30

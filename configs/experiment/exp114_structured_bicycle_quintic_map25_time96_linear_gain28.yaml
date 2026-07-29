@@ -1,0 +1,13 @@
+extends: exp099_structured_bicycle_quintic_map25_time96_full_center_correction.yaml
+
+experiment:
+  name: exp114_structured_bicycle_quintic_map25_time96_linear_gain28
+
+low_level_control:
+  # exp113 improved the 96-second completion count without collisions at 2.60.
+  # Continue the same one-variable control sweep before changing policy or
+  # reward semantics; all terminal gates and damping remain unchanged.
+  k_linear: 2.80
+
+algorithm:
+  training_semantics: exp114_structured_bicycle_quintic_map25_time96_linear_gain28

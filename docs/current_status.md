@@ -10,7 +10,9 @@
 
 - exp110/111 已完成该教师/目标层的短 BC screen。动态真实平整槽位在 `10.4%–15.3%` 的有效步生效，但未更新 BC32/BC8/关闭固定中心校正的 success 分别为 `0.8574/0.8516/0.8027`、timeout 为 `0.1426/0.1484/0.1973`，均低于 exp099；BC8 还令最终实际平整率降至 `0.8945`。这说明随机快照 BC 和单步动态局部平整目标不能形成需要的闭环末段轨迹，且固定 terrain-aware 中心校正并非可简单移除的冲突项。全部 reject，不启动 PPO 或 PhysX。
 
-- 当前推荐仍是 exp099 的 BC32 执行期对照（`0.1843/0.8643/0/0.1357`），严格验收尚未通过。下一步不再继续叠加单步局部平整目标或随机快照 BC；先对 exp099 timeout 做时序 gate 诊断，区分“进入平整 footprint 后离开”和“从未在其中完成 hold”，再决定是否需要依据 on-policy rollout 状态构造教师数据。96 秒、真实平整 gate 和 strict timeout gate 均不放宽。
+- exp112--exp117 已完成时序 gate、on-policy 尾部 BC 与执行控制筛选。用约 103 万个 policy-visited 近末段样本做 BC8 仍退化为 `0.1875/0.8457/0/0.1543`，所以同一固定槽位教师的随机/闭环数据比例不是主要瓶颈。仅提高 `k_linear` 则稳定改善：`2.20 -> 3.20` 将同一 BC32 的独立 96 秒评测从 exp099 的 `0.1843/0.8643/0/0.1357` 提升至 exp116 的 `0.1802/0.8916/0/0.1084`；这是当前最佳执行设置，但严格验收仍未通过。对 exp116 的 111 个 timeout，57 个仍缺 dmax、52 个仍缺 dispersion、91 个仍缺实际平整度（可重叠），只有 2 个是纯 hold 未完成；29 个从未进入平整 footprint，62 个进入后又离开。提前共同中心校正使 success 回落到 `0.8838`，故拒绝。
+
+- 当前推荐为 exp092 的 `BC32` checkpoint 配合 `exp116` 的 `k_linear=3.20` 执行设置；它只是当前 candidate，不能触发 PhysX。下一轮不放宽 96 秒、实际平整 gate 或 strict timeout，而应针对“未进入平整 footprint”和“进入后离开”的两类 timeout 训练多步末段轨迹；不再继续同一固定槽位单步 BC、单调加速或更早共同平移。
 - 当前主设计口径已切换为“高吞吐 proxy 训练 + Isaac Sim / Isaac Lab / PhysX 高保真闭环评估”。当前实施路线以 `docs/implementation_plan.md` 和 `docs/architecture/overall_plan_v3.md` 为准。
 - 训练主环境仍是 PyTorch / torch-vectorized proxy 环境，用于 MAPPO / PPO 采样、奖励调试、观测接口验证和大规模对照实验。
 - Isaac Sim / Isaac Lab / PhysX 不作为当前主训练 loop，而作为 high-fidelity validation、迁移 sanity check、失效分析和可视化展示平台。

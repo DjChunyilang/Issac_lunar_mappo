@@ -1,0 +1,12 @@
+extends: exp099_structured_bicycle_quintic_map25_time96_full_center_correction.yaml
+
+experiment:
+  name: exp116_structured_bicycle_quintic_map25_time96_linear_gain32
+
+low_level_control:
+  # Continue the bounded 96-second tracking-gain sweep from exp115.
+  # Keep every success, terrain-flatness, safety and damping condition fixed.
+  k_linear: 3.20
+
+algorithm:
+  training_semantics: exp116_structured_bicycle_quintic_map25_time96_linear_gain32

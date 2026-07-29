@@ -743,6 +743,77 @@ def _randomize_bc_state(
     env.refresh_oracle_point()
 
 
+def _collect_on_policy_tail_bc_samples(
+    policy: Model,
+    env,
+    *,
+    rollout_steps: int,
+    teacher_stop_radius: float,
+    teacher_slow_distance: float,
+    teacher_max_rho: float | None,
+    teacher_mode: str,
+    teacher_terrain_scale: bool,
+    teacher_center_step: float,
+    dmax_multiplier: float,
+    dispersion_multiplier: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Collect teacher labels from policy-visited near-terminal states.
+
+    Random reset snapshots contain little of the late geometry/terrain
+    coupling that causes the 96-second timeout failures.  This collector
+    freezes the current policy, rolls it out, and retains only states close to
+    both geometric terminal gates.  The actor observation and the teacher
+    label are captured before the same action, preserving the execution-goal
+    contract without reward or termination changes.
+    """
+    if rollout_steps <= 0:
+        raise ValueError("bc_on_policy_rollout_steps must be positive.")
+    if dmax_multiplier < 1.0:
+        raise ValueError("bc_on_policy_dmax_multiplier must be >= 1.0.")
+    if dispersion_multiplier < 1.0:
+        raise ValueError("bc_on_policy_dispersion_multiplier must be >= 1.0.")
+
+    was_training = policy.training
+    policy.eval()
+    actor_obs, _ = env.reset()
+    observations: list[torch.Tensor] = []
+    targets: list[torch.Tensor] = []
+    with torch.no_grad():
+        for _ in range(rollout_steps):
+            metrics = compute_team_metrics(env.positions, env.velocities_xy)
+            near_terminal = (
+                metrics.dmax
+                <= float(env.cfg.success_thresholds.dmax) * dmax_multiplier
+            ) & (
+                metrics.dispersion
+                <= float(env.cfg.success_thresholds.dispersion) * dispersion_multiplier
+            )
+            teacher = scripted_gather_action(
+                env,
+                stop_radius=teacher_stop_radius,
+                slow_distance=teacher_slow_distance,
+                max_rho=teacher_max_rho,
+                visible_local=teacher_mode == "visible_local_centroid",
+                terrain_scale=teacher_terrain_scale,
+                teacher_mode=teacher_mode,
+                teacher_center_step=teacher_center_step,
+            )
+            if near_terminal.any():
+                observations.append(actor_obs[near_terminal].reshape(-1, actor_obs.shape[-1]))
+                targets.append(teacher[near_terminal].reshape(-1, teacher.shape[-1]))
+            action, _ = policy.compute({"observations": actor_obs.reshape(-1, actor_obs.shape[-1])}, role="policy")
+            action = action.reshape(env.num_envs, env.n_agents, -1)
+            step_output = env.step(action)
+            actor_obs = step_output.actor_obs
+    policy.train(was_training)
+    if not observations:
+        raise RuntimeError(
+            "On-policy BC rollout produced no near-terminal samples; "
+            "increase rollout steps or terminal multipliers."
+        )
+    return torch.cat(observations).detach(), torch.cat(targets).detach()
+
+
 def run_skrl_behavior_cloning(
     policy: Model,
     cfg,
@@ -762,6 +833,10 @@ def run_skrl_behavior_cloning(
     bc_terminal_spawn_radius_min: float = 0.35,
     bc_terminal_spawn_radius_max: float = 0.65,
     bc_terminal_jitter_std: float = 0.04,
+    bc_on_policy_rollout_steps: int = 0,
+    bc_on_policy_tail_fraction: float = 0.0,
+    bc_on_policy_dmax_multiplier: float = 2.0,
+    bc_on_policy_dispersion_multiplier: float = 2.0,
 ) -> list[dict[str, float | int | str]]:
     """Warm-start the shared SKRL actor; MAPPO itself remains teacher-loss free."""
     if updates <= 0:
@@ -779,6 +854,13 @@ def run_skrl_behavior_cloning(
             "visible_local_centroid, oracle_ring, oracle_translating_ring, "
             "oracle_slots, terminal_flat_slots."
         )
+    if not 0.0 <= bc_on_policy_tail_fraction <= 1.0:
+        raise ValueError("bc_on_policy_tail_fraction must be in [0, 1].")
+    if bc_on_policy_tail_fraction > 0.0 and bc_on_policy_rollout_steps <= 0:
+        raise ValueError(
+            "bc_on_policy_rollout_steps must be positive when "
+            "bc_on_policy_tail_fraction is nonzero."
+        )
     bc_cfg = copy.deepcopy(cfg)
     bc_cfg.simulation.num_envs = max(
         bc_cfg.simulation.num_envs,
@@ -791,6 +873,22 @@ def run_skrl_behavior_cloning(
     snapshots_per_batch = max(1, math.ceil(batch_size / samples_per_snapshot))
     records: list[dict[str, float | int | str]] = []
     policy.train()
+    on_policy_obs: torch.Tensor | None = None
+    on_policy_targets: torch.Tensor | None = None
+    if bc_on_policy_tail_fraction > 0.0:
+        on_policy_obs, on_policy_targets = _collect_on_policy_tail_bc_samples(
+            policy,
+            env,
+            rollout_steps=bc_on_policy_rollout_steps,
+            teacher_stop_radius=teacher_stop_radius,
+            teacher_slow_distance=teacher_slow_distance,
+            teacher_max_rho=teacher_max_rho,
+            teacher_mode=teacher_mode,
+            teacher_terrain_scale=teacher_terrain_scale,
+            teacher_center_step=teacher_center_step,
+            dmax_multiplier=bc_on_policy_dmax_multiplier,
+            dispersion_multiplier=bc_on_policy_dispersion_multiplier,
+        )
 
     for update in range(1, updates + 1):
         observations = []
@@ -819,8 +917,24 @@ def run_skrl_behavior_cloning(
             )
             observations.append(actor_obs.reshape(-1, actor_obs.shape[-1]).detach())
             targets.append(target.reshape(-1, target.shape[-1]).detach())
-        obs = torch.cat(observations, dim=0)[:batch_size]
-        target = torch.cat(targets, dim=0)[:batch_size]
+        normal_count = batch_size
+        if on_policy_obs is not None and on_policy_targets is not None:
+            tail_count = int(round(batch_size * bc_on_policy_tail_fraction))
+            normal_count = batch_size - tail_count
+            if tail_count > 0:
+                indices = torch.randint(
+                    on_policy_obs.shape[0],
+                    (tail_count,),
+                    device=env.device,
+                    generator=env.generator,
+                )
+                observations.append(on_policy_obs[indices])
+                targets.append(on_policy_targets[indices])
+        obs = torch.cat(observations, dim=0)[:normal_count]
+        target = torch.cat(targets, dim=0)[:normal_count]
+        if on_policy_obs is not None and on_policy_targets is not None and tail_count > 0:
+            obs = torch.cat((obs, observations[-1]), dim=0)
+            target = torch.cat((target, targets[-1]), dim=0)
         prediction, _ = policy.compute({"observations": obs}, role="policy")
         loss = F.mse_loss(prediction, target)
         finite_or_raise("bc_loss", loss)
@@ -833,6 +947,9 @@ def run_skrl_behavior_cloning(
                 "phase": "bc",
                 "update": update,
                 "bc_loss": float(loss.detach().cpu()),
+                "bc_on_policy_tail_samples": (
+                    int(on_policy_obs.shape[0]) if on_policy_obs is not None else 0
+                ),
             }
         )
     return records
@@ -2804,6 +2921,18 @@ def main() -> None:
             ),
             bc_terminal_jitter_std=float(
                 algo.get("bc_terminal_jitter_std", 0.04)
+            ),
+            bc_on_policy_rollout_steps=int(
+                algo.get("bc_on_policy_rollout_steps", 0)
+            ),
+            bc_on_policy_tail_fraction=float(
+                algo.get("bc_on_policy_tail_fraction", 0.0)
+            ),
+            bc_on_policy_dmax_multiplier=float(
+                algo.get("bc_on_policy_dmax_multiplier", 2.0)
+            ),
+            bc_on_policy_dispersion_multiplier=float(
+                algo.get("bc_on_policy_dispersion_multiplier", 2.0)
             ),
         )
     else:

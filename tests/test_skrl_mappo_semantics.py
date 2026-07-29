@@ -27,6 +27,7 @@ from _skrl_metadata import (  # noqa: E402
     validate_checkpoint_compatibility,
 )
 from train_skrl_mappo import (  # noqa: E402
+    _collect_on_policy_tail_bc_samples,
     _action_telemetry,
     _nearest_distances,
     _randomize_bc_state,
@@ -361,6 +362,40 @@ def test_terminal_flat_slots_teacher_follows_actor_visible_dynamic_targets() -> 
 
     assert torch.allclose(action[..., 1], torch.zeros_like(action[..., 1]), atol=1.0e-5)
     assert torch.allclose(action[..., 0], torch.zeros_like(action[..., 0]), atol=1.0e-5)
+
+
+def test_on_policy_tail_bc_samples_match_actor_and_teacher_contract() -> None:
+    cfg = make_debug_cfg(num_envs=4, device="cpu")
+    cfg.task.explicit_goal_in_execution = True
+    cfg.observation.schema_version = "ego_v6_gather_slot_goal"
+    cfg.gather_point.execution_slot_radius = 0.35
+    env = MultiRoverGatheringSKRLEnv(cfg).core
+    models = build_skrl_mappo_models(
+        MultiRoverGatheringSKRLEnv(cfg),
+        shared_actor=True,
+        centralized_critic=True,
+    )
+    policy = models["rover_0"]["policy"]
+
+    observations, targets = _collect_on_policy_tail_bc_samples(
+        policy,
+        env,
+        rollout_steps=2,
+        teacher_stop_radius=0.45,
+        teacher_slow_distance=0.0,
+        teacher_max_rho=None,
+        teacher_mode="oracle_slots",
+        teacher_terrain_scale=False,
+        teacher_center_step=0.65,
+        dmax_multiplier=20.0,
+        dispersion_multiplier=100.0,
+    )
+
+    assert observations.ndim == 2
+    assert observations.shape[1] == cfg.actor_obs_dim
+    assert targets.shape == (cfg.simulation.num_envs * cfg.task.n_agents * 2, 2)
+    assert torch.isfinite(observations).all()
+    assert torch.isfinite(targets).all()
 
 
 def test_exp016_initial_log_std_and_checkpoint_metadata() -> None:

@@ -1,0 +1,13 @@
+extends: exp099_structured_bicycle_quintic_map25_time96_full_center_correction.yaml
+
+experiment:
+  name: exp115_structured_bicycle_quintic_map25_time96_linear_gain30
+
+low_level_control:
+  # The 2.60 -> 2.80 sweep improved 96-second completion with no collision.
+  # One further bounded increment locates the useful tracking-gain range
+  # without modifying the policy, terrain target, or terminal contract.
+  k_linear: 3.00
+
+algorithm:
+  training_semantics: exp115_structured_bicycle_quintic_map25_time96_linear_gain30
