@@ -34,6 +34,17 @@ class TaskCfg:
     # formation slot.  This lets oracle-progress shaping match the safe
     # formation geometry rather than pulling every rover into the same point.
     execution_slot_reward_target: bool = False
+    # Optional observation-level terminal target.  The static reset-time
+    # slots remain the reward target, while the actor can be shown a freshly
+    # assigned symmetric formation around a nearby truly flat footprint.
+    # This is deliberately an execution-goal contract change, not a success
+    # proxy or a post-processing action override.
+    dynamic_terminal_slot_goal_enabled: bool = False
+    dynamic_terminal_slot_goal_dmax_multiplier: float = 1.25
+    dynamic_terminal_slot_goal_dispersion_multiplier: float = 1.25
+    dynamic_terminal_slot_goal_require_flatness_failure: bool = True
+    dynamic_terminal_slot_goal_search_radius: float = 0.25
+    dynamic_terminal_slot_goal_search_samples: int = 8
     oracle_optimal_gather_point_in_training: bool = True
     docking_considered: bool = False
 

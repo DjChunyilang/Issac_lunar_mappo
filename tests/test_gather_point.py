@@ -243,6 +243,33 @@ def test_flat_geometry_capture_can_reassign_slots_at_actual_centroid() -> None:
     assert torch.allclose(targets[0, :, :2], env.positions[0, :, :2], atol=1.0e-6)
 
 
+def test_dynamic_terminal_slot_goal_is_actor_visible_and_preserves_static_reward_slots() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.task.explicit_goal_in_execution = True
+    cfg.task.dynamic_terminal_slot_goal_enabled = True
+    cfg.task.dynamic_terminal_slot_goal_require_flatness_failure = False
+    cfg.observation.schema_version = "ego_v6_gather_slot_goal"
+    cfg.gather_point.execution_slot_radius = 0.35
+    env = MultiRoverGatheringCore(cfg)
+    center = torch.tensor([0.6, -0.4])
+    offsets = torch.tensor(
+        [[0.45, 0.0], [0.0, 0.45], [-0.45, 0.0], [0.0, -0.45]]
+    )
+    env.positions[0, :, :2] = center + offsets
+    env.gather_slot_points[0, :, :2] += torch.tensor([2.0, 1.0])
+
+    env.get_observations()
+
+    assert env.dynamic_terminal_slot_goal_active.tolist() == [True]
+    assert torch.allclose(
+        env.execution_slot_points.mean(dim=1)[0, :2],
+        center,
+        atol=1.0e-6,
+    )
+    assert not torch.allclose(env.execution_slot_points, env.gather_slot_points)
+    assert torch.allclose(env._oracle_reward_target(), env.oracle_point)
+
+
 def test_slot_reward_target_tracks_the_assigned_formation_not_the_shared_site() -> None:
     cfg = make_debug_cfg(num_envs=1, device="cpu")
     cfg.task.explicit_goal_in_execution = True

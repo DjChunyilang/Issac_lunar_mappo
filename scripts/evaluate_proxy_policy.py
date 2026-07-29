@@ -226,6 +226,8 @@ def evaluate_checkpoint(
     terminal_slot_capture_active_sum = torch.tensor(0.0, device=env.device)
     flat_geometry_capture_env_count = torch.tensor(0.0, device=env.device)
     flat_geometry_capture_active_sum = torch.tensor(0.0, device=env.device)
+    dynamic_terminal_slot_goal_env_count = torch.tensor(0.0, device=env.device)
+    dynamic_terminal_slot_goal_active_sum = torch.tensor(0.0, device=env.device)
 
     for step_id in range(steps):
         active_before = active.clone()
@@ -658,6 +660,17 @@ def evaluate_checkpoint(
                 flat_geometry_capture_env_count = flat_geometry_capture_env_count + env_count
                 flat_geometry_capture_active_sum = (
                     flat_geometry_capture_active_sum + active_capture.float().sum()
+                )
+        dynamic_terminal_slot_goal = step_output.info.get("dynamic_terminal_slot_goal")
+        if dynamic_terminal_slot_goal is not None:
+            active_goal = dynamic_terminal_slot_goal["active"][active_before]
+            if active_goal.numel() > 0:
+                env_count = torch.tensor(float(active_goal.numel()), device=env.device)
+                dynamic_terminal_slot_goal_env_count = (
+                    dynamic_terminal_slot_goal_env_count + env_count
+                )
+                dynamic_terminal_slot_goal_active_sum = (
+                    dynamic_terminal_slot_goal_active_sum + active_goal.float().sum()
                 )
         active = active & ~done.done
         if not active.any():
@@ -1097,6 +1110,14 @@ def evaluate_checkpoint(
         ),
         "flat_geometry_capture_active_fraction": float(
             (flat_geometry_capture_active_sum / flat_geometry_capture_env_count.clamp_min(1.0))
+            .detach()
+            .cpu()
+        ),
+        "dynamic_terminal_slot_goal_active_fraction": float(
+            (
+                dynamic_terminal_slot_goal_active_sum
+                / dynamic_terminal_slot_goal_env_count.clamp_min(1.0)
+            )
             .detach()
             .cpu()
         ),

@@ -261,6 +261,26 @@ def _validate_low_level_control(cfg: MultiRoverGatheringEnvCfg) -> None:
         )
 
 
+def _validate_dynamic_terminal_slot_goal(cfg: MultiRoverGatheringEnvCfg) -> None:
+    task = cfg.task
+    if task.dynamic_terminal_slot_goal_dmax_multiplier < 1.0:
+        raise ValueError(
+            "task.dynamic_terminal_slot_goal_dmax_multiplier must be >= 1.0."
+        )
+    if task.dynamic_terminal_slot_goal_dispersion_multiplier < 1.0:
+        raise ValueError(
+            "task.dynamic_terminal_slot_goal_dispersion_multiplier must be >= 1.0."
+        )
+    if task.dynamic_terminal_slot_goal_search_radius < 0.0:
+        raise ValueError(
+            "task.dynamic_terminal_slot_goal_search_radius must be non-negative."
+        )
+    if task.dynamic_terminal_slot_goal_search_samples < 4:
+        raise ValueError(
+            "task.dynamic_terminal_slot_goal_search_samples must be at least 4."
+        )
+
+
 def _validate_gather_point(cfg: MultiRoverGatheringEnvCfg) -> None:
     gather = cfg.gather_point
     supported_methods = {
@@ -375,6 +395,12 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
         "n_agents",
         "explicit_goal_in_execution",
         "execution_slot_reward_target",
+        "dynamic_terminal_slot_goal_enabled",
+        "dynamic_terminal_slot_goal_dmax_multiplier",
+        "dynamic_terminal_slot_goal_dispersion_multiplier",
+        "dynamic_terminal_slot_goal_require_flatness_failure",
+        "dynamic_terminal_slot_goal_search_radius",
+        "dynamic_terminal_slot_goal_search_samples",
     }
     task_unknown = sorted(key for key in task if key not in supported_task_keys)
     if task_unknown:
@@ -390,6 +416,43 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
             cfg.task.execution_slot_reward_target,
         )
     )
+    cfg.task.dynamic_terminal_slot_goal_enabled = bool(
+        task.get(
+            "dynamic_terminal_slot_goal_enabled",
+            cfg.task.dynamic_terminal_slot_goal_enabled,
+        )
+    )
+    cfg.task.dynamic_terminal_slot_goal_dmax_multiplier = float(
+        task.get(
+            "dynamic_terminal_slot_goal_dmax_multiplier",
+            cfg.task.dynamic_terminal_slot_goal_dmax_multiplier,
+        )
+    )
+    cfg.task.dynamic_terminal_slot_goal_dispersion_multiplier = float(
+        task.get(
+            "dynamic_terminal_slot_goal_dispersion_multiplier",
+            cfg.task.dynamic_terminal_slot_goal_dispersion_multiplier,
+        )
+    )
+    cfg.task.dynamic_terminal_slot_goal_require_flatness_failure = bool(
+        task.get(
+            "dynamic_terminal_slot_goal_require_flatness_failure",
+            cfg.task.dynamic_terminal_slot_goal_require_flatness_failure,
+        )
+    )
+    cfg.task.dynamic_terminal_slot_goal_search_radius = float(
+        task.get(
+            "dynamic_terminal_slot_goal_search_radius",
+            cfg.task.dynamic_terminal_slot_goal_search_radius,
+        )
+    )
+    cfg.task.dynamic_terminal_slot_goal_search_samples = int(
+        task.get(
+            "dynamic_terminal_slot_goal_search_samples",
+            cfg.task.dynamic_terminal_slot_goal_search_samples,
+        )
+    )
+    _validate_dynamic_terminal_slot_goal(cfg)
     _apply_values(cfg.initial_state, initial_state, "initial_state")
     if cfg.initial_state.spawn_radius_min <= 0.0:
         raise ValueError("initial_state.spawn_radius_min must be positive.")
@@ -518,6 +581,14 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     }:
         raise ValueError(
             "task.execution_slot_reward_target requires an execution-slot "
+            "observation schema."
+        )
+    if cfg.task.dynamic_terminal_slot_goal_enabled and cfg.observation.schema_version not in {
+        "ego_v6_gather_slot_goal",
+        "ego_v7_gather_site_and_slot_goal",
+    }:
+        raise ValueError(
+            "task.dynamic_terminal_slot_goal_enabled requires an execution-slot "
             "observation schema."
         )
     _apply_state_values(cfg, state)

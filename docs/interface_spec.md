@@ -20,7 +20,7 @@ actor_obs_dim: 86
 
 `observation.communication_radius` 是当前唯一允许从 experiment YAML 覆盖的 observation 字段。取值 `>0` 时表示有限通信半径；取值 `<=0` 时表示临时取消通信距离限制，所有非自身 rover 均视为可见。`max_neighbors`、`ego_dim`、`neighbor_dim`、`terrain_dim` 和 `aggregation_dim` 会改变模型输入接口，本轮不开放配置覆盖。
 
-`ego_v5_gather_site_goal`（89 维）在基础 86 维后追加到公共搜索点的 `[local_dx, local_dy, normalized_distance]`。`ego_v6_gather_slot_goal`（同为 89 维）追加到 rover 专属对称槽位的同一三元组；槽位由环境在 reset 时围绕 `oracle_point` 等角生成，并枚举最小总初始行驶距离的分配。v6 每个 rover 的目标不同，但全部槽位的平均位置严格等于真实搜索点。`ego_v7_gather_site_and_slot_goal`（92 维）按顺序拼接公共点三元组和槽位三元组，是与 `branched_v4` 配对的诊断 schema。三种 schema 都必须与 `task.explicit_goal_in_execution=true` 成对出现；`task.execution_slot_reward_target=true` 只允许 v6/v7，并使 oracle-progress reward 接收 `[env, agent, 3]` 槽位目标而非共享 `[env, 3]` 搜索点。Critic 保持 54 维，字段均不包含全球 XY、搜索 score、可行性或平整度诊断；实际质心平整度和 success gate 不受该 reward 开关影响。
+`ego_v5_gather_site_goal`（89 维）在基础 86 维后追加到公共搜索点的 `[local_dx, local_dy, normalized_distance]`。`ego_v6_gather_slot_goal`（同为 89 维）追加到 rover 专属对称槽位的同一三元组；默认槽位由环境在 reset 时围绕 `oracle_point` 等角生成，并枚举最小总初始行驶距离的分配。v6 每个 rover 的目标不同，但全部槽位的平均位置严格等于真实搜索点。默认关闭的 `task.dynamic_terminal_slot_goal_*` 可在近末段实际质心未通过完整平整度 gate 时，把 Actor 的下一步 v6/v7 槽位特征换为当前质心附近真实平整候选的最小行程分配；维度、Critic、固定 reward 槽位和 success predicate 都不变。`ego_v7_gather_site_and_slot_goal`（92 维）按顺序拼接公共点三元组和槽位三元组，是与 `branched_v4` 配对的诊断 schema。三种 schema 都必须与 `task.explicit_goal_in_execution=true` 成对出现；`task.execution_slot_reward_target=true` 只允许 v6/v7，并使 oracle-progress reward 接收 `[env, agent, 3]` 槽位目标而非共享 `[env, 3]` 搜索点。Critic 保持 54 维，字段均不包含全球 XY、搜索 score、可行性或平整度诊断；实际质心平整度和 success gate 不受该 reward 开关影响。
 
 ego 10 维顺序：
 
@@ -380,7 +380,7 @@ formation_center_correction_require_flatness_failure: bool
 
 `terminal_slot_capture_*` 也是默认关闭的独立实验开关。它在同样的末端几何触发下，将每个 rover 的子目标按 `blend` 线性拉向**该 rover 自己的**固定槽位，不会把所有目标替换为几何中点；后续 control safety 仍会执行。其字段为 `terminal_slot_capture_enabled`、两个 activation multiplier 与 `terminal_slot_capture_blend in [0,1]`。exp081/083 的后验对照显示该机制当前不优于单独的共同质心校正，故不是推荐默认。
 
-`StepOutput.info` 记录 `formation_center_correction.active/offset_xy` 与 `terminal_slot_capture.active`；训练与独立评测汇总为相应的 active fraction，前者额外记录 offset mean/max。
+`StepOutput.info` 记录 `formation_center_correction.active/offset_xy`、`terminal_slot_capture.active`、`flat_geometry_capture.active` 与 `dynamic_terminal_slot_goal.active`；训练与独立评测汇总为相应的 active fraction，前者额外记录 offset mean/max。
 
 ## 兼容 checkpoint 的 warm-start
 

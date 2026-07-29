@@ -1,0 +1,16 @@
+extends: exp110_structured_bicycle_quintic_map25_time96_dynamic_flat_slot_teacher.yaml
+
+experiment:
+  name: exp111_structured_bicycle_quintic_map25_time96_dynamic_flat_slot_no_static_correction
+
+low_level_control:
+  # The actor-visible local real-flat slots and exp099's fixed-point common
+  # correction command different terminal centres.  Isolate the dynamic
+  # target contract by removing only that conflicting post-processing branch.
+  formation_center_correction_enabled: false
+
+algorithm:
+  training_semantics: exp111_structured_bicycle_quintic_map25_time96_dynamic_flat_slot_no_static_correction
+  # First screen the unchanged BC32 policy; no BC/PPO update is authorized
+  # unless this target/control contract exceeds the exp099 post-hoc control.
+  bc_updates: 0

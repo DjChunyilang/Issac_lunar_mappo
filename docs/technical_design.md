@@ -57,7 +57,7 @@ flatten = x -> y -> channel
 
 `relative_height` 相对 rover 脚下高度计算，`risk=1-traversability`。平地输出全零。原脚下 5 维 `height/slope_x/slope_y/roughness/traversability` 仍用于 proxy 动力学和 terrain reward，不再直接作为 actor 地形观测。
 
-`ego_v6_gather_slot_goal` 是显式执行目标的 89 维扩展：在上述 86 维后追加 `[local_dx, local_dy, normalized_distance]`。环境先搜索真实地形可行 `oracle_point`，再在其周围构造等角对称槽位，并用 reset 时的最小总行驶距离排列把槽位固定分配给 rover。各槽位的算术均值严格等于 `oracle_point`；因此策略学习的是到自身槽位的局部控制，而不是将所有车压向同一几何中点。该字段没有世界系坐标、agent ID、oracle 目标函数或平整度测量。`ego_v7_gather_site_and_slot_goal` 将共同搜索点三元组与槽位三元组拼为 92 维输入；它是已实现的诊断 schema，exp068 的 BC 闭环结果差于 v6，当前不作为训练主线。`task.execution_slot_reward_target` 默认关闭；显式启用后只将 dense oracle-progress 的距离目标从共享 `oracle_point` 改为每辆 rover 的固定槽位。该开关不改变搜索、Critic、实际质心平整度或终止语义。
+`ego_v6_gather_slot_goal` 是显式执行目标的 89 维扩展：在上述 86 维后追加 `[local_dx, local_dy, normalized_distance]`。默认环境先搜索真实地形可行 `oracle_point`，再在其周围构造等角对称槽位，并用 reset 时的最小总行驶距离排列把槽位固定分配给 rover。各槽位的算术均值严格等于 `oracle_point`；因此策略学习的是到自身槽位的局部控制，而不是将所有车压向同一几何中点。可选的 `task.dynamic_terminal_slot_goal_*` 在近末段实际质心平整度失败时，将**下一步 Actor 可见**的同维槽位换成当前质心附近真实平整候选的对称槽位；固定槽位仍用于 reward，成功语义不变。该机制默认关闭，exp110/111 未优于固定目标。字段没有世界系坐标、agent ID、oracle 目标函数或平整度测量。`ego_v7_gather_site_and_slot_goal` 将共同搜索点三元组与槽位三元组拼为 92 维输入；它是已实现的诊断 schema，exp068 的 BC 闭环结果差于 v6，当前不作为训练主线。`task.execution_slot_reward_target` 默认关闭；显式启用后只将 dense oracle-progress 的距离目标从共享 `oracle_point` 改为每辆 rover 的固定槽位。该开关不改变搜索、Critic、实际质心平整度或终止语义。
 
 `observation.communication_radius` 是当前唯一允许从 experiment YAML 覆盖的 observation 字段。取值 `>0` 表示有限通信；取值 `<=0` 表示临时取消通信距离限制，所有非自身 rover 都作为可见邻居参与 neighbor slots、aggregation、visible-local teacher 和子目标过滤器可见邻居计算。`max_neighbors`、`ego_dim`、`neighbor_dim`、`terrain_dim` 和 `aggregation_dim` 会改变模型输入接口，本轮不开放配置覆盖。
 

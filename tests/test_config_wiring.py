@@ -390,6 +390,53 @@ def test_execution_slot_reward_target_requires_a_slot_observation_schema(tmp_pat
         cfg_from_experiment(config_path)
 
 
+def test_dynamic_terminal_slot_goal_requires_slot_schema_and_valid_search(tmp_path: Path) -> None:
+    config_path = tmp_path / "experiment.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "experiment": {"name": "dynamic_terminal_slot_goal"},
+                "task": {
+                    "explicit_goal_in_execution": True,
+                    "dynamic_terminal_slot_goal_enabled": True,
+                    "dynamic_terminal_slot_goal_dmax_multiplier": 1.25,
+                    "dynamic_terminal_slot_goal_dispersion_multiplier": 1.25,
+                    "dynamic_terminal_slot_goal_search_radius": 0.25,
+                    "dynamic_terminal_slot_goal_search_samples": 8,
+                },
+                "observation": {"schema_version": "ego_v6_gather_slot_goal"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = cfg_from_experiment(config_path)
+    assert cfg.task.dynamic_terminal_slot_goal_enabled
+
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "experiment": {"name": "bad_dynamic_terminal_slot_goal"},
+                "task": {"dynamic_terminal_slot_goal_search_samples": 3},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="dynamic_terminal_slot_goal_search_samples"):
+        cfg_from_experiment(config_path)
+
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "experiment": {"name": "bad_dynamic_terminal_slot_goal_schema"},
+                "task": {"dynamic_terminal_slot_goal_enabled": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="dynamic_terminal_slot_goal_enabled"):
+        cfg_from_experiment(config_path)
+
+
 def test_site_and_slot_goal_schema_requires_the_explicit_execution_contract(
     tmp_path: Path,
 ) -> None:

@@ -337,6 +337,32 @@ def test_oracle_slots_teacher_follows_fixed_symmetric_execution_targets() -> Non
     assert torch.allclose(action[..., 0], torch.ones_like(action[..., 0]))
 
 
+def test_terminal_flat_slots_teacher_follows_actor_visible_dynamic_targets() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.task.explicit_goal_in_execution = True
+    cfg.task.dynamic_terminal_slot_goal_enabled = True
+    cfg.observation.schema_version = "ego_v6_gather_slot_goal"
+    cfg.planner.rho_max = 4.0
+    env = MultiRoverGatheringSKRLEnv(cfg).core
+    env.positions.zero_()
+    env.yaws.copy_(torch.tensor([[0.0, torch.pi / 2.0, torch.pi, -torch.pi / 2.0]]))
+    env.gather_slot_points.copy_(
+        torch.tensor([[[3.0, 0.0, 0.0], [0.0, 3.0, 0.0], [-3.0, 0.0, 0.0], [0.0, -3.0, 0.0]]])
+    )
+    env.execution_slot_points.copy_(
+        torch.tensor([[[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [-2.0, 0.0, 0.0], [0.0, -2.0, 0.0]]])
+    )
+
+    action = scripted_gather_action(
+        env,
+        slow_distance=0.0,
+        teacher_mode="terminal_flat_slots",
+    )
+
+    assert torch.allclose(action[..., 1], torch.zeros_like(action[..., 1]), atol=1.0e-5)
+    assert torch.allclose(action[..., 0], torch.zeros_like(action[..., 0]), atol=1.0e-5)
+
+
 def test_exp016_initial_log_std_and_checkpoint_metadata() -> None:
     raw = load_yaml(ROOT / "configs/experiment/exp016_shared_mappo_comm12.yaml")
     env = _make_env()

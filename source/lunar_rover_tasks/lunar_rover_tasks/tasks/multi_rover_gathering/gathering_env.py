@@ -119,6 +119,16 @@ class MultiRoverGatheringCore:
             3,
             device=self.device,
         )
+        # The actor normally observes the fixed reset-time assignment above.
+        # An opt-in terminal contract can replace it for the next action with
+        # a current-centroid flat-site assignment while leaving reward and
+        # success targets unchanged.
+        self.execution_slot_points = torch.zeros_like(self.gather_slot_points)
+        self.dynamic_terminal_slot_goal_active = torch.zeros(
+            self.num_envs,
+            dtype=torch.bool,
+            device=self.device,
+        )
         self._execution_slot_permutations = torch.tensor(
             list(permutations(range(self.n_agents))),
             dtype=torch.long,
@@ -260,22 +270,36 @@ class MultiRoverGatheringCore:
             "ego_v7_gather_site_and_slot_goal",
         }:
             self.gather_slot_points[env_ids] = shared_point[:, None, :]
+            self.execution_slot_points[env_ids] = self.gather_slot_points[env_ids]
+            self.dynamic_terminal_slot_goal_active[env_ids] = False
             return
+        self.gather_slot_points[env_ids] = self._assign_symmetric_slots(
+            shared_point,
+            self.positions[env_ids],
+        )
+        self.execution_slot_points[env_ids] = self.gather_slot_points[env_ids]
+        self.dynamic_terminal_slot_goal_active[env_ids] = False
 
+    def _assign_symmetric_slots(
+        self,
+        centers: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> torch.Tensor:
+        """Assign nearest symmetric slots around per-environment centres."""
         slot_angles = torch.arange(
             self.n_agents,
             device=self.device,
-            dtype=self.positions.dtype,
+            dtype=positions.dtype,
         ) * (2.0 * torch.pi / float(self.n_agents))
         slot_offsets = float(self.cfg.gather_point.execution_slot_radius) * torch.stack(
             (torch.cos(slot_angles), torch.sin(slot_angles)),
             dim=-1,
         )
-        unassigned_slots = shared_point[:, None, :].expand(-1, self.n_agents, -1).clone()
+        unassigned_slots = centers[:, None, :].expand(-1, self.n_agents, -1).clone()
         unassigned_slots[..., :2] += slot_offsets
-
-        travel_cost = (self.positions[env_ids, :, None, :2] - unassigned_slots[:, None, :, :2])
-        travel_cost = travel_cost.square().sum(dim=-1)
+        travel_cost = (
+            positions[:, :, None, :2] - unassigned_slots[:, None, :, :2]
+        ).square().sum(dim=-1)
         agent_ids = torch.arange(self.n_agents, device=self.device)
         permutation_costs = torch.stack(
             [travel_cost[:, agent_ids, permutation].sum(dim=-1)
@@ -283,11 +307,68 @@ class MultiRoverGatheringCore:
             dim=1,
         )
         assignment = self._execution_slot_permutations[permutation_costs.argmin(dim=1)]
-        self.gather_slot_points[env_ids] = torch.gather(
+        return torch.gather(
             unassigned_slots,
             dim=1,
             index=assignment[..., None].expand(-1, -1, 3),
         )
+
+    def _refresh_dynamic_terminal_slot_goal(self, metrics: TeamMetrics) -> None:
+        """Expose a local real-flat terminal target under the slot contract.
+
+        This updates only the actor-facing target for the *next* action.  The
+        fixed reset-time slots continue to define dense reward shaping, and
+        success remains independently checked at the actual team centroid.
+        """
+        self.execution_slot_points.copy_(self.gather_slot_points)
+        self.dynamic_terminal_slot_goal_active.zero_()
+        task_cfg = self.cfg.task
+        if not (
+            task_cfg.dynamic_terminal_slot_goal_enabled
+            and self.cfg.observation.schema_version
+            in {"ego_v6_gather_slot_goal", "ego_v7_gather_site_and_slot_goal"}
+        ):
+            return
+
+        terminal = (
+            metrics.dmax
+            <= float(self.cfg.success_thresholds.dmax)
+            * float(task_cfg.dynamic_terminal_slot_goal_dmax_multiplier)
+        ) & (
+            metrics.dispersion
+            <= float(self.cfg.success_thresholds.dispersion)
+            * float(task_cfg.dynamic_terminal_slot_goal_dispersion_multiplier)
+        )
+        if task_cfg.dynamic_terminal_slot_goal_require_flatness_failure:
+            flatness = self.evaluate_current_gather_point_flatness(metrics)
+            terminal = terminal & ~flatness.is_flat
+        env_ids = torch.nonzero(terminal, as_tuple=False).flatten()
+        if env_ids.numel() == 0:
+            return
+
+        gather_cfg = self.cfg.gather_point
+        search = search_local_flatness_center(
+            metrics.centroid[env_ids, :2],
+            self.cfg.terrain,
+            self.terrain_runtime.subset(env_ids),
+            search_radius=float(task_cfg.dynamic_terminal_slot_goal_search_radius),
+            samples=int(task_cfg.dynamic_terminal_slot_goal_search_samples),
+            flatness_radius=float(gather_cfg.flatness_radius),
+            flatness_rings=int(gather_cfg.flatness_rings),
+            flatness_samples_per_ring=int(gather_cfg.flatness_samples_per_ring),
+            max_height_range=float(gather_cfg.max_height_range),
+            max_slope=float(gather_cfg.max_slope),
+        )
+        found_ids = env_ids[search.found_flat]
+        if found_ids.numel() == 0:
+            return
+        centers = self.gather_slot_points[found_ids].mean(dim=1).clone()
+        centers[..., :2] = search.target_xy[search.found_flat]
+        self.execution_slot_points[found_ids] = self._assign_symmetric_slots(
+            centers,
+            self.positions[found_ids],
+        )
+        self.dynamic_terminal_slot_goal_active[found_ids] = True
 
     def _flat_geometry_capture_slot_points(self, metrics: TeamMetrics) -> torch.Tensor:
         """Return current-centroid slots, optionally reassigned by travel cost.
@@ -490,6 +571,7 @@ class MultiRoverGatheringCore:
 
     def get_observations(self) -> tuple[torch.Tensor, torch.Tensor]:
         metrics = compute_team_metrics(self.positions, self.velocities_xy)
+        self._refresh_dynamic_terminal_slot_goal(metrics)
         terrain_grid = build_local_terrain_grid(
             self.positions,
             self.yaws,
@@ -501,11 +583,11 @@ class MultiRoverGatheringCore:
         if self.cfg.task.explicit_goal_in_execution:
             schema = self.cfg.observation.schema_version
             if schema == "ego_v6_gather_slot_goal":
-                execution_target = self.gather_slot_points
+                execution_target = self.execution_slot_points
             else:
                 execution_target = self.oracle_point
                 if schema == "ego_v7_gather_site_and_slot_goal":
-                    execution_slot_target = self.gather_slot_points
+                    execution_slot_target = self.execution_slot_points
         actor_obs = build_actor_observation(
             self.positions,
             self.yaws,
@@ -780,6 +862,9 @@ class MultiRoverGatheringCore:
         flat_geometry_capture_snapshot = {
             "active": flat_geometry_capture.active.clone(),
         }
+        dynamic_terminal_slot_goal_snapshot = {
+            "active": self.dynamic_terminal_slot_goal_active.clone(),
+        }
         control_safety_snapshot = {
             key: value.clone() if isinstance(value, torch.Tensor) else value
             for key, value in control_safety.info.items()
@@ -848,6 +933,7 @@ class MultiRoverGatheringCore:
                 "formation_center_correction": formation_center_correction_snapshot,
                 "terminal_slot_capture": terminal_slot_capture_snapshot,
                 "flat_geometry_capture": flat_geometry_capture_snapshot,
+                "dynamic_terminal_slot_goal": dynamic_terminal_slot_goal_snapshot,
                 "terrain_runtime": terrain_runtime,
                 "gather_point_flatness": gather_point_flatness_snapshot,
                 "centroid_flatness_reward": centroid_flatness_reward_snapshot,

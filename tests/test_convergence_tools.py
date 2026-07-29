@@ -234,6 +234,7 @@ def test_evaluate_proxy_policy_outputs_finite_ratio(tmp_path: Path) -> None:
         "final_mean_speed",
         "final_gather_point_height_range_mean",
         "final_gather_point_max_slope_mean",
+        "dynamic_terminal_slot_goal_active_fraction",
     ):
         assert key in result
         assert torch.isfinite(torch.tensor(result[key]))

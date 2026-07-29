@@ -1,0 +1,36 @@
+extends: exp099_structured_bicycle_quintic_map25_time96_full_center_correction.yaml
+
+experiment:
+  name: exp110_structured_bicycle_quintic_map25_time96_dynamic_flat_slot_teacher
+
+task:
+  # Keep the 89-d ego_v6 contract, but replace only the actor-visible slot
+  # goal near a non-flat terminal centroid with a locally searched real-flat
+  # footprint. Success and reward targets remain independently defined.
+  dynamic_terminal_slot_goal_enabled: true
+  dynamic_terminal_slot_goal_dmax_multiplier: 1.25
+  dynamic_terminal_slot_goal_dispersion_multiplier: 1.25
+  dynamic_terminal_slot_goal_require_flatness_failure: true
+  dynamic_terminal_slot_goal_search_radius: 0.25
+  dynamic_terminal_slot_goal_search_samples: 8
+
+algorithm:
+  training_semantics: exp110_structured_bicycle_quintic_map25_time96_dynamic_flat_slot_teacher
+  # Re-anchor only the selected BC32 policy.  Half of each short BC batch is
+  # sampled in the near-terminal geometry where the dynamic target can occur;
+  # the remainder preserves normal approach behaviour.
+  init_checkpoint: outputs/runs/exp092_structured_bicycle_quintic_map25_flatness_center_early_radius35/bc_reanchor_exp073_seed23_32_flatness_early_radius35/checkpoints/best.pt
+  bc_updates: 8
+  bc_batch_size: 8192
+  bc_learning_rate: 0.00003
+  teacher_mode: terminal_flat_slots
+  teacher_stop_radius: 0.45
+  teacher_slow_distance: 0.0
+  teacher_max_rho: 1.6
+  teacher_terrain_scale: false
+  bc_yaw_noise_degrees: 20.0
+  bc_min_nearest_distance: 0.34
+  bc_terminal_state_fraction: 0.50
+  bc_terminal_spawn_radius_min: 0.35
+  bc_terminal_spawn_radius_max: 0.60
+  bc_terminal_jitter_std: 0.04

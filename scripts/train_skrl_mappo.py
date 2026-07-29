@@ -445,9 +445,11 @@ def scripted_gather_action(
     assigns each rover a radial slot around the terrain-aware planned point.
     ``oracle_translating_ring`` first translates the current formation center
     toward that point while shrinking it into the same ring. ``oracle_slots``
-    instead follows the fixed, minimum-travel assignment of symmetric slots
-    planned by the environment. The ring radius preserves a nonzero pairwise
-    separation instead of training every rover to collide at the same point.
+    follows the fixed, minimum-travel assignment of symmetric slots planned
+    by the environment; ``terminal_flat_slots`` uses the actor-visible dynamic
+    flat-site slots when that terminal contract activates. The ring radius
+    preserves a nonzero pairwise separation instead of training every rover
+    to collide at the same point.
     """
     supported_modes = {
         "global_centroid",
@@ -455,6 +457,7 @@ def scripted_gather_action(
         "oracle_ring",
         "oracle_translating_ring",
         "oracle_slots",
+        "terminal_flat_slots",
     }
     if teacher_mode not in supported_modes:
         raise ValueError(
@@ -462,16 +465,25 @@ def scripted_gather_action(
             f"{', '.join(sorted(supported_modes))}."
         )
     positions_xy = env.positions[..., :2]
-    if teacher_mode == "oracle_slots":
+    if teacher_mode in {"oracle_slots", "terminal_flat_slots"}:
         if env.cfg.observation.schema_version not in {
             "ego_v6_gather_slot_goal",
             "ego_v7_gather_site_and_slot_goal",
         }:
             raise ValueError(
-                "teacher_mode=oracle_slots requires "
+                f"teacher_mode={teacher_mode} requires "
                 "a gather-slot execution schema."
             )
-        target_error = env.gather_slot_points[..., :2] - positions_xy
+        if teacher_mode == "terminal_flat_slots":
+            if not env.cfg.task.dynamic_terminal_slot_goal_enabled:
+                raise ValueError(
+                    "teacher_mode=terminal_flat_slots requires "
+                    "task.dynamic_terminal_slot_goal_enabled=true."
+                )
+            target_points = env.execution_slot_points
+        else:
+            target_points = env.gather_slot_points
+        target_error = target_points[..., :2] - positions_xy
         world_delta = torch.where(
             torch.linalg.vector_norm(target_error, dim=-1, keepdim=True) > 1.0e-3,
             target_error,
@@ -540,6 +552,7 @@ def scripted_gather_action(
         "oracle_ring",
         "oracle_translating_ring",
         "oracle_slots",
+        "terminal_flat_slots",
     }:
         rel = positions_xy - centroid_xy
         dist = torch.linalg.vector_norm(rel, dim=-1, keepdim=True)
@@ -614,7 +627,21 @@ def _randomize_bc_state(
     visible_local: bool = False,
     yaw_noise_degrees: float | None = None,
     min_nearest_distance: float | None = None,
+    terminal_state_fraction: float = 0.0,
+    terminal_spawn_radius_min: float = 0.35,
+    terminal_spawn_radius_max: float = 0.65,
+    terminal_jitter_std: float = 0.04,
 ) -> None:
+    if not 0.0 <= terminal_state_fraction <= 1.0:
+        raise ValueError("terminal_state_fraction must be in [0, 1].")
+    if terminal_spawn_radius_min <= 0.0:
+        raise ValueError("terminal_spawn_radius_min must be positive.")
+    if terminal_spawn_radius_max < terminal_spawn_radius_min:
+        raise ValueError(
+            "terminal_spawn_radius_max must be >= terminal_spawn_radius_min."
+        )
+    if terminal_jitter_std < 0.0:
+        raise ValueError("terminal_jitter_std must be non-negative.")
     env.randomize_terrain()
     base_angles = torch.linspace(
         0.0,
@@ -633,7 +660,28 @@ def _randomize_bc_state(
             4.0,
             generator=env.generator,
         )
-        jitter = 0.35 * torch.randn(
+        if terminal_state_fraction > 0.0:
+            terminal_mask = torch.rand(
+                count,
+                1,
+                1,
+                device=env.device,
+                generator=env.generator,
+            ) < terminal_state_fraction
+            terminal_radius = torch.empty(count, 1, 1, device=env.device).uniform_(
+                terminal_spawn_radius_min,
+                terminal_spawn_radius_max,
+                generator=env.generator,
+            )
+            radius = torch.where(terminal_mask, terminal_radius, radius)
+            jitter_scale = torch.where(
+                terminal_mask,
+                torch.full_like(radius, terminal_jitter_std),
+                torch.full_like(radius, 0.35),
+            )
+        else:
+            jitter_scale = torch.full_like(radius, 0.35)
+        jitter = jitter_scale * torch.randn(
             count,
             env.n_agents,
             2,
@@ -710,6 +758,10 @@ def run_skrl_behavior_cloning(
     teacher_center_step: float = 0.65,
     bc_yaw_noise_degrees: float | None = None,
     bc_min_nearest_distance: float | None = None,
+    bc_terminal_state_fraction: float = 0.0,
+    bc_terminal_spawn_radius_min: float = 0.35,
+    bc_terminal_spawn_radius_max: float = 0.65,
+    bc_terminal_jitter_std: float = 0.04,
 ) -> list[dict[str, float | int | str]]:
     """Warm-start the shared SKRL actor; MAPPO itself remains teacher-loss free."""
     if updates <= 0:
@@ -720,11 +772,12 @@ def run_skrl_behavior_cloning(
         "oracle_ring",
         "oracle_translating_ring",
         "oracle_slots",
+        "terminal_flat_slots",
     }:
         raise ValueError(
             "teacher_mode must be one of: global_centroid, "
             "visible_local_centroid, oracle_ring, oracle_translating_ring, "
-            "oracle_slots."
+            "oracle_slots, terminal_flat_slots."
         )
     bc_cfg = copy.deepcopy(cfg)
     bc_cfg.simulation.num_envs = max(
@@ -748,6 +801,10 @@ def run_skrl_behavior_cloning(
                 visible_local=teacher_mode == "visible_local_centroid",
                 yaw_noise_degrees=bc_yaw_noise_degrees,
                 min_nearest_distance=bc_min_nearest_distance,
+                terminal_state_fraction=bc_terminal_state_fraction,
+                terminal_spawn_radius_min=bc_terminal_spawn_radius_min,
+                terminal_spawn_radius_max=bc_terminal_spawn_radius_max,
+                terminal_jitter_std=bc_terminal_jitter_std,
             )
             actor_obs, _ = env.get_observations()
             target = scripted_gather_action(
@@ -2735,6 +2792,18 @@ def main() -> None:
                 float(algo["bc_min_nearest_distance"])
                 if algo.get("bc_min_nearest_distance") is not None
                 else None
+            ),
+            bc_terminal_state_fraction=float(
+                algo.get("bc_terminal_state_fraction", 0.0)
+            ),
+            bc_terminal_spawn_radius_min=float(
+                algo.get("bc_terminal_spawn_radius_min", 0.35)
+            ),
+            bc_terminal_spawn_radius_max=float(
+                algo.get("bc_terminal_spawn_radius_max", 0.65)
+            ),
+            bc_terminal_jitter_std=float(
+                algo.get("bc_terminal_jitter_std", 0.04)
             ),
         )
     else:
