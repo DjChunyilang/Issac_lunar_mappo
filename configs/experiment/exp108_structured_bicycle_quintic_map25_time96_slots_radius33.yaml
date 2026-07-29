@@ -1,0 +1,12 @@
+extends: exp099_structured_bicycle_quintic_map25_time96_full_center_correction.yaml
+
+experiment:
+  name: exp108_structured_bicycle_quintic_map25_time96_slots_radius33
+
+gather_point:
+  # Adjacent nominal spacing is about 0.467 m, retaining a 0.047 m margin
+  # above the real 0.42 m safety gate while reducing required dmax/dispersion.
+  execution_slot_radius: 0.33
+
+algorithm:
+  training_semantics: exp108_structured_bicycle_quintic_map25_time96_slots_radius33

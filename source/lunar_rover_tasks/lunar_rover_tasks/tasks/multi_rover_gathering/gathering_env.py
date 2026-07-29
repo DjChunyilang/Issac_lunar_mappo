@@ -17,6 +17,7 @@ import torch
 
 from lunar_rover_tasks.tasks.multi_rover_gathering.action_interpreter import (
     apply_formation_center_correction,
+    apply_flat_geometry_capture,
     apply_terminal_slot_capture,
     decode_action,
 )
@@ -288,6 +289,46 @@ class MultiRoverGatheringCore:
             index=assignment[..., None].expand(-1, -1, 3),
         )
 
+    def _flat_geometry_capture_slot_points(self, metrics: TeamMetrics) -> torch.Tensor:
+        """Return current-centroid slots, optionally reassigned by travel cost.
+
+        The assignment used for observations is fixed at reset.  That remains
+        important for a stable actor contract, but terminal geometric capture
+        should not command a rover across the formation merely because its
+        reset-time slot is stale.  This method is execution-only and never
+        changes the observation target or success predicate.
+        """
+        control_cfg = self.cfg.low_level_control
+        if not control_cfg.flat_geometry_capture_dynamic_assignment:
+            return self.gather_slot_points
+
+        slot_angles = torch.arange(
+            self.n_agents,
+            device=self.device,
+            dtype=self.positions.dtype,
+        ) * (2.0 * torch.pi / float(self.n_agents))
+        slot_offsets = float(self.cfg.gather_point.execution_slot_radius) * torch.stack(
+            (torch.cos(slot_angles), torch.sin(slot_angles)),
+            dim=-1,
+        )
+        unassigned_slots = metrics.centroid[:, None, :].expand(-1, self.n_agents, -1).clone()
+        unassigned_slots[..., :2] += slot_offsets
+        travel_cost = (
+            self.positions[:, :, None, :2] - unassigned_slots[:, None, :, :2]
+        ).square().sum(dim=-1)
+        agent_ids = torch.arange(self.n_agents, device=self.device)
+        permutation_costs = torch.stack(
+            [travel_cost[:, agent_ids, permutation].sum(dim=-1)
+             for permutation in self._execution_slot_permutations],
+            dim=1,
+        )
+        assignment = self._execution_slot_permutations[permutation_costs.argmin(dim=1)]
+        return torch.gather(
+            unassigned_slots,
+            dim=1,
+            index=assignment[..., None].expand(-1, -1, 3),
+        )
+
     def evaluate_current_gather_point_flatness(
         self,
         metrics: TeamMetrics | None = None,
@@ -533,11 +574,29 @@ class MultiRoverGatheringCore:
             ),
             blend=float(self.cfg.low_level_control.terminal_slot_capture_blend),
         )
+        flat_geometry_capture = apply_flat_geometry_capture(
+            slot_capture.decoded,
+            gather_slot_points=self._flat_geometry_capture_slot_points(self.prev_metrics),
+            centroid_xy=self.prev_metrics.centroid[..., :2],
+            dmax=self.prev_metrics.dmax,
+            dispersion=self.prev_metrics.dispersion,
+            flatness_ok=self.prev_gather_point_flatness_ok,
+            dmax_threshold=float(self.cfg.success_thresholds.dmax),
+            dispersion_threshold=float(self.cfg.success_thresholds.dispersion),
+            enabled=bool(self.cfg.low_level_control.flat_geometry_capture_enabled),
+            activation_dmax_multiplier=float(
+                self.cfg.low_level_control.flat_geometry_capture_dmax_multiplier
+            ),
+            activation_dispersion_multiplier=float(
+                self.cfg.low_level_control.flat_geometry_capture_dispersion_multiplier
+            ),
+            blend=float(self.cfg.low_level_control.flat_geometry_capture_blend),
+        )
         formation_center_xy, local_flatness_search_active = self._select_terminal_formation_center(
             self.prev_metrics
         )
         correction = apply_formation_center_correction(
-            slot_capture.decoded,
+            flat_geometry_capture.decoded,
             centroid_xy=self.prev_metrics.centroid[..., :2],
             dmax=self.prev_metrics.dmax,
             dispersion=self.prev_metrics.dispersion,
@@ -718,6 +777,9 @@ class MultiRoverGatheringCore:
         terminal_slot_capture_snapshot = {
             "active": slot_capture.active.clone(),
         }
+        flat_geometry_capture_snapshot = {
+            "active": flat_geometry_capture.active.clone(),
+        }
         control_safety_snapshot = {
             key: value.clone() if isinstance(value, torch.Tensor) else value
             for key, value in control_safety.info.items()
@@ -785,6 +847,7 @@ class MultiRoverGatheringCore:
                 "action_filter": action_filter_snapshot,
                 "formation_center_correction": formation_center_correction_snapshot,
                 "terminal_slot_capture": terminal_slot_capture_snapshot,
+                "flat_geometry_capture": flat_geometry_capture_snapshot,
                 "terrain_runtime": terrain_runtime,
                 "gather_point_flatness": gather_point_flatness_snapshot,
                 "centroid_flatness_reward": centroid_flatness_reward_snapshot,

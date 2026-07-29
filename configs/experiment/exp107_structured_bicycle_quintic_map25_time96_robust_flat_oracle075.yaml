@@ -1,0 +1,13 @@
+extends: exp099_structured_bicycle_quintic_map25_time96_full_center_correction.yaml
+
+experiment:
+  name: exp107_structured_bicycle_quintic_map25_time96_robust_flat_oracle075
+
+gather_point:
+  # Same real-footprint robustness test as exp106 with a wider execution
+  # envelope; 0.10 m was previously too conservative, so this brackets it.
+  robustness_radius: 0.075
+  robustness_samples: 8
+
+algorithm:
+  training_semantics: exp107_structured_bicycle_quintic_map25_time96_robust_flat_oracle075

@@ -1,0 +1,14 @@
+extends: exp099_structured_bicycle_quintic_map25_time96_full_center_correction.yaml
+
+experiment:
+  name: exp106_structured_bicycle_quintic_map25_time96_robust_flat_oracle05
+
+gather_point:
+  # A candidate is feasible only when the same full success footprint remains
+  # flat at its centre and every sampled 5 cm centroid displacement. This is
+  # a terrain-search constraint, not a relaxed success condition.
+  robustness_radius: 0.05
+  robustness_samples: 8
+
+algorithm:
+  training_semantics: exp106_structured_bicycle_quintic_map25_time96_robust_flat_oracle05

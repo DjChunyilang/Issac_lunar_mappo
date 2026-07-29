@@ -1,0 +1,16 @@
+extends: exp102_structured_bicycle_quintic_map25_time96_wide_local_flatness_center.yaml
+
+experiment:
+  name: exp104_structured_bicycle_quintic_map25_time96_conditional_terminal_branches
+
+low_level_control:
+  # exp102 and exp103 are mutually exclusive by construction: the first
+  # handles non-flat terminal geometry, the second handles flat non-terminal
+  # geometry. Combining them is therefore a true state-conditional control.
+  flat_geometry_capture_enabled: true
+  flat_geometry_capture_dmax_multiplier: 1.75
+  flat_geometry_capture_dispersion_multiplier: 1.75
+  flat_geometry_capture_blend: 0.15
+
+algorithm:
+  training_semantics: exp104_structured_bicycle_quintic_map25_time96_conditional_terminal_branches

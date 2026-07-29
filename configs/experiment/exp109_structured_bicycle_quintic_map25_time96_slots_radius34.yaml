@@ -1,0 +1,12 @@
+extends: exp099_structured_bicycle_quintic_map25_time96_full_center_correction.yaml
+
+experiment:
+  name: exp109_structured_bicycle_quintic_map25_time96_slots_radius34
+
+gather_point:
+  # A smaller interpolation between the selected 0.35 m radius and the 0.33 m
+  # geometry probe; nominal adjacent spacing remains 0.481 m.
+  execution_slot_radius: 0.34
+
+algorithm:
+  training_semantics: exp109_structured_bicycle_quintic_map25_time96_slots_radius34

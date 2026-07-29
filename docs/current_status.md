@@ -6,7 +6,9 @@
 
 - exp098–exp101 已在 96 秒时域完成末段干预和 PPO 诊断。严格逐槽位捕获退化；增大共同中心校正在相同 exp092 BC32 后验对照中暂时最好（exp099：`0.1843/0.8643/0/0.1357`）；真实局部平整候选搜索不再以几何中点代理目标，而对当前质心及附近环形候选运行与 success gate 相同的 37 点平整度检查。它使最终实际平整率达到 `0.9150`，但 success 仅 `0.8604`、timeout `0.1396`，未优于 exp099。以 `1e-5` 从 BC32 warm-start 的 4M environment-step PPO probe 中，`t=512/1024/1536/2048` success 依次降为 `0.8154/0.7539/0.7109/0.6621`，只保留 `t=0`，不触发 PhysX。
 
-- 最新 success-gate 诊断中，143 个 timeout 没有速度或最小两两间距失败：45 个仅实际质心不平整、58 个仅 dmax/dispersion 未收紧、40 个两类同时失败。下一步应把末段控制拆成条件分支：几何已过且不平整时只重定位至真实平整候选；地点已平整但几何未过时只收紧固定槽位/共同中心。先以 exp092 BC32 做后验对照，只有稳定增益才重新启动 PPO；不再继续全局 PPO 微调，也不放宽真实平整度或 strict timeout gate。
+- exp102–exp109 已完成条件末段控制、鲁棒集合点和槽位半径的同协议后验筛选，均低于 exp099：宽局部搜索 `0.8359` success，原地几何收紧 `0.8535`，分支组合 `0.8438`；5/7.5 cm 鲁棒搜索将实际平整率提高到 `0.9443/0.9551`，但 success 降至 `0.8535/0.8457`；0.33/0.34 m 槽位也分别为 `0.8379/0.8467`。原地收紧的 gate 复诊显示几何通过率略升却增加平整度失败，动态槽位重匹配无差异。所有变体 collision 都是 0，故全部 reject，不启动 PPO。
+
+- 当前推荐仍是 exp099 的 BC32 执行期对照（`0.1843/0.8643/0/0.1357`），严格验收尚未通过。下一步不再添加独立末段后处理；将改为教师/目标层的短 BC screen，使接近末段的连续目标同时编码完整实际平整 footprint 与紧凑度，再与不更新 checkpoint 同协议筛选。96 秒、真实平整 gate 和 strict timeout gate 均不放宽。
 - 当前主设计口径已切换为“高吞吐 proxy 训练 + Isaac Sim / Isaac Lab / PhysX 高保真闭环评估”。当前实施路线以 `docs/implementation_plan.md` 和 `docs/architecture/overall_plan_v3.md` 为准。
 - 训练主环境仍是 PyTorch / torch-vectorized proxy 环境，用于 MAPPO / PPO 采样、奖励调试、观测接口验证和大规模对照实验。
 - Isaac Sim / Isaac Lab / PhysX 不作为当前主训练 loop，而作为 high-fidelity validation、迁移 sanity check、失效分析和可视化展示平台。

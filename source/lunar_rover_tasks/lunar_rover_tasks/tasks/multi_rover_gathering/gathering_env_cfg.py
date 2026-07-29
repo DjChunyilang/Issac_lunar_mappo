@@ -166,6 +166,17 @@ class LowLevelControlCfg:
     terminal_slot_capture_dmax_multiplier: float = 1.75
     terminal_slot_capture_dispersion_multiplier: float = 1.75
     terminal_slot_capture_blend: float = 0.65
+    # Optional in-place shape capture for an already-flat centroid that has
+    # not yet met dmax/dispersion.  It reuses fixed slot offsets around the
+    # actual centroid, so it cannot use an oracle point as a success proxy.
+    flat_geometry_capture_enabled: bool = False
+    flat_geometry_capture_dmax_multiplier: float = 1.75
+    flat_geometry_capture_dispersion_multiplier: float = 1.75
+    flat_geometry_capture_blend: float = 0.15
+    # Reassign symmetric slots from the current rover positions before the
+    # in-place capture. This avoids applying a stale reset-time assignment
+    # after rover identities have crossed during the approach.
+    flat_geometry_capture_dynamic_assignment: bool = False
 
 
 @dataclass(slots=True)

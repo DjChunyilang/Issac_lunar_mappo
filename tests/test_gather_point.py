@@ -222,6 +222,27 @@ def test_execution_slots_are_symmetric_and_partial_reset_is_isolated() -> None:
     )
 
 
+def test_flat_geometry_capture_can_reassign_slots_at_actual_centroid() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.task.explicit_goal_in_execution = True
+    cfg.observation.schema_version = "ego_v6_gather_slot_goal"
+    cfg.gather_point.execution_slot_radius = 0.35
+    cfg.low_level_control.flat_geometry_capture_dynamic_assignment = True
+    env = MultiRoverGatheringCore(cfg)
+    center = torch.tensor([0.6, -0.4])
+    offsets = torch.tensor(
+        [[0.35, 0.0], [0.0, 0.35], [-0.35, 0.0], [0.0, -0.35]]
+    )
+    # Deliberately permute rover order relative to the canonical slot order.
+    env.positions[0, :, :2] = center + offsets[torch.tensor([2, 0, 3, 1])]
+    metrics = compute_team_metrics(env.positions, env.velocities_xy)
+
+    targets = env._flat_geometry_capture_slot_points(metrics)
+
+    assert torch.allclose(targets.mean(dim=1)[0, :2], center, atol=1.0e-6)
+    assert torch.allclose(targets[0, :, :2], env.positions[0, :, :2], atol=1.0e-6)
+
+
 def test_slot_reward_target_tracks_the_assigned_formation_not_the_shared_site() -> None:
     cfg = make_debug_cfg(num_envs=1, device="cpu")
     cfg.task.explicit_goal_in_execution = True

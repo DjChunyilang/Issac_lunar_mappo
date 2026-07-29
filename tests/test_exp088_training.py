@@ -64,6 +64,38 @@ def test_exp088_and_exp089_inherit_flatness_gated_warmstart_and_isolate_control_
         ROOT
         / "configs/experiment/exp101_structured_bicycle_quintic_map25_time96_local_flatness_ppo.yaml"
     )
+    exp102 = load_yaml(
+        ROOT
+        / "configs/experiment/exp102_structured_bicycle_quintic_map25_time96_wide_local_flatness_center.yaml"
+    )
+    exp103 = load_yaml(
+        ROOT
+        / "configs/experiment/exp103_structured_bicycle_quintic_map25_time96_flat_geometry_capture.yaml"
+    )
+    exp104 = load_yaml(
+        ROOT
+        / "configs/experiment/exp104_structured_bicycle_quintic_map25_time96_conditional_terminal_branches.yaml"
+    )
+    exp105 = load_yaml(
+        ROOT
+        / "configs/experiment/exp105_structured_bicycle_quintic_map25_time96_dynamic_flat_geometry_capture.yaml"
+    )
+    exp106 = load_yaml(
+        ROOT
+        / "configs/experiment/exp106_structured_bicycle_quintic_map25_time96_robust_flat_oracle05.yaml"
+    )
+    exp107 = load_yaml(
+        ROOT
+        / "configs/experiment/exp107_structured_bicycle_quintic_map25_time96_robust_flat_oracle075.yaml"
+    )
+    exp108 = load_yaml(
+        ROOT
+        / "configs/experiment/exp108_structured_bicycle_quintic_map25_time96_slots_radius33.yaml"
+    )
+    exp109 = load_yaml(
+        ROOT
+        / "configs/experiment/exp109_structured_bicycle_quintic_map25_time96_slots_radius34.yaml"
+    )
 
     assert exp088["low_level_control"] == {
         **exp087["low_level_control"],
@@ -145,6 +177,51 @@ def test_exp088_and_exp089_inherit_flatness_gated_warmstart_and_isolate_control_
         "learning_rate": 0.00001,
         "training_semantics": "exp101_structured_bicycle_quintic_map25_time96_local_flatness_ppo",
     }
+    assert exp102["low_level_control"] == {
+        **exp099["low_level_control"],
+        "formation_center_local_flatness_search_enabled": True,
+        "formation_center_local_flatness_search_radius": 0.50,
+        "formation_center_local_flatness_search_samples": 16,
+    }
+    assert exp103["low_level_control"] == {
+        **exp099["low_level_control"],
+        "flat_geometry_capture_enabled": True,
+        "flat_geometry_capture_dmax_multiplier": 1.75,
+        "flat_geometry_capture_dispersion_multiplier": 1.75,
+        "flat_geometry_capture_blend": 0.15,
+    }
+    assert exp104["low_level_control"] == {
+        **exp102["low_level_control"],
+        "flat_geometry_capture_enabled": True,
+        "flat_geometry_capture_dmax_multiplier": 1.75,
+        "flat_geometry_capture_dispersion_multiplier": 1.75,
+        "flat_geometry_capture_blend": 0.15,
+    }
+    assert exp105["low_level_control"] == {
+        **exp103["low_level_control"],
+        "flat_geometry_capture_dynamic_assignment": True,
+    }
+    assert exp106["gather_point"] == {
+        **exp099["gather_point"],
+        "robustness_radius": 0.05,
+        "robustness_samples": 8,
+    }
+    assert exp107["gather_point"] == {
+        **exp099["gather_point"],
+        "robustness_radius": 0.075,
+        "robustness_samples": 8,
+    }
+    assert exp108["gather_point"] == {
+        **exp099["gather_point"],
+        "execution_slot_radius": 0.33,
+    }
+    assert exp109["gather_point"] == {
+        **exp099["gather_point"],
+        "execution_slot_radius": 0.34,
+    }
     assert cfg_from_experiment(
         ROOT / "configs/experiment/exp089_structured_bicycle_quintic_map25_flatness_center_early.yaml"
     ).low_level_control.formation_center_correction_gain == pytest.approx(0.75)
+    assert cfg_from_experiment(
+        ROOT / "configs/experiment/exp105_structured_bicycle_quintic_map25_time96_dynamic_flat_geometry_capture.yaml"
+    ).low_level_control.flat_geometry_capture_dynamic_assignment

@@ -224,6 +224,8 @@ def evaluate_checkpoint(
     formation_center_local_flatness_search_active_sum = torch.tensor(0.0, device=env.device)
     terminal_slot_capture_env_count = torch.tensor(0.0, device=env.device)
     terminal_slot_capture_active_sum = torch.tensor(0.0, device=env.device)
+    flat_geometry_capture_env_count = torch.tensor(0.0, device=env.device)
+    flat_geometry_capture_active_sum = torch.tensor(0.0, device=env.device)
 
     for step_id in range(steps):
         active_before = active.clone()
@@ -647,6 +649,15 @@ def evaluate_checkpoint(
                 terminal_slot_capture_env_count = terminal_slot_capture_env_count + env_count
                 terminal_slot_capture_active_sum = (
                     terminal_slot_capture_active_sum + active_capture.float().sum()
+                )
+        flat_geometry_capture = step_output.info.get("flat_geometry_capture")
+        if flat_geometry_capture is not None:
+            active_capture = flat_geometry_capture["active"][active_before]
+            if active_capture.numel() > 0:
+                env_count = torch.tensor(float(active_capture.numel()), device=env.device)
+                flat_geometry_capture_env_count = flat_geometry_capture_env_count + env_count
+                flat_geometry_capture_active_sum = (
+                    flat_geometry_capture_active_sum + active_capture.float().sum()
                 )
         active = active & ~done.done
         if not active.any():
@@ -1081,6 +1092,11 @@ def evaluate_checkpoint(
         ),
         "terminal_slot_capture_active_fraction": float(
             (terminal_slot_capture_active_sum / terminal_slot_capture_env_count.clamp_min(1.0))
+            .detach()
+            .cpu()
+        ),
+        "flat_geometry_capture_active_fraction": float(
+            (flat_geometry_capture_active_sum / flat_geometry_capture_env_count.clamp_min(1.0))
             .detach()
             .cpu()
         ),

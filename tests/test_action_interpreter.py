@@ -6,6 +6,7 @@ import torch
 
 from lunar_rover_tasks.tasks.multi_rover_gathering.action_interpreter import (
     apply_formation_center_correction,
+    apply_flat_geometry_capture,
     apply_terminal_slot_capture,
     decode_action,
     polar_to_local_subgoal,
@@ -170,3 +171,40 @@ def test_terminal_slot_capture_blends_only_near_terminal_geometry() -> None:
         torch.lerp(decoded.world_subgoal[0], slots[0], 0.65),
     )
     assert torch.allclose(result.decoded.world_subgoal[1], decoded.world_subgoal[1])
+
+
+def test_flat_geometry_capture_contracts_around_flat_actual_centroid_only() -> None:
+    decoded = decode_action(
+        torch.zeros(3, 2, 2),
+        torch.zeros(3, 2, 3),
+        torch.zeros(3, 2),
+        PlannerCfg(),
+    )
+    slots = torch.tensor(
+        [
+            [[1.2, 1.0, 0.0], [0.8, 1.0, 0.0]],
+            [[1.2, 1.0, 0.0], [0.8, 1.0, 0.0]],
+            [[1.2, 1.0, 0.0], [0.8, 1.0, 0.0]],
+        ]
+    )
+    result = apply_flat_geometry_capture(
+        decoded,
+        gather_slot_points=slots,
+        centroid_xy=torch.tensor([[0.4, -0.2], [0.4, -0.2], [0.4, -0.2]]),
+        dmax=torch.tensor([1.5, 1.5, 1.0]),
+        dispersion=torch.tensor([0.2, 0.2, 0.2]),
+        flatness_ok=torch.tensor([True, False, True]),
+        dmax_threshold=1.25,
+        dispersion_threshold=0.30,
+        enabled=True,
+        activation_dmax_multiplier=1.75,
+        activation_dispersion_multiplier=1.75,
+        blend=1.0,
+    )
+
+    assert result.active.tolist() == [True, False, False]
+    assert torch.allclose(
+        result.decoded.world_subgoal[0, :, :2],
+        torch.tensor([[0.6, -0.2], [0.2, -0.2]]),
+    )
+    assert torch.allclose(result.decoded.world_subgoal[1:], decoded.world_subgoal[1:])

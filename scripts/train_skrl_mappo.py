@@ -1262,6 +1262,17 @@ def control_safety_metadata(cfg) -> dict[str, Any]:
             control_cfg.terminal_slot_capture_dispersion_multiplier
         ),
         "terminal_slot_capture_blend": float(control_cfg.terminal_slot_capture_blend),
+        "flat_geometry_capture_enabled": bool(control_cfg.flat_geometry_capture_enabled),
+        "flat_geometry_capture_dmax_multiplier": float(
+            control_cfg.flat_geometry_capture_dmax_multiplier
+        ),
+        "flat_geometry_capture_dispersion_multiplier": float(
+            control_cfg.flat_geometry_capture_dispersion_multiplier
+        ),
+        "flat_geometry_capture_blend": float(control_cfg.flat_geometry_capture_blend),
+        "flat_geometry_capture_dynamic_assignment": bool(
+            control_cfg.flat_geometry_capture_dynamic_assignment
+        ),
     }
 
 
@@ -2019,6 +2030,19 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
                 "terminal_slot_capture",
                 capture_metrics,
             )
+        flat_geometry_capture = info.get("flat_geometry_capture")
+        if flat_geometry_capture is not None:
+            capture_metrics = {
+                "flat_geometry_capture_active_fraction": float(
+                    flat_geometry_capture["active"].detach().float().mean().cpu()
+                ),
+            }
+            telemetry_state["flat_geometry_capture"] = capture_metrics
+            _accumulate_numeric_metrics(
+                telemetry_state,
+                "flat_geometry_capture",
+                capture_metrics,
+            )
         kinematics = info.get("kinematics")
         if kinematics is not None:
             turning_radius = kinematics["turning_radius"].detach().float()
@@ -2181,6 +2205,10 @@ def build_training_telemetry(
     terminal_slot_capture_metrics.update(
         telemetry_state.get("terminal_slot_capture_window", {})
     )
+    flat_geometry_capture_metrics = dict(telemetry_state.get("flat_geometry_capture", {}))
+    flat_geometry_capture_metrics.update(
+        telemetry_state.get("flat_geometry_capture_window", {})
+    )
     kinematics_metrics = dict(telemetry_state.get("kinematics", {}))
     kinematics_metrics.update(telemetry_state.get("kinematics_window", {}))
     telemetry.update(reward_metrics)
@@ -2191,6 +2219,7 @@ def build_training_telemetry(
     telemetry.update(control_safety_metrics)
     telemetry.update(formation_center_correction_metrics)
     telemetry.update(terminal_slot_capture_metrics)
+    telemetry.update(flat_geometry_capture_metrics)
     telemetry.update(kinematics_metrics)
     telemetry.update(telemetry_state.get("done_counts", _empty_done_counts()))
     telemetry.update(_stats("final_pairwise_distance", pairwise))
@@ -2950,6 +2979,11 @@ def main() -> None:
             "terminal_slot_capture",
             "terminal_slot_capture_window",
         )
+        _snapshot_numeric_metrics(
+            telemetry_state,
+            "flat_geometry_capture",
+            "flat_geometry_capture_window",
+        )
         _snapshot_numeric_metrics(telemetry_state, "kinematics", "kinematics_window")
         append_metrics_jsonl(
             telemetry_dir,
@@ -3123,6 +3157,11 @@ def main() -> None:
         telemetry_state,
         "terminal_slot_capture",
         "terminal_slot_capture_window",
+    )
+    _snapshot_numeric_metrics(
+        telemetry_state,
+        "flat_geometry_capture",
+        "flat_geometry_capture_window",
     )
     _snapshot_numeric_metrics(telemetry_state, "kinematics", "kinematics_window")
 

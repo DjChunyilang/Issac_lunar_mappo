@@ -1,0 +1,13 @@
+extends: exp103_structured_bicycle_quintic_map25_time96_flat_geometry_capture.yaml
+
+experiment:
+  name: exp105_structured_bicycle_quintic_map25_time96_dynamic_flat_geometry_capture
+
+low_level_control:
+  # The actor's fixed slot observation remains stable. Only the terminal
+  # execution capture refreshes its symmetric assignment around the current
+  # already-flat centroid, minimizing immediate travel and avoiding crossings.
+  flat_geometry_capture_dynamic_assignment: true
+
+algorithm:
+  training_semantics: exp105_structured_bicycle_quintic_map25_time96_dynamic_flat_geometry_capture

@@ -35,6 +35,14 @@ class TerminalSlotCapture:
     active: torch.Tensor
 
 
+@dataclass(slots=True)
+class FlatGeometryCapture:
+    """Result of contracting a non-terminal flat formation in place."""
+
+    decoded: DecodedAction
+    active: torch.Tensor
+
+
 def clip_action(action: torch.Tensor) -> torch.Tensor:
     return torch.clamp(action, -1.0, 1.0)
 
@@ -195,6 +203,73 @@ def apply_terminal_slot_capture(
         decoded.world_subgoal,
     )
     return TerminalSlotCapture(
+        decoded=DecodedAction(
+            clipped_normalized=decoded.clipped_normalized,
+            physical=decoded.physical,
+            local_subgoal_xy=decoded.local_subgoal_xy,
+            world_subgoal=world_subgoal,
+        ),
+        active=active,
+    )
+
+
+def apply_flat_geometry_capture(
+    decoded: DecodedAction,
+    *,
+    gather_slot_points: torch.Tensor,
+    centroid_xy: torch.Tensor,
+    dmax: torch.Tensor,
+    dispersion: torch.Tensor,
+    flatness_ok: torch.Tensor,
+    dmax_threshold: float,
+    dispersion_threshold: float,
+    enabled: bool,
+    activation_dmax_multiplier: float,
+    activation_dispersion_multiplier: float,
+    blend: float,
+) -> FlatGeometryCapture:
+    """Contract toward fixed slots anchored at the current flat centroid.
+
+    This is deliberately different from ``apply_terminal_slot_capture``:
+    the slot offsets are retained, but their centre is the *actual current*
+    centroid instead of the terrain-search point.  It can therefore shrink
+    pairwise spread without intentionally translating an already-flat
+    footprint.  It only operates while flatness has passed and the geometric
+    success condition has not yet passed.
+    """
+    if gather_slot_points.shape != decoded.world_subgoal.shape:
+        raise ValueError("gather_slot_points must match decoded world subgoal shape.")
+    if centroid_xy.shape != (decoded.world_subgoal.shape[0], 2):
+        raise ValueError("centroid_xy must have shape [num_envs, 2].")
+    if dmax.ndim != 1 or dispersion.shape != dmax.shape or flatness_ok.shape != dmax.shape:
+        raise ValueError("dmax, dispersion, and flatness_ok must have shape [num_envs].")
+    if not 0.0 <= blend <= 1.0:
+        raise ValueError("blend must be in [0, 1].")
+
+    active = torch.zeros_like(dmax, dtype=torch.bool)
+    if not enabled or blend == 0.0:
+        return FlatGeometryCapture(decoded=decoded, active=active)
+
+    near_terminal = (dmax <= float(dmax_threshold) * float(activation_dmax_multiplier)) & (
+        dispersion
+        <= float(dispersion_threshold) * float(activation_dispersion_multiplier)
+    )
+    geometry_complete = (dmax <= float(dmax_threshold)) & (
+        dispersion <= float(dispersion_threshold)
+    )
+    active = flatness_ok & near_terminal & ~geometry_complete
+    slot_offsets = gather_slot_points[..., :2] - gather_slot_points[..., :2].mean(
+        dim=1, keepdim=True
+    )
+    anchored_slots = decoded.world_subgoal.clone()
+    anchored_slots[..., :2] = centroid_xy[:, None, :] + slot_offsets
+    captured_subgoal = torch.lerp(decoded.world_subgoal, anchored_slots, float(blend))
+    world_subgoal = torch.where(
+        active[:, None, None],
+        captured_subgoal,
+        decoded.world_subgoal,
+    )
+    return FlatGeometryCapture(
         decoded=DecodedAction(
             clipped_normalized=decoded.clipped_normalized,
             physical=decoded.physical,

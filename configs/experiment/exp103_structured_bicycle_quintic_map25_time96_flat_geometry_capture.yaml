@@ -1,0 +1,16 @@
+extends: exp099_structured_bicycle_quintic_map25_time96_full_center_correction.yaml
+
+experiment:
+  name: exp103_structured_bicycle_quintic_map25_time96_flat_geometry_capture
+
+low_level_control:
+  # Only when the actual centroid is already flat but dmax or dispersion is
+  # still failing, contract targets toward the same fixed slot offsets around
+  # the *current* centroid. This cannot use the oracle as a success proxy.
+  flat_geometry_capture_enabled: true
+  flat_geometry_capture_dmax_multiplier: 1.75
+  flat_geometry_capture_dispersion_multiplier: 1.75
+  flat_geometry_capture_blend: 0.15
+
+algorithm:
+  training_semantics: exp103_structured_bicycle_quintic_map25_time96_flat_geometry_capture

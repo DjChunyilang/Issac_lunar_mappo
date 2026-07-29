@@ -327,6 +327,37 @@ def test_terminal_slot_capture_validation(tmp_path: Path) -> None:
         cfg_from_experiment(config_path)
 
 
+def test_flat_geometry_capture_validation(tmp_path: Path) -> None:
+    config_path = tmp_path / "experiment.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "experiment": {"name": "flat_geometry_capture"},
+                "low_level_control": {
+                    "flat_geometry_capture_enabled": True,
+                    "flat_geometry_capture_dmax_multiplier": 1.75,
+                    "flat_geometry_capture_dispersion_multiplier": 1.5,
+                    "flat_geometry_capture_blend": 0.15,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert cfg_from_experiment(config_path).low_level_control.flat_geometry_capture_enabled
+
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "experiment": {"name": "bad_flat_geometry_capture"},
+                "low_level_control": {"flat_geometry_capture_blend": 1.1},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="flat_geometry_capture_blend"):
+        cfg_from_experiment(config_path)
+
+
 def test_execution_slot_reward_target_requires_a_slot_observation_schema(tmp_path: Path) -> None:
     config_path = tmp_path / "experiment.yaml"
     config_path.write_text(

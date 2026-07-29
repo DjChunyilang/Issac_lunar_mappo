@@ -1,0 +1,15 @@
+extends: exp099_structured_bicycle_quintic_map25_time96_full_center_correction.yaml
+
+experiment:
+  name: exp102_structured_bicycle_quintic_map25_time96_wide_local_flatness_center
+
+low_level_control:
+  # This branch only runs after dmax/dispersion pass but the actual centroid
+  # is non-flat. Search a larger, denser real success footprint and allow the
+  # full correction distance already screened in exp099.
+  formation_center_local_flatness_search_enabled: true
+  formation_center_local_flatness_search_radius: 0.50
+  formation_center_local_flatness_search_samples: 16
+
+algorithm:
+  training_semantics: exp102_structured_bicycle_quintic_map25_time96_wide_local_flatness_center
