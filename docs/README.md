@@ -45,4 +45,4 @@ CI 明确使用 Python 3.12，并固定 CPU 依赖组合。`tests/test_skrl_impo
 
 ## 历史文档
 
-长篇进度日志位于 [archive/](archive/)。旧 V1 / V2 / V3 原始长文压缩包已移出仓库，存放在仓库父目录 `../original_design_docs_v1_v2_v3_2026-06-16.zip`，只用于追溯过程，不作为当前 checkpoint、实验结论或下一步计划的唯一来源。
+长篇进度日志位于 [archive/](archive/)。本轮面向导师交流的累计总结见 [2026-07-02 至 2026-07-29 阶段工作总结](archive/progress_summary_2026-07-02_to_2026-07-29.md)，正文以研究问题、技术方法、代表性结果和后续方案为主，完整实验数据通过实验文档追溯。旧 V1 / V2 / V3 原始长文压缩包已移出仓库，存放在仓库父目录 `../original_design_docs_v1_v2_v3_2026-06-16.zip`，只用于追溯过程，不作为当前 checkpoint、实验结论或下一步计划的唯一来源。

@@ -12,7 +12,9 @@
 
 - exp112--exp117 已完成时序 gate、on-policy 尾部 BC 与执行控制筛选。用约 103 万个 policy-visited 近末段样本做 BC8 仍退化为 `0.1875/0.8457/0/0.1543`，所以同一固定槽位教师的随机/闭环数据比例不是主要瓶颈。仅提高 `k_linear` 则稳定改善：`2.20 -> 3.20` 将同一 BC32 的独立 96 秒评测从 exp099 的 `0.1843/0.8643/0/0.1357` 提升至 exp116 的 `0.1802/0.8916/0/0.1084`；这是当前最佳执行设置，但严格验收仍未通过。对 exp116 的 111 个 timeout，57 个仍缺 dmax、52 个仍缺 dispersion、91 个仍缺实际平整度（可重叠），只有 2 个是纯 hold 未完成；29 个从未进入平整 footprint，62 个进入后又离开。提前共同中心校正使 success 回落到 `0.8838`，故拒绝。
 
-- 当前推荐为 exp092 的 `BC32` checkpoint 配合 `exp116` 的 `k_linear=3.20` 执行设置；它只是当前 candidate，不能触发 PhysX。下一轮不放宽 96 秒、实际平整 gate 或 strict timeout，而应针对“未进入平整 footprint”和“进入后离开”的两类 timeout 训练多步末段轨迹；不再继续同一固定槽位单步 BC、单调加速或更早共同平移。
+- exp118--exp124 是 2026-07-29 工作树中的未提交探针，尚未进入实验索引。去除末段 damping、anchored/tail-only/disagreement BC、动态平整目标和 teacher-rollout BC 在 seed1023 上最多只带来 `2/1024` 的 success 波动；exp119 BC8 虽在独立 seed11023 达到 `0.1785/0.9043/0/0.0957`，但 seed1023 反而低于 exp116，且 timeout 仍远非 0，不能晋升为正式候选。当前固定槽位教师直接指向目标槽位，相关配置还关闭 `teacher_terrain_scale`，没有提供地形相关 waypoint/绕行知识；动画和跨 seed 结果均不支持继续追加同类 BC。
+
+- 已提交的历史最佳仍是 exp092 的 `BC32` checkpoint 配合 `exp116` 的 `k_linear=3.20` 执行设置；它只是 BC-based 对照 candidate，不能触发 PhysX，也不再作为新策略学习起点。后续主线取消 BC：新训练固定 `bc_updates=0`，不从 BC checkpoint 初始化，在不放宽 96 秒、实际平整 gate 或 strict timeout 的前提下，用 pure RL 学习对局部地形敏感的多步路径；exp063 表明直接复用旧 reward 做朴素 pure RL 不足，下一轮需先验证路径风险进度信号和 terrain-contrast 行为，再决定 40M formal。
 - 当前主设计口径已切换为“高吞吐 proxy 训练 + Isaac Sim / Isaac Lab / PhysX 高保真闭环评估”。当前实施路线以 `docs/implementation_plan.md` 和 `docs/architecture/overall_plan_v3.md` 为准。
 - 训练主环境仍是 PyTorch / torch-vectorized proxy 环境，用于 MAPPO / PPO 采样、奖励调试、观测接口验证和大规模对照实验。
 - Isaac Sim / Isaac Lab / PhysX 不作为当前主训练 loop，而作为 high-fidelity validation、迁移 sanity check、失效分析和可视化展示平台。
