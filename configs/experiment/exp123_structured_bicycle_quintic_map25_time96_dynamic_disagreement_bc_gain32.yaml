@@ -1,0 +1,18 @@
+extends: exp122_structured_bicycle_quintic_map25_time96_dynamic_teacher_gain32.yaml
+
+experiment:
+  name: exp123_structured_bicycle_quintic_map25_time96_dynamic_disagreement_bc_gain32
+
+algorithm:
+  training_semantics: exp123_structured_bicycle_quintic_map25_time96_dynamic_disagreement_bc_gain32
+  # Keep the only learning protocol that improved the fixed-slot candidate,
+  # but label the high-disagreement states with the actor-visible real-flat
+  # local slot target whose direct-teacher upper bound is stronger.
+  bc_updates: 1
+  bc_learning_rate: 0.00001
+  bc_on_policy_rollout_steps: 480
+  bc_on_policy_tail_fraction: 1.00
+  bc_on_policy_dmax_multiplier: 2.0
+  bc_on_policy_dispersion_multiplier: 2.0
+  bc_on_policy_min_teacher_disagreement: 0.12
+  bc_on_policy_anchor_base_policy: true

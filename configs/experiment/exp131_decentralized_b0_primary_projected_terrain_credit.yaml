@@ -1,0 +1,11 @@
+extends: exp126_decentralized_b0_centered_terrain_credit.yaml
+
+experiment:
+  name: exp131_decentralized_b0_primary_projected_terrain_credit
+
+algorithm:
+  training_semantics: exp131_decentralized_b0_primary_projected_terrain_credit
+  # Keep exp126's credit, scale and trace unchanged. Only alter how its Actor
+  # gradient is combined with the primary team-MAPPO gradient.
+  actor_credit_gradient_mode: primary_projected_norm_cap
+  mixed_precision: false

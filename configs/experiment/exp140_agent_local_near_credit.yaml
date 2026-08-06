@@ -1,0 +1,21 @@
+extends: exp125_decentralized_tiered_b0_pure_rl_relative_quintic.yaml
+
+experiment:
+  name: exp140_agent_local_near_credit
+  seed: 23
+  num_envs: 2048
+  rollout_steps: 64
+  eval_steps: 480
+
+algorithm:
+  # Component-level screen: keep team reward and centralized critic targets
+  # unchanged, but retain each rover's raw 0.72 m near-potential difference
+  # in the Actor advantage instead of removing it by per-step agent centering.
+  training_semantics: exp140_agent_local_near_credit
+  actor_credit_assignment: near_potential_local
+  actor_credit_scale: 0.25
+  actor_credit_trace_lambda: 0.95
+  actor_credit_gradient_mode: additive_advantage
+  bc_updates: 0
+  init_checkpoint: null
+  teacher_mode: null

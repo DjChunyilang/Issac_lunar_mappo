@@ -1,0 +1,11 @@
+extends: exp110_structured_bicycle_quintic_map25_time96_dynamic_flat_slot_teacher.yaml
+
+experiment:
+  name: exp122_structured_bicycle_quintic_map25_time96_dynamic_teacher_gain32
+
+low_level_control:
+  # Compare the real local-flat target with the current best execution gain.
+  k_linear: 3.20
+
+algorithm:
+  training_semantics: exp122_structured_bicycle_quintic_map25_time96_dynamic_teacher_gain32

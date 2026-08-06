@@ -1,0 +1,12 @@
+extends: exp120_structured_bicycle_quintic_map25_time96_tail_only_bc_gain32.yaml
+
+experiment:
+  name: exp121_structured_bicycle_quintic_map25_time96_disagreement_tail_bc_gain32
+
+algorithm:
+  training_semantics: exp121_structured_bicycle_quintic_map25_time96_disagreement_tail_bc_gain32
+  # exp116 timeouts have 0.1568 mean teacher-action MSE in the near-terminal
+  # window versus 0.0885 for successes. Retain only disagreement states at
+  # or above 0.12, so the single update is not diluted by already-correct
+  # terminal control.
+  bc_on_policy_min_teacher_disagreement: 0.12

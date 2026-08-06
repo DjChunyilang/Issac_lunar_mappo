@@ -1,0 +1,74 @@
+extends: exp063_structured_bicycle_quintic_map25_flatness_oracle_baseline.yaml
+
+experiment:
+  name: exp125_decentralized_tiered_b0_pure_rl
+  seed: 23
+  num_envs: 2048
+  rollout_steps: 64
+  eval_steps: 480
+
+evaluation:
+  proxy_eval:
+    enabled: true
+    num_envs: 1024
+    steps: 480
+    seed_offset: 11000
+
+simulation:
+  episode_length_s: 96.0
+
+task:
+  n_agents: 4
+  explicit_goal_in_execution: false
+  execution_slot_reward_target: false
+  dynamic_terminal_slot_goal_enabled: false
+
+initial_state:
+  spawn_radius_min: 4.5
+  spawn_radius_max: 6.5
+  center_xy_range: 2.0
+  jitter_std: 0.40
+  curriculum_enabled: true
+  curriculum_start_spawn_radius_min: 2.4
+  curriculum_start_spawn_radius_max: 3.4
+  curriculum_start_center_xy_range: 1.0
+  curriculum_start_jitter_std: 0.25
+  curriculum_warmup_timesteps: 4096
+  curriculum_ramp_timesteps: 8192
+
+planner:
+  subgoal_filter:
+    enabled: false
+
+low_level_control:
+  k_linear: 3.20
+  safety_projection_enabled: false
+  projection_directional_agent_scale: false
+  success_zone_damping_enabled: false
+  formation_center_correction_enabled: false
+  formation_center_local_flatness_search_enabled: false
+  terminal_slot_capture_enabled: false
+  flat_geometry_capture_enabled: false
+
+observation:
+  communication_radius: 12.0
+  schema_version: ego_v8_decentralized_tiered
+
+reward:
+  weights:
+    flatness: 1.0
+  coefficients:
+    filter_raw_path_risk_cost: 0.0
+    filter_deviation_cost: 0.0
+    centroid_flatness_progress: 2.0
+    centroid_flatness_excess: 0.02
+    centroid_flatness_dmax_multiplier: 2.0
+
+algorithm:
+  mode: pure_rl
+  training_semantics: exp125_decentralized_tiered_b0_pure_rl
+  actor_architecture: branched_v5
+  critic_architecture: structured_v1
+  bc_updates: 0
+  init_checkpoint: null
+  teacher_mode: null

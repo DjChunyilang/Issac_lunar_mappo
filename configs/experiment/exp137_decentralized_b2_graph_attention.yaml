@@ -1,0 +1,19 @@
+extends: exp125_decentralized_tiered_b0_pure_rl_relative_quintic.yaml
+
+experiment:
+  name: exp137_decentralized_b2_graph_attention
+  seed: 23
+  num_envs: 2048
+  rollout_steps: 64
+  eval_steps: 480
+
+algorithm:
+  # exp137 is a one-time, pre-registered exception screen justified by the
+  # exp135/136 repeated-conflict evidence.  The only trainable change from the
+  # selected B0 relative-quintic baseline is the neighbor encoder.
+  training_semantics: exp137_decentralized_b2_graph_attention
+  actor_architecture: branched_v6_graph_attention
+  critic_architecture: structured_v1
+  bc_updates: 0
+  init_checkpoint: null
+  teacher_mode: null

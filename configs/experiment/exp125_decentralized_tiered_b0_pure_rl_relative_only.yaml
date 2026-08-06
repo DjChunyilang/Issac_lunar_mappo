@@ -1,0 +1,18 @@
+extends: exp125_decentralized_tiered_b0_pure_rl_relative_quintic.yaml
+
+algorithm:
+  training_semantics: exp125_decentralized_tiered_b0_pure_rl_relative_only
+
+reward:
+  weights:
+    terrain: 1.0
+  coefficients:
+    slope_cost: 0.0
+    terrain_cost: 0.0
+    subgoal_terrain_cost: 0.0
+    terrain_speed_loss_cost: 0.0
+    terrain_height_change_cost: 0.0
+    path_terrain_mean_cost: 0.0
+    path_terrain_max_cost: 0.0
+    path_height_change_cost: 0.0
+    path_terrain_relative_cost: 5.0

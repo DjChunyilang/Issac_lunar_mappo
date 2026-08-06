@@ -1,0 +1,12 @@
+extends: exp125_decentralized_tiered_b0_pure_rl.yaml
+
+algorithm:
+  training_semantics: exp125_decentralized_tiered_b0_pure_rl_relative_quintic
+
+reward:
+  coefficients:
+    # Replace the absolute path-risk baseline with the selected quintic
+    # trajectory's risk relative to a same-distance, zero-steering trajectory.
+    path_terrain_mean_cost: 0.0
+    path_terrain_max_cost: 0.0
+    path_terrain_relative_cost: 2.0

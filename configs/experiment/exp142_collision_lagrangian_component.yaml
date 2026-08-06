@@ -1,0 +1,25 @@
+extends: exp125_decentralized_tiered_b0_pure_rl_relative_quintic.yaml
+
+experiment:
+  name: exp142_collision_lagrangian_component
+  seed: 23
+  num_envs: 2048
+  rollout_steps: 64
+  eval_steps: 480
+
+algorithm:
+  training_semantics: exp142_collision_lagrangian_component
+  bc_updates: 0
+  init_checkpoint: null
+  actor_credit_assignment: none
+  actor_credit_scale: 0.0
+  collision_constraint_enabled: true
+  collision_cost_discount_factor: 0.99
+  collision_cost_gae_lambda: 0.95
+  collision_cost_limit: 0.02
+  collision_episode_steps: 480
+  lagrangian_init: 0.0
+  lagrangian_learning_rate: 0.1
+  lagrangian_max: 2.0
+  collision_cost_value_learning_rate: 0.0003
+  collision_cost_value_loss_coef: 0.5

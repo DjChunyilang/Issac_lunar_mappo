@@ -1,0 +1,14 @@
+extends: exp116_structured_bicycle_quintic_map25_time96_linear_gain32.yaml
+
+experiment:
+  name: exp118_structured_bicycle_quintic_map25_time96_gain32_no_terminal_damping
+
+low_level_control:
+  # exp116 has zero collisions but 57/111 final timeouts still miss dmax and
+  # 52 miss dispersion.  Remove only the residual 5% speed damping inside
+  # the already strict terminal zone; safety projection and all success gates
+  # stay unchanged.
+  success_zone_linear_scale: 1.00
+
+algorithm:
+  training_semantics: exp118_structured_bicycle_quintic_map25_time96_gain32_no_terminal_damping

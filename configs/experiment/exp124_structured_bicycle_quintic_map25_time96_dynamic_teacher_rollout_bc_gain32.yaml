@@ -1,0 +1,18 @@
+extends: exp122_structured_bicycle_quintic_map25_time96_dynamic_teacher_gain32.yaml
+
+experiment:
+  name: exp124_structured_bicycle_quintic_map25_time96_dynamic_teacher_rollout_bc_gain32
+
+algorithm:
+  training_semantics: exp124_structured_bicycle_quintic_map25_time96_dynamic_teacher_rollout_bc_gain32
+  # Use only near-terminal states reached by the dynamic real-flat teacher,
+  # whose direct 96-second result is 93.07% success / 6.93% timeout. This is
+  # intentionally one update: the source policy is already strong globally.
+  bc_updates: 1
+  bc_learning_rate: 0.00001
+  bc_on_policy_tail_fraction: 0.0
+  bc_teacher_rollout_steps: 480
+  bc_teacher_tail_fraction: 1.00
+  bc_teacher_dmax_multiplier: 2.0
+  bc_teacher_dispersion_multiplier: 2.0
+  bc_on_policy_anchor_base_policy: true

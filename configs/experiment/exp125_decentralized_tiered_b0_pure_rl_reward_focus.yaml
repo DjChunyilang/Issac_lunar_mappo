@@ -1,0 +1,21 @@
+extends: exp125_decentralized_tiered_b0_pure_rl.yaml
+
+# B0 remains unchanged. This retry only reallocates existing terrain reward
+# magnitude from action-independent current-state costs to the existing
+# subgoal/path costs that the Actor can influence directly.
+algorithm:
+  training_semantics: exp125_decentralized_tiered_b0_pure_rl_reward_focus
+
+reward:
+  weights:
+    terrain: 0.30
+  coefficients:
+    slope_cost: 0.0
+    terrain_cost: 0.0
+    terrain_speed_loss_cost: 0.0
+    terrain_height_change_cost: 0.0
+    subgoal_terrain_cost: 0.16
+    path_terrain_mean_cost: 0.26
+    path_terrain_max_cost: 0.16
+    path_height_change_cost: 0.07
+    centroid_flatness_progress: 0.50

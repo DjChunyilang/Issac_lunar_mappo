@@ -1,0 +1,19 @@
+extends: exp148_decentralized_b0_trajectory_time_consistent.yaml
+
+experiment:
+  name: exp150_collision_participant_actor_credit
+  seed: 23
+  num_envs: 2048
+  rollout_steps: 64
+  eval_steps: 480
+
+algorithm:
+  training_semantics: exp150_collision_participant_actor_credit
+  actor_credit_assignment: collision_participant_centered
+  actor_credit_scale: 0.25
+  actor_credit_trace_lambda: 0.95
+  actor_credit_gradient_mode: additive_advantage
+  collision_constraint_enabled: false
+  bc_updates: 0
+  init_checkpoint: null
+  teacher_mode: null

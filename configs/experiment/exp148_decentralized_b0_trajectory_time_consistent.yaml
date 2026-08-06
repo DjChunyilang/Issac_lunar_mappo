@@ -1,0 +1,13 @@
+extends: exp125_decentralized_tiered_b0_pure_rl_relative_quintic.yaml
+
+experiment:
+  name: exp148_trajectory_time_consistency_fix
+
+algorithm:
+  training_semantics: exp148_decentralized_b0_trajectory_time_consistent
+
+trajectory_generator:
+  time_parameterization: arc_length_reference_speed
+
+low_level_control:
+  tracking_point_mode: planning_time
