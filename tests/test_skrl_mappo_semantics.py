@@ -28,6 +28,7 @@ from _skrl_metadata import (  # noqa: E402
 )
 from train_skrl_mappo import (  # noqa: E402
     _collect_on_policy_tail_bc_samples,
+    _collect_teacher_rollout_tail_bc_samples,
     _action_telemetry,
     _nearest_distances,
     _randomize_bc_state,
@@ -47,7 +48,11 @@ from train_skrl_mappo import (  # noqa: E402
     terrain_input_weight_delta_l2,
     terrain_input_weight_snapshot,
 )
-from shared_policy_mappo import SharedPolicyMAPPO, linear_schedule  # noqa: E402
+from shared_policy_mappo import (  # noqa: E402
+    SharedPolicyMAPPO,
+    linear_schedule,
+    primary_preserving_gradient_merge,
+)
 from diagnose_cuda_training_signal import diagnose  # noqa: E402
 
 
@@ -122,6 +127,32 @@ def test_shared_policy_mappo_uses_one_optimizer() -> None:
 
     assert agent.optimizer_count == 1
     assert len({id(optimizer) for optimizer in agent.optimizers.values()}) == 1
+
+
+def test_primary_preserving_gradient_merge_projects_and_caps_auxiliary() -> None:
+    parameter = torch.nn.Parameter(torch.zeros(2))
+    merged, metrics = primary_preserving_gradient_merge(
+        (torch.tensor([1.0, 0.0]),),
+        (torch.tensor([-2.0, 4.0]),),
+        (parameter,),
+        auxiliary_scale=0.25,
+    )
+    assert metrics["conflict"] == 1.0
+    assert 0.0 <= metrics["projected_primary_dot"] <= 1.0e-6
+    assert metrics["auxiliary_norm_cap_scale"] == pytest.approx(0.25)
+    assert merged[0].tolist() == pytest.approx([1.0, 0.25])
+    assert metrics["combined_primary_cosine"] >= 0.970
+
+
+def test_exp131_enables_only_primary_projected_credit_combination() -> None:
+    raw = load_yaml(
+        ROOT
+        / "configs/experiment/exp131_decentralized_b0_primary_projected_terrain_credit.yaml"
+    )
+    assert raw["algorithm"]["actor_credit_assignment"] == "terrain_relative_centered"
+    assert raw["algorithm"]["actor_credit_scale"] == pytest.approx(0.25)
+    assert raw["algorithm"]["actor_credit_gradient_mode"] == "primary_projected_norm_cap"
+    assert raw["algorithm"]["mixed_precision"] is False
 
 
 def test_shared_policy_mappo_joint_update_merges_actor_samples_once() -> None:
@@ -206,6 +237,34 @@ def test_skrl_behavior_cloning_updates_shared_policy() -> None:
         not torch.allclose(initial, current)
         for initial, current in zip(before, policy.parameters(), strict=True)
     )
+
+
+def test_on_policy_tail_bc_can_anchor_nonterminal_policy_actions() -> None:
+    cfg = make_debug_cfg(num_envs=2, device="cpu")
+    cfg.task.explicit_goal_in_execution = True
+    cfg.observation.schema_version = "ego_v6_gather_slot_goal"
+    env = MultiRoverGatheringSKRLEnv(cfg)
+    models = build_skrl_mappo_models(env, shared_actor=True, centralized_critic=True)
+    policy = models[env.possible_agents[0]]["policy"]
+
+    records = run_skrl_behavior_cloning(
+        policy,
+        env.cfg,
+        updates=1,
+        batch_size=32,
+        learning_rate=1.0e-4,
+        teacher_mode="oracle_slots",
+        teacher_slow_distance=0.0,
+        bc_on_policy_rollout_steps=2,
+        bc_on_policy_tail_fraction=0.5,
+        bc_on_policy_dmax_multiplier=20.0,
+        bc_on_policy_dispersion_multiplier=100.0,
+        bc_on_policy_min_teacher_disagreement=0.0,
+        bc_on_policy_anchor_base_policy=True,
+    )
+
+    assert records[0]["bc_on_policy_tail_samples"] > 0
+    assert records[0]["bc_on_policy_anchor_base_policy"] == 1
 
 
 def test_exp015_terrain_sanity_matches_medium_soft_target() -> None:
@@ -379,6 +438,34 @@ def test_on_policy_tail_bc_samples_match_actor_and_teacher_contract() -> None:
 
     observations, targets = _collect_on_policy_tail_bc_samples(
         policy,
+        env,
+        rollout_steps=2,
+        teacher_stop_radius=0.45,
+        teacher_slow_distance=0.0,
+        teacher_max_rho=None,
+        teacher_mode="oracle_slots",
+        teacher_terrain_scale=False,
+        teacher_center_step=0.65,
+        dmax_multiplier=20.0,
+        dispersion_multiplier=100.0,
+        min_teacher_disagreement=0.0,
+    )
+
+    assert observations.ndim == 2
+    assert observations.shape[1] == cfg.actor_obs_dim
+    assert targets.shape == (cfg.simulation.num_envs * cfg.task.n_agents * 2, 2)
+    assert torch.isfinite(observations).all()
+    assert torch.isfinite(targets).all()
+
+
+def test_teacher_rollout_tail_samples_match_actor_and_teacher_contract() -> None:
+    cfg = make_debug_cfg(num_envs=4, device="cpu")
+    cfg.task.explicit_goal_in_execution = True
+    cfg.observation.schema_version = "ego_v6_gather_slot_goal"
+    cfg.gather_point.execution_slot_radius = 0.35
+    env = MultiRoverGatheringSKRLEnv(cfg).core
+
+    observations, targets = _collect_teacher_rollout_tail_bc_samples(
         env,
         rollout_steps=2,
         teacher_stop_radius=0.45,

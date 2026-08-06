@@ -65,3 +65,40 @@ def test_quintic_path_hits_endpoint_and_heading_constraints() -> None:
         subgoals[..., 0] - positions[..., 0],
     )
     assert torch.allclose(trajectory.headings[:, :, -1], expected_end_heading, atol=1.0e-4)
+
+
+def test_arc_length_timing_preserves_geometry_and_uses_reference_speed() -> None:
+    positions = torch.zeros(1, 1, 3)
+    subgoals = torch.tensor([[[1.0, 0.0, 0.0]]])
+    legacy_cfg = TrajectoryGeneratorCfg(
+        n_trajectory_points=6,
+        geometry_method="quintic",
+        reference_speed=0.5,
+        time_parameterization="planning_step",
+    )
+    physical_cfg = TrajectoryGeneratorCfg(
+        n_trajectory_points=6,
+        geometry_method="quintic",
+        reference_speed=0.5,
+        time_parameterization="arc_length_reference_speed",
+    )
+    legacy = generate_trajectory(positions, subgoals, legacy_cfg, dt=0.2)
+    physical = generate_trajectory(positions, subgoals, physical_cfg, dt=0.2)
+
+    assert torch.equal(legacy.points, physical.points)
+    arc_length = torch.linalg.vector_norm(
+        physical.points[..., 1:, :2] - physical.points[..., :-1, :2], dim=-1
+    ).sum(dim=-1)
+    assert torch.allclose(physical.timestamps[..., -1], arc_length / 0.5)
+    assert torch.allclose(legacy.timestamps[..., -1], torch.tensor([[0.2]]))
+
+
+def test_arc_length_timing_gives_zero_path_one_planning_step() -> None:
+    cfg = TrajectoryGeneratorCfg(
+        geometry_method="quintic",
+        time_parameterization="arc_length_reference_speed",
+    )
+    positions = torch.zeros(2, 4, 3)
+    trajectory = generate_trajectory(positions, positions.clone(), cfg, dt=0.2)
+    assert torch.isfinite(trajectory.packed).all()
+    assert torch.allclose(trajectory.timestamps[..., -1], torch.full((2, 4), 0.2))

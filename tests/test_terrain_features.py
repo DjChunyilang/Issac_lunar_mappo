@@ -26,6 +26,7 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
     query_terrain_features,
     randomize_terrain_runtime,
     sample_path_terrain_risk,
+    sample_trajectory_terrain_risk,
     summarize_local_terrain_grid,
 )
 from terrain_viz import height_grid_for_extent
@@ -260,6 +261,28 @@ def test_path_terrain_risk_distinguishes_crater_crossing_from_bypass() -> None:
     assert risk["risk_mean"][0, 0] > risk["risk_mean"][0, 1]
     assert risk["risk_max"][0, 0] > risk["risk_max"][0, 1]
     assert risk["height_change_mean"][0, 0] > risk["height_change_mean"][0, 1]
+
+
+def test_trajectory_terrain_risk_uses_supplied_curve_samples() -> None:
+    cfg = make_debug_cfg(num_envs=1, device="cpu")
+    cfg.terrain.type = "lunar_crater_proxy"
+    cfg.terrain.amplitude = 0.0
+    cfg.terrain.crater_count = 1
+    cfg.terrain.crater_min_radius = 1.0
+    cfg.terrain.crater_max_radius = 1.0
+    cfg.terrain.crater_depth_to_diameter = 0.12
+    cfg.terrain.crater_rim_height_to_diameter = 0.025
+    cfg.terrain.traversability_slope_scale = 0.45
+    x = torch.linspace(-1.5, 1.5, 9)
+    crossing = torch.stack((x, torch.zeros_like(x), torch.zeros_like(x)), dim=-1)
+    bypass = torch.stack((x, torch.full_like(x, 1.8), torch.zeros_like(x)), dim=-1)
+    points = torch.stack((crossing, bypass), dim=0).unsqueeze(0)
+
+    risk = sample_trajectory_terrain_risk(points, cfg.terrain)
+
+    assert risk["risk_mean"].shape == (1, 2)
+    assert risk["risk_mean"][0, 0] > risk["risk_mean"][0, 1]
+    assert risk["risk_max"][0, 0] > risk["risk_max"][0, 1]
 
 
 def test_height_grid_for_extent_samples_nonflat_terrain() -> None:

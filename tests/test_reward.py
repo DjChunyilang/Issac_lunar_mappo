@@ -304,6 +304,27 @@ def test_positive_terrain_coefficients_penalize_rough_low_traversability_feature
     assert reward[1] < reward[0]
 
 
+def test_relative_trajectory_risk_rewards_safer_than_straight_reference() -> None:
+    cfg = MultiRoverGatheringEnvCfg()
+    cfg.reward_coefficients.path_terrain_relative_cost = 2.0
+    positions = torch.zeros(2, 4, 3)
+    terrain_features = torch.zeros(2, 4, 5)
+    selected = torch.tensor([[0.20] * 4, [0.50] * 4])
+    reference = torch.tensor([[0.50] * 4, [0.20] * 4])
+
+    reward = compute_terrain_reward(
+        terrain_features,
+        cfg,
+        positions,
+        path_terrain_risk_mean=selected,
+        path_terrain_reference_risk_mean=reference,
+    )
+
+    assert reward[0] > 0.0
+    assert reward[1] < 0.0
+    assert torch.allclose(reward[0], -reward[1])
+
+
 def test_terrain_reward_penalizes_risky_subgoal_speed_loss_and_height_change() -> None:
     cfg = MultiRoverGatheringEnvCfg()
     cfg.reward_coefficients.subgoal_terrain_cost = 0.5
@@ -379,6 +400,7 @@ def test_reward_config_keys_match_consumed_reward_terms() -> None:
         "path_height_change_cost",
         "path_terrain_max_cost",
         "path_terrain_mean_cost",
+        "path_terrain_relative_cost",
         "slope_cost",
         "subgoal_stagnation",
         "subgoal_terrain_cost",
