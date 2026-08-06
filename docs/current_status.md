@@ -2,7 +2,67 @@
 
 ## 当前主线
 
-- 当前主线是“真实地形可行集合点 + 实际质心平整度 gate + 可执行局部目标”。`terrain_aware_multiresolution` 每个 reset 搜索真正的地形约束最优点；成功只认可实际团队质心的 37 点平整圆盘，绝不认可 oracle 代理点。exp092 的 `BC32` 在原 `64 s/320` steps 为 `0.1910/0.7002/0/0.2998`；按当前决策，**后续训练和正式 proxy 评估固定采用 `96 s/480` steps 时域**。这是执行时间预算从 64 秒放宽到 96 秒，严格验收仍为 dmax `<=0.2`、success `>=0.9`、collision `<=0.02`、timeout `=0`，没有放宽。exp094 的基线复评为 `0.1837/0.8594/0/0.1406`；128 秒仅作为“时域仍偏紧”的诊断上界，不能替代 96 秒标准。
+- 当前执行主线为严格去中心化101维观测、12 m分级通信、Pure RL和MAPF离线诊断。exp125的六组B0 4M screen均未通过；exp137又完成一次单变量B2例外并在基础gate停止，因此不启动40M，也不继续B1/B2/B3结构扩展。B0 `relative_quintic` 的评测dmax ratio为 `0.2047`、success为 `0.0518`；B2虽把dmax改善到 `0.1707`，却把collision推高到 `0.7881`。近距运行始终为完整通信，当前失败不是通信年龄或邻居排列问题，而是地形动作、团队集合和碰撞安全之间的训练信用冲突。B0完整记录见 [exp_125_decentralized_tiered_b0_pure_rl.md](experiments/exp_125_decentralized_tiered_b0_pure_rl.md)，B2结果见 [exp_137_decentralized_b2_graph_attention.md](experiments/exp_137_decentralized_b2_graph_attention.md)。
+
+- 已修正两项会影响结论的语义偏差：路径风险现在沿实际 quintic 轨迹采样，不再以直线代理；4M checkpoint 评测按照 checkpoint 的课程时步使用 2.4–3.4 m 近距分布，不再错误使用最终远距分布。主配置也已显式恢复实际质心平整度奖励。
+
+- exp125 信用诊断已完成：`shared_joint` 对四车复制同一团队 GAE advantage；在 `relative_quintic` checkpoint 的 245,760 个车辆样本上，相对路径风险与一步 TD advantage 代理的 Pearson 相关为 `-0.0123`，与单车质心进度、最近邻距离变化和团队 dmax 进度的相关绝对值均不超过 `0.012`。这支持“共享团队信用无法区分单车地形决策”的假设，但尚不授权直接改用新的多智能体奖励算法。
+
+- exp126 已完成唯一一次零和地形信用残差 4M 对照。团队 reward 和 Critic target 保持原样，车辆信用只进入 Actor advantage；不变量和工程测试全部通过。相对 exp125 `relative_quintic`，路径风险改善从 `-0.16%` 变为 `+2.74%`，但 collision 从 `0.0967` 激增到 `0.6484`，dmax ratio 退化为 `0.6932`，success 仅 `0.0029`，重复车辆对冲突升至 `0.1927/步`。因此 C0 被否决，不启动 40M、不扫描信用系数。结果见 [exp_126_decentralized_b0_centered_terrain_credit.md](experiments/exp_126_decentralized_b0_centered_terrain_credit.md)。
+
+- exp127 已完成冻结联合动作 Critic 的离线可行性诊断。正式数据覆盖完整 96 秒 episode，两个验证种子的预测冲突参与率约为 `16%–17%`；16 步 held-out MSE 仅改善 `2.16%`，最大安全秩相关仅 `0.0896`，1 步和 4 步完整 episode 复核也未改善。C1 被否决，不扩展为 COMA/MADDPG/FACMAC。结果见 [exp_127_joint_action_critic_feasibility.md](experiments/exp_127_joint_action_critic_feasibility.md)。
+
+- exp128 已完成奖励分量动作可辨识性诊断。`gather`、预测冲突和最近邻距离变化的动作增益分别为 `51.00%/17.56%/56.18%`，证明动作与动力学链路有效；但现有 `safety`、`terrain` 和总奖励仅为 `0.10%/-0.26%/0.13%`，关键奖励语义没有提供稳定的当前动作边际信号。按预设门限不改变训练信用、不启动新 4M；下一步只做冻结状态配对动作干预。结果见 [exp_128_reward_component_identifiability.md](experiments/exp_128_reward_component_identifiability.md)。
+
+- exp129 已完成冻结状态的配对单车动作干预。15,360 个车辆—状态样本中，降低相对路径风险与提高轨迹安全裕量的方向余弦中位数仅 `0.0202`；强一致和强冲突分别占 `27.64%/26.94%`。动作对两项目标均有响应，但局部优化方向整体近似正交，因此不启动固定地形—安全权重训练，也不恢复方向性安全投影。结果见 [exp_129_paired_action_interventions.md](experiments/exp_129_paired_action_interventions.md)。
+
+- exp130 已完成团队 PPO 与地形信用 Actor 梯度冲突审计。两个独立地形种子的全 Actor 负余弦批次比例均为 `46.875%`，terrain encoder 均为 `50%`，辅助/主梯度范数中位比约 `1.14`。这证明 exp126 的地形信用直接相加确实经常反对团队目标，达到 C2 离线启用门限。当前只授权一次非对称、主任务优先且带范数上限的梯度投影 4M screen，不授权 40M。结果见 [exp_130_actor_gradient_conflict_audit.md](experiments/exp_130_actor_gradient_conflict_audit.md)。
+
+- exp131 已完成唯一一次 C2 主任务优先梯度投影 4M screen。投影工程门限全部通过，最后一次更新冲突比例 `65.625%`、最低主方向余弦 `0.970142`；但评测 dmax ratio `0.3525`、success `0.0361`、collision `0.6680`、timeout `0.2959`，路径风险改善仅 `2.38%`。`t=1024` collision 同样为 `0.6719`。因此 C2 被否决，不启动 40M、不扫描投影参数。结果见 [exp_131_primary_projected_terrain_credit.md](experiments/exp_131_primary_projected_terrain_credit.md)。
+
+- exp132 已完成现有 \(0.42\,\mathrm m\) 最近邻成功门限的逐车安全势函数审计。两个种子的信用激活率约 `4.1%`，安全/团队梯度范数比为 `0.608/0.544`，地形—安全负余弦批次比例为 `46.875%/59.375%`；但 8 段 rollout 中只有 6 段出现安全事件，总体 trace std 均为 `0.8660`，未达到预注册下界 `0.90`。因此不训练 C3、不事后放宽门限。结果见 [exp_132_agent_safety_potential_credit.md](experiments/exp_132_agent_safety_potential_credit.md)。
+
+- exp133 已完成现有 `safety.near_distance=0.72 m` 团队项的逐车信用审计。信用密度提高到 `17.540%/16.704%`，且梯度非退化；但 seed22023 前两个 rollout 仍无事件，首次激活索引 `2`、激活段比例 `75%`、trace std `0.8660`，未通过预注册时间覆盖门限。因此不训练 C3-near、不扩大距离或扫描权重。结果见 [exp_133_agent_near_distance_credit.md](experiments/exp_133_agent_near_distance_credit.md)。
+
+- exp134 已完成连续近距信用相对冲突和碰撞的提前量诊断。`222/244` 个碰撞车辆事件全部提前进入 `0.72 m`，至少提前 2 步，提前量中位数为 `74/67` 步；但约 1.97 万个预测冲突事件只有 `37.956%/35.646%` 在解除前被近距信用覆盖，未达到 70% 门限。因此 C3-near 仍停止。结果同时表明当前单步 quintic 冲突诊断包含大量会随重规划解除的事件。完整记录见 [exp_134_near_credit_lead_time.md](experiments/exp_134_near_credit_lead_time.md)。
+
+- exp135 已完成单步与 pair-repeated 冲突的事件级结果匹配。两个种子的非重复事件 `14,632/14,352` 个，碰撞结果均为 0；重复事件 `4,556/4,511` 个，碰撞结果率为 `5.224%/4.899%`，并在前 8 步召回全部 `238/221` 个碰撞车辆事件。后续 MAPF/B2 判断只允许使用重复冲突，单步冲突仅保留日志；该结果不自动启用 B2。完整记录见 [exp_135_repeated_conflict_outcomes.md](experiments/exp_135_repeated_conflict_outcomes.md)。
+
+- exp136 已完成失败 episode 的重复冲突触发审计。`141/130` 个失败 episode 全部包含 pair-repeated 冲突，事件数中位数为 `17/18`，collision与timeout失败均为100%命中。B2冲突证据已经满足，但按当时的原始矩阵仍缺基础收敛；随后只通过exp137授权了一次显式例外。完整记录见 [exp_136_failed_episode_repeated_conflicts.md](experiments/exp_136_failed_episode_repeated_conflicts.md)。
+
+- exp137 已完成一次 seed23 的 B2 单跳图注意力例外筛选。工程gate全部通过，但4M评测虽然把dmax ratio改善到 `0.1707`，collision却升至 `0.7881`，success只有 `0.0439`；terrain动作MSE和路径风险gate仍失败。双种子离线复核的重复冲突事件中位数由B0的 `17/18` 变为 `16/22`，没有一致下降。因此B2在基础gate停止，不运行40M或结构调参。完整记录见 [exp_137_decentralized_b2_graph_attention.md](experiments/exp_137_decentralized_b2_graph_attention.md)。
+
+- exp138 已完成现有安全奖励聚合辨识诊断。安全目标激活率为 `28.906%/25.837%`，但worst-pair聚合的动作增益只有 `0.0973%/0.00016%`，相对当前mean聚合仅提高 `0.0120/0.0166` 个百分点。均值稀释不是安全信用瓶颈，因此不修改安全聚合、不启动4M。完整记录见 [exp_138_safety_aggregation_identifiability.md](experiments/exp_138_safety_aggregation_identifiability.md)。
+
+- exp139 已完成逐车局部安全信用动作辨识审计。raw信用动作增益为 `15.791%/14.901%`，第二个验证种子未过15%；满足共享团队语义的逐步零和中心化信用仅为 `8.219%/7.203%`。信用密度、exp134碰撞提前量和冻结Actor不变量均通过，但核心跨种子动作辨识门限失败。因此不重开C3-near、不扫描信用形式或权重，也不把重复冲突写入奖励。完整记录见 [exp_139_local_safety_credit_identifiability.md](experiments/exp_139_local_safety_credit_identifiability.md)。
+
+- exp140已完成非零和逐车近距信用4M组件筛选。工程gate和信用激活均通过，但独立评测collision由B0的 `0.0967` 升至 `0.2295`，双种子重复冲突中位数由 `17/18` 升至 `19/20`；dmax ratio `0.2397`、success `0.0439`。因此该方向停止，不扫scale、trace或距离，不与terrain信用叠加，也不进入40M。协议与结果见 [exp_140_agent_local_near_credit_screen.md](experiments/exp_140_agent_local_near_credit_screen.md)。
+
+- exp141已完成真实collision cost-value冻结审计。双验证种子AUROC为 `0.9392/0.9331`、AUPRC为 `0.6231/0.5792`、Brier改善为 `35.59%/30.00%`，全部通过预注册门限；Actor完全不变。因此只授权形成exp142 PPO-Lagrangian组件计划，尚未授权40M。结果见 [exp_141_collision_cost_value_feasibility.md](experiments/exp_141_collision_cost_value_feasibility.md)。
+
+- exp142已完成训练期真实collision PPO-Lagrangian组件筛选。工程门限和CPU/CUDA smoke全部通过；4M中训练碰撞率首末四分之一降低 `95.03%`，评测collision为 `0.02539`，双种子重复冲突中位数均降为0。但success为 `0`、dmax ratio为 `0.68146`、timeout为 `0.97461`，地形动作MSE仅 `0.000259`。策略以回避集合换取安全，因此状态为 `stopped_at_component_gate`：不启动40M，不扫描cost预算、dual参数、PID项或网络容量。结果见 [exp_142_collision_lagrangian_component_plan.md](experiments/exp_142_collision_lagrangian_component_plan.md)。
+
+- exp143/144已复核“B0只是训练不够深”的解释。t2048相对t1024在五个评测种子上全部改善，平均dmax降低 `29.76%`、collision降低 `89.94%`、success增加 `4.41` 个百分点；但三个terrain-contrast种子中，地形动作MSE虽从约 `0.00057` 增至 `0.00746`，实际quintic路径风险却全部恶化，平均趋势为 `-0.2508` 个百分点。因此不启动12M/40M B0：更深训练会增强地形输入影响，但现有共享团队advantage没有把该影响导向低风险路径。结果见 [exp143](experiments/exp_143_b0_horizon_and_constraint_competition_audit.md) 与 [exp144](experiments/exp_144_b0_checkpoint_trend_multiseed_audit.md)。
+
+- exp145已完成统一逐车局部任务回报审计。局部集合、地形和统一目标动作增益分别为 `77.58%/28.44%/25.69%`，但局部安全平均仅 `9.58%`、最差种子 `8.12%`。安全事件覆盖和方差均充分，Actor摘要与探针动作不变，因此不降低15%门限、不删除安全分量、不训练统一逐车advantage。结果见 [exp145](experiments/exp_145_unified_agent_local_task_reward_identifiability_plan.md)。
+
+- exp146已完成最近邻成对安全动作耦合审计。邻车动作乱序使MSE平均恶化 `91.36%`，但成对总增益最差种子只有 `23.93%`，本车/邻车条件边际增益最差为 `12.17%/14.09%`，未达到25%/15%/15%门限。因此不实现成对安全Critic，不扫描容量或时域。结果见 [exp146](experiments/exp_146_nearest_pair_safety_action_coupling_plan.md)。
+
+- exp147发现当前收敛问题还包含基础轨迹执行契约失配。quintic生成器把最长约1.65 m的完整路径统一压缩为0.2 s，控制器固定跟踪第2个点并立即重规划；双种子 `78.25%–79.45%` 的非零路径要求超过1.35 m/s，实际一步只执行规划弧长约 `1.77%`。这使地形奖励和冲突诊断评价策略未完整执行的路径。全部预注册门限确认失配，只授权 [exp148](experiments/exp_148_trajectory_time_consistency_fix_plan.md) 的单一时间一致性修正；工程门限通过前不训练。
+
+- exp148已完成时间一致性修正和唯一一次B0 4M重新筛选。弧长时域、0.2秒物理前视控制和公共时间冲突对齐全部通过工程门限；时间戳速度违例降为0，冻结双种子单步弧长利用率中位数提高到 `11.82%–12.05%`，Actor不变。但随机初始化4M评测为 dmax ratio `0.3528`、success `0`、collision `0.9990`、timeout `0.0010`；terrain contrast动作MSE仅 `0.00383`，路径风险变化为 `-0.414%`。双种子失败episode复核中 `405/388` 个episode全部碰撞结束且100%出现重复车辆对冲突，中位事件数均为5。故工程修复保留，训练状态为 `stop_before_40m`；近距消息全部完整且年龄为0，不启动B1/B2/B3，不继续调整控制器或奖励。完整记录见 [exp148](experiments/exp_148_trajectory_time_consistency_fix_plan.md)。
+
+- exp149已完成碰撞参与者信用可行性冻结审计。四个checkpoint—种子组合均显示典型碰撞只涉及2辆车，约50%的车辆接收了与自身无直接碰撞关系的团队终止惩罚；碰撞对在终止前8/16步的重复冲突召回约为 `99.7%–100%`，首次命中提前量中位数为 `14–21` 步。该结果只授权按真实终止参与者进行一次信用筛选，预测冲突仍只作诊断。结果见 [exp149](experiments/exp_149_collision_participant_credit_feasibility.md)。
+
+- exp150已完成真实碰撞参与者零和Actor信用工程复核和唯一一次seed23 4M筛选。信用逐步零和、团队reward保持、source reconstruction、CPU/CUDA smoke全部通过；训练dmax降低 `59.22%`，但success episode为0。独立评测dmax ratio `0.2756`、success `0`、collision `0.9990`、timeout `0.0010`；terrain contrast动作MSE仅 `0.000810`，路径风险改善 `0.0466%`。双种子重复冲突中位数为 `9/8`，较exp148的 `5/5` 恶化。因此该方向在4M门限停止，不启动40M，不扫描scale、trace、惩罚或参与距离。结果见 [exp150](experiments/exp_150_collision_participant_actor_credit_plan.md)。
+
+- exp151已完成碰撞参与者信用因果有效性审计。冻结t1024/t2048策略、双种子共四个组合均通过Actor和执行不变性检查；但碰撞前8步存在不增加地形风险和集合退化的局部避碰候选比例最小仅`0.5100`，16步最小仅`0.5616`，低于`0.70/0.60`门限。8步两车均可行动比例只有`0.1977–0.2853`，等量信用支持率只有`0.1777–0.2454`。因此不再设计终止参与者信用，下一步仅做冻结的动作—规划—控制可控性分解。审计过程中还修正了MAPF车辆对时间轴受第三车轨迹时长污染的问题；该修正只影响诊断。结果见 [exp151](experiments/exp_151_collision_credit_causal_validity.md)。
+
+- exp152已完成动作—规划—控制可控性分解。联合层对exp151重建误差为0。t1024的8步无约束避碰可行动率为`0.8436/0.8475`，但t2048降至`0.6648/0.6676`，跨组合最小值未过`0.70`；16步最小值为`0.7020`。已有无约束避碰轨迹的控制传递率仍为`0.8069–0.9091`，线速度没有饱和、角速度饱和最高仅`1.29%`，说明低层控制不是首要瓶颈。约八成最佳候选来自方位角动作。下一步只允许冻结比较动作范围、局部候选覆盖和quintic几何。结果见 [exp152](experiments/exp_152_action_planning_controllability_decomposition.md)。
+
+- exp153已完成动作范围与quintic几何分离。现有全动作网格把t2048的8步可行动率提高到`0.7841/0.7536`，但跨组合最小值未达到`0.80`，范围恢复率最小仅`0.0645`；line参考最小仅`0.6275`且不稳定优于quintic，故动作覆盖和quintic几何都不是单一瓶颈。四组合endpoint可行动率均为1，但t2048途中交叉损失达到`0.3466/0.3725`。这支持“单车终点可达、相互轨迹缺少联合协调”的新假设，但尚未授权训练；下一步只允许冻结双车联合动作干预。结果见 [exp153](experiments/exp_153_action_range_quintic_geometry_audit.md)。
+
+- 当前任务定义保持为“真实地形可行集合点 + 实际质心平整度 gate + 可执行局部目标”。`terrain_aware_multiresolution` 每个 reset 搜索真正的地形约束最优点；成功只认可实际团队质心的 37 点平整圆盘，绝不认可 oracle 代理点。exp092 的 `BC32` 在原 `64 s/320` steps 为 `0.1910/0.7002/0/0.2998`；按当前决策，**后续训练和正式 proxy 评估固定采用 `96 s/480` steps 时域**。这是执行时间预算从 64 秒放宽到 96 秒，严格验收仍为 dmax `<=0.2`、success `>=0.9`、collision `<=0.02`、timeout `=0`，没有放宽。exp094 的基线复评为 `0.1837/0.8594/0/0.1406`；128 秒仅作为“时域仍偏紧”的诊断上界，不能替代 96 秒标准。
 
 - exp098–exp101 已在 96 秒时域完成末段干预和 PPO 诊断。严格逐槽位捕获退化；增大共同中心校正在相同 exp092 BC32 后验对照中暂时最好（exp099：`0.1843/0.8643/0/0.1357`）；真实局部平整候选搜索不再以几何中点代理目标，而对当前质心及附近环形候选运行与 success gate 相同的 37 点平整度检查。它使最终实际平整率达到 `0.9150`，但 success 仅 `0.8604`、timeout `0.1396`，未优于 exp099。以 `1e-5` 从 BC32 warm-start 的 4M environment-step PPO probe 中，`t=512/1024/1536/2048` success 依次降为 `0.8154/0.7539/0.7109/0.6621`，只保留 `t=0`，不触发 PhysX。
 
@@ -31,13 +91,14 @@
 
 ## 当前接口状态
 
-- 默认 actor observation schema 为 `ego_v3_local_terrain_grid`，输入维度为 86，包含 ego、neighbor、50 维局部地形网格和 aggregation 特征。exp067–075 使用显式 `ego_v6_gather_slot_goal`，输入维度为 89：只追加 rover 车体系下到专属对称槽位的相对向量与距离，不传世界坐标、搜索 score、可行性或平整度诊断。`task.execution_slot_reward_target` 默认关闭；开启时仅让 dense oracle-progress reward 对齐已分配槽位，终止条件仍只看真实团队质心。`gather_point.robustness_radius>0` 只在 reset 搜索中要求一圈可能质心偏移均平整，不能替代运行时的实际质心 gate。
+- exp125 当前执行接口为 `ego_v8_decentralized_tiered`：Actor 输入 101 维，包含 10 维 ego、3×12 维通信缓存邻居、50 维局部地形和 5 维缓存聚合特征；Actor 架构为 `branched_v5`。12 m 内每步更新完整消息，12 m 外只低频保留位置和航向快照。该接口拒绝 86/89/92 维 checkpoint，且不读取 Oracle、集合槽位、全局质心或缓存外邻车状态。
+- 历史默认 actor observation schema 为 `ego_v3_local_terrain_grid`，输入维度为 86；exp067–075 使用显式 `ego_v6_gather_slot_goal` 89 维接口。这些历史接口仅用于复现实验，不是 exp125 当前执行接口。`task.execution_slot_reward_target` 默认关闭；开启时仅让 dense oracle-progress reward 对齐已分配槽位，终止条件仍只看真实团队质心。`gather_point.robustness_radius>0` 只在 reset 搜索中要求一圈可能质心偏移均平整，不能替代运行时的实际质心 gate。
 - 地形网格通道为相对高度和风险，覆盖前后 `[-0.4, 1.2] m`、横向 `[-0.8, 0.8] m`；critic 仍为 54 维，并使用 5 维网格摘要。地图面积可通过 `world_xy_limit/crater_field_size` 扩大，但本轮不扩大 Actor 局部地形观测窗口。
 - checkpoint 加载要求 schema、actor 输入维度和 critic 状态维度完全匹配；新 checkpoint metadata 还记录 Actor/Critic 架构、运动学模型和轨迹生成方法。`--init-checkpoint` 只初始化兼容模型参数、不会恢复 optimizer 或 rollout memory，并保存可筛选的 `ppo_timestep_000000.pt` 基线。旧 `ego_v2_speed_angular` checkpoint 不自动迁移；当前 schema 但缺少架构 metadata 的旧 checkpoint 只按 `mlp_v1` 兼容路径加载。
 - centralized critic state 和 reward shaping 可以使用 oracle 信息；默认 Actor 不接收 `p*`、oracle 距离或 oracle 距离下降量。显式 v5/v6 执行契约只传递从其导出的车体系局部目标三元组，Critic 仍为 54 维。
 - 动作接口固定为低维 `[rho, beta]`，再经局部子目标、可配置 `line/quintic` 轨迹和简化速度控制器转换为运动命令。
 - 当前 proxy 动力学可配置为 `unicycle` 或 `bicycle`；旧配置默认 `unicycle`，`exp042` 显式使用 `bicycle`。二者都没有质量、惯量、轮地接触、打滑、悬挂或 PhysX contact。
-- `scripts/train_skrl_mappo.py` 支持 `actor_architecture=mlp_v1|branched_v1|branched_v2|branched_v3|branched_v4` 和 `critic_architecture=mlp_v1|structured_v1|structured_v2`。`branched_v3` 为 89 维单目标输入增加专用 encoder；`branched_v4` 对应 92 维双目标诊断 schema。exp067 当前主候选的 Actor/Critic 为 `89/54`。
+- `scripts/train_skrl_mappo.py` 支持历史 `mlp_v1`、`branched_v1` 至 `branched_v4`，以及严格去中心化101维接口的 `branched_v5` 和实验性 `branched_v6_graph_attention`；Critic支持 `mlp_v1|structured_v1|structured_v2`。`branched_v6_graph_attention` 已被exp137否决，只为复现实验保留，不是当前采用结构。
 - `scripts/train_skrl_mappo.py` 使用 SKRL MAPPO 训练 proxy wrapper；`isaaclab-multi-agent` wrapper 只是接口层，不代表训练 loop 运行在 Isaac Sim / PhysX。
 - exp016 已启用项目侧 `shared_joint` 更新：共享 Actor/Critic 只使用一个 optimizer，每个 rollout 合并四个 rover 的 Actor 样本并只更新一次 Critic。
 - 当前 exp016 诊断配置把通信半径临时扩大到 `12 m`；这是训练诊断设置，不是最终通信约束。
@@ -297,10 +358,17 @@ outputs/runs/physx_jackal_tracking/strong_lunar_crater_final_v2/
 
 ## 下一步
 
-1. 当前新环境栈 local reset 最好候选是 exp051：dmax/success/collision 已过 strict，仅 timeout `0.0098` 未过。
-2. exp051 说明 PPO 稳定性调整有小收益；exp050 说明增强 terminal hold / timeout shaping 会抬高 timeout，不能作为主线。
-3. 暂时维持原动作输出，不改为多点采样让 filter 选择；下一轮仍应把 RL policy 作为主体，filter/control 只保留原有兜底语义。exp051/exp060 gate 诊断显示 timeout 主要卡在 terminal `min_pairwise` gate，而不是轨迹速度或 dispersion，因此把 filter 升级成候选选择器会偏离当前“RL 主体、filter 兜底”的口径。
-4. 不建议继续全局加硬 near/hold filter；exp039/exp040 和 exp049 已说明会扰动 success 或 timeout。
-5. exp052 说明不能把 entropy taper 提前到 `8192`；exp053 说明不能继续提高全局 near reward；exp054/exp055 完成 clip 两侧扫描，当前最好仍是 exp051 的 `clip_epsilon=0.18`；exp056/exp057 说明 terminal pairwise reward 不是有效收敛方向；exp058/exp059 说明拉长 `gamma` 或缩短 `gae_lambda` 都会拖慢或破坏 terminal convergence；exp060 说明单纯提高 `value_loss_coef` 也不能清掉 timeout；exp061/exp062 说明直接加 terminal gate Actor 特征或 critic-only min_pairwise state 都不优于 exp051。下一轮仍应回到 exp051，避免继续扩张安全间距项、filter/control 权限或直接 gate 特征，优先考虑更保守的训练稳定性/seed 稳健性诊断，或只做非常窄的末端 hold 学习信号对照；checkpoint selection 继续只作为诊断，不作为主修复。
-6. 保留 exp017 作为固定地图 pure RL baseline，保留 exp018–exp041 作为随机地形 failure analysis，不把它们扩写为多 seed 或 PhysX 收敛。
-7. 为 PhysX / Jackal 后续接入同布局 raycast / height scanner，保持 proxy 与高保真观测接口一致。
+1. 不启动B0或B2的40M，不恢复安全投影、槽位目标或BC；B1缺少消息年龄依据，B2已在exp137失败，B3缺少前置条件。
+2. 不继续调节图注意力头数、层数或与GRU组合。exp137已证明邻居聚合结构不是当前最小瓶颈。
+3. exp138已否决最危险车辆对聚合；不修改安全聚合、不启动4M，也不扫描softmax、top-k、距离阈值或权重。
+4. exp139已否决零和逐车近距信用；不重开C3-near，也不将重复冲突诊断转化为奖励或辅助损失。
+5. exp140已失败；不扫描scale、trace或距离，也不与terrain信用、梯度投影或图注意力叠加。
+6. exp142已失败；不扫描cost预算、dual学习率/上界、PID项或cost网络容量，也不与terrain信用、安全投影或图注意力叠加。
+7. exp143/144已否决“单纯增加B0训练深度会自然形成地形规划”；不启动12M或40M，也不扫描相对路径风险权重。
+8. exp145/146均已停止：不训练统一逐车advantage，不实现最近邻成对安全Critic，不降低门限或扫描模型容量。
+9. exp148的时间一致性修正继续作为物理执行基线；exp149已完成碰撞前时序审计，exp150又否决真实碰撞参与者Actor信用。该方向不调参、不组合，也不启动40M。
+10. exp151已停止终止参与者信用；exp152进一步将首个失败层定位为动作—quintic局部可控性，而非低层控制饱和。
+11. exp153没有找到可单独修改的动作范围或quintic参数；endpoint恒可达但完整路径存在明显途中交叉。下一步只允许冻结验证最终碰撞对的双车联合动作是否显著优于单车干预。
+12. 在联合动作证据形成前，不增加协调网络、通信模块、预测冲突reward或在线MAPF，也不启动4M。
+13. 当前没有已授权的新训练组件；任何新4M必须等待新的单变量假设通过预注册审计。
+14. exp051/exp116仅保留为历史BC-based执行对照，不再作为新策略初始化或当前主线。

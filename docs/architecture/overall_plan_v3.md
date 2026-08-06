@@ -1,48 +1,84 @@
 # 多月球车自组织集合整体规划 V3
 
-本文档是当前工程推进的主规划。旧 V1 / V2 / V3 原文压缩包已移出仓库，存放在仓库父目录 `../original_design_docs_v1_v2_v3_2026-06-16.zip`；长期技术路径管理见根目录 `多月球车自组织集合局部参考轨迹规划技术文档.md`；当前实现口径以 `docs/implementation_plan.md`、`docs/current_status.md` 和本文档为准。
+本文描述当前整体架构。具体训练门限和候选结构见 [实施计划](../implementation_plan.md)，当前事实和最佳实验见 [current_status.md](../current_status.md)。
 
-核心判断：当前项目采用“高吞吐 proxy 训练 + Isaac Sim / Isaac Lab / PhysX 高保真闭环评估”的分层路线。训练样本、奖励调试、checkpoint selection 的主体来自 proxy 环境；Isaac/PhysX 不进入每次 PPO/MAPPO 梯度更新，而用于低频 checkpoint 级闭环评估、失效分析和展示。
-
-## 分层路线
-
-### Proxy 训练层
-
-Proxy 环境是当前训练主路径，不是临时日志或单纯可视化工具。它负责：
-
-- torch-vectorized 多环境采样；
-- actor observation、centralized critic state、reward、termination 和 metrics 的接口验证；
-- BC warm-start、PPO / SKRL-MAPPO 训练诊断和 ablation；
-- 高频 deterministic eval 与 proxy strict checkpoint selection；
-- 标准 `outputs/runs/<experiment>/<run_id>/` 产物管理。
-
-当前 proxy 动力学是 2D/2.5D kinematic unicycle 风格模型。地形开启时会查询 procedural heightfield / crater proxy 特征并施加速度缩放，但不包含真实质量、惯量、轮地接触、打滑、沉陷、悬挂或 PhysX contact。
-
-### Isaac / PhysX 高保真评估层
-
-Isaac Sim / Isaac Lab / PhysX 当前定位为 high-fidelity closed-loop validation：
-
-- 运行 Jackal 轮式资产在平地和 strong lunar crater mesh 中的轨迹跟踪；
-- 在 PhysX 中执行“参考轨迹 -> 控制命令 -> 物理推进 -> 误差再计算”的闭环 rollout；
-- 报告 `rmse_cross_track_m`、`max_cross_track_m`、`path_completion_ratio`、`max_tilt_deg` 和 tracking figures；
-- 记录失败案例，用于判断控制接口、地形 mesh 和后续 proxy policy 迁移风险。
-
-当前使用 Jackal 作为轮式资产 placeholder。Jackal 可以验证控制链路和闭环评估流程，但不能代表最终 lunar rover asset。
-
-### Checkpoint 流转
-
-标准流转为：
+## 核心路线
 
 ```text
-训练产生 checkpoint
--> proxy deterministic evaluation
--> proxy strict gate
--> high-fidelity PhysX evaluation queue
--> checkpoint_status.json
--> final_selected
+高吞吐 proxy Pure RL 训练
+→ proxy strict evaluation
+→ MAPF 拓扑与冲突失效分析
+→ Isaac Sim / Isaac Lab / PhysX 闭环验证
 ```
 
-checkpoint 状态只允许：
+Proxy 环境负责 MAPPO 采样、奖励调试、通信与观测契约验证和 checkpoint selection。Isaac/PhysX 只接收三个种子均通过 strict gate 的最终候选，用于高保真闭环跟踪和迁移检查。
+
+## 严格去中心化执行
+
+唯一执行链路为：
+
+```text
+局部观测与分级通信
+→ 共享 Actor
+→ 局部子目标
+→ quintic 轨迹
+→ bicycle 控制器
+```
+
+12 m 内每步共享完整相对状态和发送者局部地形摘要；12 m 外只低频共享缓存位置和航向。Actor 只读取通信缓存。Oracle、全局质心、集合槽位、集中式路径和未发送邻车状态不得进入执行链路。
+
+当前 B0 工程基线使用 `ego_v8_decentralized_tiered` 101 维观测和 `branched_v5` 前馈 Actor。新主线禁用子目标过滤、安全投影、方向性 mask、末段 damping、共同中心修正和槽位捕获，并固定为随机初始化 Pure RL。
+
+## 训练和候选架构
+
+B0 是唯一默认主线。seed23 4M screen 已完成但未通过，因此 40M formal 当前未启动。只有后续 B0 screen 通过，才允许从零开始 40M；seed23 近距和远距均 strict pass 后，才能运行 seed31 和 seed47。
+
+候选架构顺序为：
+
+1. B1 单层 GRU：只处理稀疏消息导致的时序部分可观测。
+2. B2 单跳图注意力：只处理动态通信邻接和重复冲突。
+3. B3 八维学习消息：只在固定消息被证明为瓶颈后研究。
+
+每次只改变一种机制。B1–B3 当前均未启用，不能与 B0 工程完成状态混写。
+
+## MAPF 诊断层
+
+MAPF 层不参与在线决策，只提供：
+
+- Open、Mixed、Bottleneck 地形分层；
+- quintic 轨迹连续冲突和重复车辆对冲突统计；
+- 消息年龄与冲突、timeout 的关联诊断；
+- 少量冻结场景的集中式 vanilla CBS 性能上界。
+
+环境规划图与通信图必须区分：介数中心性描述地形可执行拓扑，B2 图注意力描述车辆通信邻接。拓扑标签、BC 值和 CBS 路径都不能进入 Actor。
+
+约束搜索与拓扑分析依据为 [Lee et al., IEEE Transactions on Robotics, 2026](https://doi.org/10.1109/TRO.2025.3641865)。GRU、图注意力和学习消息分别引用实施计划中的 MARL 与多机器人论文。
+
+## 验收和流转
+
+Proxy strict gate 固定为：
+
+```text
+dmax_reduction_ratio <= 0.20
+success_rate >= 0.90
+collision_rate <= 0.02
+timeout_rate == 0
+```
+
+成功还必须通过实际团队质心平整度 gate。MAPF/CBS 结果、动画和 TensorBoard 只能用于诊断，不能替代 strict pass。
+
+标准流转：
+
+```text
+B0 4M screen
+→ B0 40M seed23
+→ 近距/远距/拓扑分层评测
+→ seed31、seed47
+→ final_selected
+→ PhysX closed-loop validation
+```
+
+checkpoint 状态仍使用：
 
 ```text
 candidate
@@ -52,74 +88,38 @@ physx_passed
 final_selected
 ```
 
-对应标准入口：
+## 当前边界
 
-```bash
-.venv_isaaclab/bin/python scripts/run_checkpoint_evaluation.py \
-  --config configs/experiment/<config>.yaml \
-  --checkpoint outputs/runs/<experiment>/<run_id>/checkpoints/best.pt \
-  --device cuda \
-  --run-dir outputs/runs/<experiment>/<run_id>
-```
-
-## 与 V2.0 的关系
-
-V2.0 原始文档把 Isaac Sim / Isaac Lab 描述为主要训练与仿真平台。当前实现做了工程修订：
-
-| 维度 | V2.0 原始表述 | 当前 V3 口径 |
-| --- | --- | --- |
-| 训练主路径 | Isaac Lab / PhysX 多车物理训练 | 高吞吐 proxy 环境 |
-| 高保真仿真 | 训练 loop 的物理推进层 | checkpoint 级闭环评估层 |
-| 动作接口 | `[rho, beta]` 低维局部子目标 | 保持不变 |
-| 轨迹与控制 | 子目标 -> 轨迹 -> 简化控制 | 保持上层接口；PhysX 侧做轮式资产适配 |
-| 结果声明 | Isaac 物理训练成功 | proxy strict pass + PhysX closed-loop eval |
-
-该修订不是降低目标，而是让文档与当前代码事实一致：proxy 提供训练吞吐和可控实验，Isaac/PhysX 提供高保真迁移检查。
-
-## 指标体系
-
-Proxy strict gate：
-
-```text
-dmax_reduction_ratio <= 0.2
-success_rate >= 0.9
-collision_rate <= 0.02
-timeout_rate == 0
-```
-
-High-fidelity gate 当前使用 Jackal tracking 指标：
-
-```text
-flat: rmse_cross_track_m <= 0.20, max_cross_track_m <= 0.55, path_completion_ratio >= 0.90
-strong_lunar_crater: rmse_cross_track_m <= 0.50, max_cross_track_m <= 1.10, path_completion_ratio >= 0.75, max_tilt_deg <= 35
-```
-
-PhysX 评估必须同时保留诊断指标：
-
-```text
-rmse_cross_track_m
-max_cross_track_m
-path_completion_ratio
-max_tilt_deg
-timeseries.csv
-tracking.png
-```
-
-GIF、截图和 TensorBoard 曲线不能作为 strict pass 证据。
-
-## 当前实现现状
-
-- `MultiRoverGatheringCore` 是当前主训练和评估 proxy core。
-- `scripts/train_proxy_convergence.py` 产生 exp006-exp010 的主要 proxy suite 结果。
-- `scripts/train_skrl_mappo.py` 已接入 SKRL MAPPO proxy wrapper，用于 CUDA contract、action-scale 诊断和 exp012/exp013。
-- `scripts/evaluate_proxy_policy.py` 输出独立 `metrics/final_eval_proxy.json`。
-- `scripts/evaluate_physx_jackal_tracking.py` 输出 PhysX / Jackal headless 或 render 评估结果。
-- `scripts/run_checkpoint_evaluation.py` 是新的 checkpoint 级统一评估入口。
-- `outputs/runs/` 是标准产物目录；`outputs/**` 默认不提交。
-
-## 当前默认下一步
-
-1. 对 exp008 候选 checkpoint 运行统一 checkpoint evaluation，补齐 `checkpoint_status.json`。
-2. 保留 exp013 作为 SKRL-MAPPO action-scale 与 reachability 诊断，不把它写成成功结果。
-3. 扩大 PhysX / Jackal 平地和 strong lunar crater 跟踪复评，记录误差、完成率与姿态稳定性。
-4. 如果 PhysX 评估暴露系统性迁移失败，再考虑 domain randomization、Isaac-based fine-tuning 或真实 rover asset/control adapter。
+- 已完成 B0、通信缓存、连续冲突、拓扑分类和离线 CBS 的工程基础。六组 seed23 4M 同族诊断均未通过，当前决定为 `stop_before_40m`。
+- 近距screen全部使用完整通信，未出现远距消息年龄，因此B1的启用依据不成立。exp135/136确认重复冲突是失败episode的普遍现象，但exp137表明仅替换为图注意力不能降低该冲突，反而显著增加collision；B2已停止而非继续调参。
+- 路径风险已改为沿实际 quintic 轨迹采样，筛选评测按 checkpoint 时步恢复初始状态课程。逐车信用诊断显示相对路径风险与团队 TD advantage 代理近乎不相关；下一步先规划单一信用分配对照，不直接增加网络或控制模块。
+- C0 只在训练期把零和的车辆地形信用残差加入 Actor advantage；集中式 Critic、团队奖励均值和执行链路保持不变。该对照不增加网络分支、在线规划器或后处理权限。
+- C0 的 4M screen 已失败：地形风险响应增强，但车辆冲突和 collision 严重上升。该机制停止，不进入 40M，也不作为当前架构组成部分。
+- exp127 的完整 episode 联合动作 Critic 诊断未通过：16 步 MSE 只改善 `2.16%`，安全相关低于 `0.09`，因此 C1 和联合动作价值头不进入架构。
+- exp128 表明动作可显著解释集合进度、预测冲突和最近邻变化，但不能解释当前 `safety/terrain` 奖励。该结果属于奖励接口诊断，不增加在线网络或控制模块；下一步仅做冻结状态配对动作干预。
+- exp129 的配对动作干预表明地形风险下降与安全裕量上升的局部方向整体近似正交，强一致与强冲突状态比例接近。因此不把固定加权地形—安全信用加入架构，也不恢复方向性安全 mask。
+- exp130 证明团队 PPO 与 exp126 地形信用的 Actor 梯度在约 `46.9%` 的批次中冲突。只允许研究训练期、主任务优先的非对称梯度投影；它不得改变环境奖励、Critic、Actor结构或执行链路，未通过 4M 前不属于正式架构。
+- exp131 的主任务优先投影 4M 已失败：投影数值不变量成立，但 collision 仍为 `0.6680`。该机制不进入正式架构，也不继续参数扫描；结果说明团队主梯度自身缺少有效车辆安全信用。
+- exp132 的 \(0.42\,\mathrm m\) 最近邻门限信用具有非退化梯度，但仅 75% rollout 出现事件，总体 trace std 为 `0.8660`，未通过预注册门限。该信用不进入训练架构；当前仍不恢复在线安全修正。
+- exp133 将阈值扩展到环境已有的 `near_distance=0.72 m` 后，信用密度提高到约 17%，但一个种子的前两段 rollout 仍完全无事件。该结果不授权训练或继续扩大排斥范围；下一步只做碰撞提前量离线诊断。
+- exp134 表明全部实际碰撞在 `0.72 m` 内有至少 2 步、通常 67–74 步的提前量，但单步预测冲突只有约 36%–38% 被近距区覆盖。距离信用不进入训练；MAPF 诊断下一步应区分短暂冲突和连续重复冲突。
+- exp135 证实非重复冲突在两个种子中均无碰撞结果，而 pair-repeated 冲突的结果率约为 5%，并对碰撞车辆实现 100% 的 8 步召回。架构决策只使用 repeated conflict；所有单步冲突仅作描述性日志。
+- exp136 进一步表明两个种子的全部失败 episode 都包含 pair-repeated 冲突，事件数中位数为 `17/18`。B2 冲突证据已满足，但 B0/B1 基础收敛前置条件仍失败，因此当前架构尚未切换到图注意力。
+- exp137 已完成一次性、单变量的B2例外筛选。图注意力满足排列不变性和严格缓存边界，但4M中collision达到 `0.7881`，失败episode的重复冲突也未一致下降，因此B2在基础gate停止。该结果说明改变邻居聚合方式不足以修复当前共享团队advantage下的安全信用问题，架构主线不切换到图注意力。
+- exp138进一步排除了团队安全gap“平均稀释”的解释：worst-pair聚合在两个验证种子上的动作增益仍接近0。现阶段不改变reward聚合；若后续研究允许逐车训练信用或约束优化，必须另行更新执行计划，且不得改变严格去中心化执行接口。
+- exp139进一步检验逐车近距信用。raw信用动作增益为 `15.791%/14.901%`，跨种子不稳定；逐步零和中心化信用只有 `8.219%/7.203%`，未达到预注册门限。该信用不进入训练架构，重复冲突仍只作为MAPF诊断。当前架构研究在B0、B2、团队安全聚合和零和逐车信用四个方向均已停止，新增训练前必须先修订研究边界。
+- exp140已否决非零和raw近距Actor trace：collision升至 `0.2295`，重复冲突中位数升至 `19/20`。该机制不进入正式架构，不扫描参数，也不与terrain信用叠加。若后续考虑约束优化，只能先进行冻结cost-value可估计性审计，不能直接增加cost critic或乘子。
+- exp141的冻结审计表明，54维集中式state对未来64步真实collision具有稳定可估计性：双种子AUROC `0.939/0.933`、Brier改善 `35.6%/30.0%`。该结果只允许计划训练期cost critic，不改变现有事实架构。
+- exp142已完成真实collision PPO-Lagrangian组件筛选。训练碰撞率下降 `95.03%`，评测collision为 `0.02539`，说明集中式cost critic和dual目标能够优化安全；但success为0、dmax ratio为 `0.68146`、timeout为 `0.97461`，策略以回避集合换取安全。该组件未通过4M门限，不进入正式架构，不扫描dual参数或cost网络容量。Actor和执行链路始终保持101维严格去中心化接口。
+- exp143/144进一步否决单纯延长B0训练：t2048在5/5评测种子上优于t1024，但terrain动作响应增强后，3/3种子的实际quintic路径风险均恶化。现有terrain encoder并非完全失活，瓶颈是共享团队advantage没有把地形影响稳定归因到对应车辆动作。该结果不改变正式架构；任何逐车回报方案必须先离线证明集合、地形和安全三类动作辨识度，再另行规划。
+- exp145完成上述统一逐车回报审计：集合和地形动作增益达到 `77.58%/28.44%`，统一目标达到 `25.69%`，但安全仅 `9.58%`、最差种子 `8.12%`。因此逐车统一advantage不进入训练架构。
+- exp146表明最近邻动作确实包含安全信息，但成对总增益最差 `23.93%`，本车/邻车条件边际增益最差 `12.17%/14.09%`，仍未过门限。最近邻成对安全Critic不进入架构，执行期也始终不接收邻车动作。
+- exp147确认旧quintic时间语义与实际控制不一致；exp148已在保持路径几何、Actor、奖励和控制增益不变的条件下完成弧长时域、物理前视和冲突时间对齐。工程门限全部通过，速度违例由约79%降为0，单步弧长利用率提高到约12%，因此该修正作为后续物理执行基线保留。
+- exp148唯一一次随机初始化B0 4M重新筛选仍失败：dmax ratio `0.3528`、success `0`、collision `0.9990`，terrain动作MSE `0.00383`。双种子失败episode全部碰撞结束且100%包含重复车辆对冲突；近距通信完整且消息年龄为0。故40M、B1、B2、B3均不启动，下一步仅做冻结的奖励—动作—冲突时序诊断。
+- exp149表明真实碰撞责任通常集中在2辆车，约50%车辆受到复制团队终止惩罚污染；但exp150将碰撞相关Actor信用按真实终止参与者零和重分配后，4M仍为success `0`、collision `0.9990`，双种子重复冲突中位数还由`5/5`升至`9/8`。该信用只属于已否决的训练实验，不进入正式架构；不启动40M或组合模型。
+- exp151表明最终碰撞参与者并不稳定对应局部可执行的避碰方向：8/16步可行动率最小仅`0.5100/0.5616`，等量信用支持率仅`0.1777–0.2454`。因此终止参与者信用研究停止；只允许冻结分解动作—quintic—控制链路及地形/集合约束，不改变正式架构。MAPF连续冲突现在按每个车辆对自身的公共物理时域对齐，第三车轨迹时长不再污染目标车辆对距离。
+- exp152进一步确认首个失败层是动作—quintic局部可控性：t2048的8步无约束可行动率仅`0.6648/0.6676`，而已有避碰轨迹的控制传递率仍不低于`0.8069`，控制饱和接近0。该结果不授权修改正式动作或轨迹接口；下一步仅做冻结的动作全范围与几何比较。
+- exp153显示完整动作网格和line参考都不能把四组合归结为单一动作范围或quintic问题；但四组合endpoint可行动率均为1，t2048从endpoint到完整路径的途中交叉损失达到约35%–37%。正式架构保持不变；下一步仅冻结验证碰撞双方联合改变动作能否消除相互轨迹冲突。
+- `docs/technical_design.md` 暂不修改；只有候选结构通过正式评测并被采用后才更新事实接口。
+- 历史 86/89/92 维 checkpoint 结果仍可追溯，但不能加载到 101 维主线。
+- 本地论文 PDF 不提交；文档只保存正式 DOI 引用。
