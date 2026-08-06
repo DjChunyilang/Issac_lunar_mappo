@@ -54,6 +54,7 @@ def evaluate_checkpoint(
     output: str | Path | None = None,
     run_dir: str | Path | None = None,
     filter_progress_override: int | None = None,
+    initial_state_progress_override: int | None = None,
 ) -> dict:
     if run_dir is not None and output is None:
         output = Path(run_dir) / "metrics" / "final_eval_proxy.json"
@@ -71,6 +72,14 @@ def evaluate_checkpoint(
         map_location = torch.device("cpu")
     checkpoint_data = torch.load(checkpoint, map_location=map_location)
     metadata = checkpoint_data.get("metadata", {}) if isinstance(checkpoint_data, dict) else {}
+    if initial_state_progress_override is not None and int(initial_state_progress_override) < 0:
+        raise ValueError("initial_state_progress_override must be nonnegative.")
+    if cfg.initial_state.curriculum_enabled:
+        cfg.initial_state.progress_timestep_override = (
+            int(metadata.get("timesteps", 0))
+            if initial_state_progress_override is None
+            else int(initial_state_progress_override)
+        )
     curriculum_filter_modes = {
         "terrain_safe_candidate_curriculum",
         "terrain_safe_candidate_constrained_curriculum",
@@ -767,6 +776,15 @@ def evaluate_checkpoint(
             env.cfg.planner.subgoal_filter.progress_timestep_override
         ),
         "filter_progress_override": filter_progress_override,
+        "initial_state_progress_timestep": int(
+            env.cfg.initial_state.progress_timestep_override
+        ),
+        "initial_state_effective": {
+            "spawn_radius_min": env._effective_initial_state_values()[0],
+            "spawn_radius_max": env._effective_initial_state_values()[1],
+            "center_xy_range": env._effective_initial_state_values()[2],
+            "jitter_std": env._effective_initial_state_values()[3],
+        },
         "gather_point_flatness": {
             "require_flat_for_success": bool(
                 env.cfg.gather_point.require_flat_for_success
@@ -1152,6 +1170,15 @@ def main() -> None:
         default=None,
         help="Override the subgoal-filter curriculum step for this evaluation only.",
     )
+    parser.add_argument(
+        "--initial-state-progress-override",
+        type=int,
+        default=None,
+        help=(
+            "Override initial-state curriculum progress. By default the checkpoint "
+            "training timestep is used."
+        ),
+    )
     args = parser.parse_args()
     result = evaluate_checkpoint(
         args.config,
@@ -1163,6 +1190,7 @@ def main() -> None:
         output=args.output,
         run_dir=args.run_dir,
         filter_progress_override=args.filter_progress_override,
+        initial_state_progress_override=args.initial_state_progress_override,
     )
     print(json.dumps(result, indent=2))
 

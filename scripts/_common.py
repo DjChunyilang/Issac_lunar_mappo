@@ -108,6 +108,7 @@ def _apply_observation_values(cfg: MultiRoverGatheringEnvCfg, values: dict) -> N
             "ego_v5_gather_site_goal",
             "ego_v6_gather_slot_goal",
             "ego_v7_gather_site_and_slot_goal",
+            "ego_v8_decentralized_tiered",
         }
         if schema_version not in supported_schemas:
             raise ValueError(
@@ -194,6 +195,16 @@ def _apply_trajectory_generator_values(
         raise ValueError("trajectory_generator.n_trajectory_points must be at least 2.")
     if cfg.trajectory_generator.quintic_tangent_scale < 0.0:
         raise ValueError("trajectory_generator.quintic_tangent_scale must be non-negative.")
+    if cfg.trajectory_generator.reference_speed <= 0.0:
+        raise ValueError("trajectory_generator.reference_speed must be positive.")
+    if cfg.trajectory_generator.time_parameterization not in {
+        "planning_step",
+        "arc_length_reference_speed",
+    }:
+        raise ValueError(
+            "trajectory_generator.time_parameterization must be one of: "
+            "planning_step, arc_length_reference_speed."
+        )
     if cfg.trajectory_generator.end_heading_mode not in {"subgoal_direction"}:
         raise ValueError(
             "trajectory_generator.end_heading_mode currently supports only subgoal_direction."
@@ -207,6 +218,22 @@ def _validate_low_level_control(cfg: MultiRoverGatheringEnvCfg) -> None:
         raise ValueError("low_level_control.wheelbase_m must be positive.")
     if cfg.low_level_control.max_steer_angle_rad <= 0.0:
         raise ValueError("low_level_control.max_steer_angle_rad must be positive.")
+    if cfg.low_level_control.tracking_point_mode not in {
+        "fixed_index",
+        "planning_time",
+    }:
+        raise ValueError(
+            "low_level_control.tracking_point_mode must be one of: "
+            "fixed_index, planning_time."
+        )
+    if (
+        cfg.trajectory_generator.time_parameterization
+        == "arc_length_reference_speed"
+        and cfg.low_level_control.tracking_point_mode != "planning_time"
+    ):
+        raise ValueError(
+            "arc_length_reference_speed timing requires planning_time tracking."
+        )
     if cfg.low_level_control.formation_center_activation_dmax_multiplier < 1.0:
         raise ValueError(
             "low_level_control.formation_center_activation_dmax_multiplier "
@@ -565,6 +592,15 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
             "reward.coefficients.centroid_flatness_dmax_multiplier must be greater than 1."
         )
     _apply_observation_values(cfg, observation)
+    if cfg.observation.schema_version == "ego_v8_decentralized_tiered":
+        if abs(float(cfg.observation.communication_radius) - 12.0) > 1.0e-9:
+            raise ValueError(
+                "ego_v8_decentralized_tiered fixes observation.communication_radius at 12.0 m."
+            )
+        if cfg.observation.max_neighbors != 3:
+            raise ValueError(
+                "ego_v8_decentralized_tiered requires observation.max_neighbors=3."
+            )
     has_gather_site_goal = cfg.observation.schema_version in {
         "ego_v5_gather_site_goal",
         "ego_v6_gather_slot_goal",
@@ -605,6 +641,42 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
             raise ValueError(
                 "success_thresholds.min_pairwise_distance must satisfy "
                 "safety.collision_distance < min_pairwise_distance < success_thresholds.dmax."
+            )
+    if cfg.observation.schema_version == "ego_v8_decentralized_tiered":
+        forbidden = {
+            "task.execution_slot_reward_target": cfg.task.execution_slot_reward_target,
+            "task.dynamic_terminal_slot_goal_enabled": (
+                cfg.task.dynamic_terminal_slot_goal_enabled
+            ),
+            "planner.subgoal_filter.enabled": cfg.planner.subgoal_filter.enabled,
+            "low_level_control.safety_projection_enabled": (
+                cfg.low_level_control.safety_projection_enabled
+            ),
+            "low_level_control.projection_directional_agent_scale": (
+                cfg.low_level_control.projection_directional_agent_scale
+            ),
+            "low_level_control.success_zone_damping_enabled": (
+                cfg.low_level_control.success_zone_damping_enabled
+            ),
+            "low_level_control.formation_center_correction_enabled": (
+                cfg.low_level_control.formation_center_correction_enabled
+            ),
+            "low_level_control.formation_center_local_flatness_search_enabled": (
+                cfg.low_level_control.formation_center_local_flatness_search_enabled
+            ),
+            "low_level_control.terminal_slot_capture_enabled": (
+                cfg.low_level_control.terminal_slot_capture_enabled
+            ),
+            "low_level_control.flat_geometry_capture_enabled": (
+                cfg.low_level_control.flat_geometry_capture_enabled
+            ),
+        }
+        enabled = [name for name, value in forbidden.items() if bool(value)]
+        if enabled:
+            raise ValueError(
+                "ego_v8_decentralized_tiered forbids execution-time overrides: "
+                + ", ".join(enabled)
+                + "."
             )
     return cfg
 

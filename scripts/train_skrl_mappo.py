@@ -32,6 +32,7 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.metrics import compute_team_m
 from lunar_rover_tasks.tasks.multi_rover_gathering.oracle import compute_mean_oracle_distance
 from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import query_terrain_features
 from lunar_rover_tasks.tasks.multi_rover_gathering.termination import compute_success_gates
+from lunar_rover_tasks.utils.geometry_utils import pairwise_distances_xy
 
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
@@ -50,6 +51,8 @@ ACTOR_ARCHITECTURES = {
     "branched_v2",
     "branched_v3",
     "branched_v4",
+    "branched_v5",
+    "branched_v6_graph_attention",
 }
 CRITIC_ARCHITECTURES = {"mlp_v1", "structured_v1", "structured_v2"}
 ACTOR_OBSERVATION_SLICES_V3 = {
@@ -69,6 +72,12 @@ ACTOR_OBSERVATION_SLICES_V5 = {
 ACTOR_OBSERVATION_SLICES_V6 = {
     **ACTOR_OBSERVATION_SLICES_V3,
     "gather_site_and_slot_goal": (86, 92),
+}
+ACTOR_OBSERVATION_SLICES_V8 = {
+    "ego": (0, 10),
+    "neighbors": (10, 46),
+    "terrain": (46, 96),
+    "aggregation": (96, 101),
 }
 ACTOR_OBSERVATION_SLICES = ACTOR_OBSERVATION_SLICES_V3
 CRITIC_STATE_SLICES_V3 = {
@@ -95,6 +104,8 @@ def _actor_slices_for_dim(num_observations: int) -> dict[str, tuple[int, int]]:
         return ACTOR_OBSERVATION_SLICES_V5
     if int(num_observations) == 92:
         return ACTOR_OBSERVATION_SLICES_V6
+    if int(num_observations) == 101:
+        return ACTOR_OBSERVATION_SLICES_V8
     raise ValueError(f"Unsupported actor observation dim: {num_observations}.")
 
 
@@ -142,6 +153,106 @@ def normalize_critic_architecture(value: Any | None) -> str:
             f"{', '.join(sorted(CRITIC_ARCHITECTURES))}."
         )
     return architecture
+
+
+class GraphAttentionNeighborEncoder(nn.Module):
+    """Permutation-invariant one-hop aggregation over three cached neighbors.
+
+    Each cached message keeps the fixed 12-dimensional physical schema.  The
+    final component is message quality ``q``; ``q <= 0`` marks an invalid
+    cache slot.  No sender index or state outside the observation is consumed.
+    """
+
+    def __init__(
+        self,
+        *,
+        neighbor_dim: int = 12,
+        num_neighbors: int = 3,
+        node_dim: int = 32,
+        ego_dim: int = 32,
+        num_heads: int = 4,
+        head_dim: int = 12,
+        eps: float = 1.0e-8,
+    ) -> None:
+        super().__init__()
+        self.neighbor_dim = int(neighbor_dim)
+        self.num_neighbors = int(num_neighbors)
+        self.node_dim = int(node_dim)
+        self.num_heads = int(num_heads)
+        self.head_dim = int(head_dim)
+        self.output_dim = self.num_heads * self.head_dim
+        self.eps = float(eps)
+
+        self.node_encoder = nn.Sequential(
+            nn.Linear(self.neighbor_dim, self.node_dim),
+            nn.ELU(),
+        )
+        self.query_projection = nn.Linear(ego_dim, self.output_dim)
+        self.key_projection = nn.Linear(self.node_dim, self.output_dim)
+        self.value_projection = nn.Linear(self.node_dim, self.output_dim)
+
+    def forward(
+        self,
+        flat_neighbors: torch.Tensor,
+        ego_embedding: torch.Tensor,
+    ) -> torch.Tensor:
+        expected = self.num_neighbors * self.neighbor_dim
+        if flat_neighbors.shape[-1] != expected:
+            raise ValueError(
+                f"GraphAttentionNeighborEncoder expects {expected} flattened "
+                f"neighbor features, got {flat_neighbors.shape[-1]}."
+            )
+        if ego_embedding.shape[-1] != self.query_projection.in_features:
+            raise ValueError(
+                "GraphAttentionNeighborEncoder received an incompatible ego embedding: "
+                f"expected {self.query_projection.in_features}, got "
+                f"{ego_embedding.shape[-1]}."
+            )
+
+        neighbors = flat_neighbors.reshape(
+            *flat_neighbors.shape[:-1],
+            self.num_neighbors,
+            self.neighbor_dim,
+        )
+        quality = neighbors[..., -1].clamp(min=0.0, max=1.0)
+        valid = quality > 0.0
+        nodes = self.node_encoder(neighbors)
+
+        leading_shape = nodes.shape[:-2]
+        queries = self.query_projection(ego_embedding).reshape(
+            *leading_shape,
+            self.num_heads,
+            self.head_dim,
+        )
+        keys = self.key_projection(nodes).reshape(
+            *leading_shape,
+            self.num_neighbors,
+            self.num_heads,
+            self.head_dim,
+        )
+        values = self.value_projection(nodes).reshape(
+            *leading_shape,
+            self.num_neighbors,
+            self.num_heads,
+            self.head_dim,
+        )
+        scores = torch.einsum("...hd,...nhd->...nh", queries, keys)
+        scores = scores / math.sqrt(float(self.head_dim))
+
+        # A masked, quality-weighted normalization avoids NaN when no cached
+        # neighbor is valid and makes q participate directly in attention.
+        masked_scores = scores.masked_fill(~valid.unsqueeze(-1), -1.0e9)
+        centered_scores = masked_scores - masked_scores.amax(dim=-2, keepdim=True)
+        unnormalized = (
+            torch.exp(centered_scores)
+            * valid.unsqueeze(-1).to(scores.dtype)
+            * quality.unsqueeze(-1).to(scores.dtype)
+        )
+        weights = unnormalized / unnormalized.sum(dim=-2, keepdim=True).clamp_min(
+            self.eps
+        )
+        aggregated = (weights.unsqueeze(-1) * values).sum(dim=-3)
+        return aggregated.reshape(*leading_shape, self.output_dim)
 
 
 class SKRLPolicy(GaussianMixin, Model):
@@ -214,7 +325,7 @@ class SKRLPolicy(GaussianMixin, Model):
                 nn.ELU(),
                 nn.Linear(128, self.num_actions),
             )
-        else:
+        elif self.architecture == "branched_v4":
             if self.num_observations != 92:
                 raise ValueError(
                     "branched_v4 actor expects the ego_v7 92-dim site-and-slot observation."
@@ -234,6 +345,39 @@ class SKRLPolicy(GaussianMixin, Model):
                 nn.ELU(),
                 nn.Linear(128, self.num_actions),
             )
+        elif self.architecture == "branched_v5":
+            if self.num_observations != 101:
+                raise ValueError(
+                    "branched_v5 actor expects the 101-dim decentralized tiered observation."
+                )
+            self.ego_encoder = nn.Sequential(nn.Linear(10, 32), nn.ELU())
+            self.neighbor_encoder = nn.Sequential(nn.Linear(36, 48), nn.ELU())
+            self.terrain_encoder = nn.Sequential(nn.Linear(50, 64), nn.ELU())
+            self.aggregation_encoder = nn.Sequential(nn.Linear(5, 16), nn.ELU())
+            self.trunk = nn.Sequential(
+                nn.Linear(160, 128),
+                nn.ELU(),
+                nn.Linear(128, 128),
+                nn.ELU(),
+                nn.Linear(128, self.num_actions),
+            )
+        else:
+            if self.num_observations != 101:
+                raise ValueError(
+                    "branched_v6_graph_attention actor expects the 101-dim "
+                    "decentralized tiered observation."
+                )
+            self.ego_encoder = nn.Sequential(nn.Linear(10, 32), nn.ELU())
+            self.neighbor_encoder = GraphAttentionNeighborEncoder()
+            self.terrain_encoder = nn.Sequential(nn.Linear(50, 64), nn.ELU())
+            self.aggregation_encoder = nn.Sequential(nn.Linear(5, 16), nn.ELU())
+            self.trunk = nn.Sequential(
+                nn.Linear(160, 128),
+                nn.ELU(),
+                nn.Linear(128, 128),
+                nn.ELU(),
+                nn.Linear(128, self.num_actions),
+            )
         self.log_std_parameter = nn.Parameter(
             torch.full((self.num_actions,), float(initial_log_std))
         )
@@ -248,9 +392,16 @@ class SKRLPolicy(GaussianMixin, Model):
             neighbor_start, neighbor_end = slices["neighbors"]
             terrain_start, terrain_end = slices["terrain"]
             aggregation_start, aggregation_end = slices["aggregation"]
+            ego_encoded = self.ego_encoder(observations[..., ego_start:ego_end])
+            neighbor_observations = observations[..., neighbor_start:neighbor_end]
+            neighbor_encoded = (
+                self.neighbor_encoder(neighbor_observations, ego_encoded)
+                if self.architecture == "branched_v6_graph_attention"
+                else self.neighbor_encoder(neighbor_observations)
+            )
             encoded_parts = [
-                self.ego_encoder(observations[..., ego_start:ego_end]),
-                self.neighbor_encoder(observations[..., neighbor_start:neighbor_end]),
+                ego_encoded,
+                neighbor_encoded,
                 self.terrain_encoder(observations[..., terrain_start:terrain_end]),
                 self.aggregation_encoder(
                     observations[..., aggregation_start:aggregation_end]
@@ -383,6 +534,23 @@ def terrain_input_weight_delta_l2(
 ) -> float:
     delta = policy.terrain_input_weight().detach() - snapshot
     return float(torch.linalg.vector_norm(delta).cpu())
+
+
+def module_parameter_snapshot(module: nn.Module) -> list[torch.Tensor]:
+    return [parameter.detach().clone() for parameter in module.parameters()]
+
+
+def module_parameter_delta_l2(
+    module: nn.Module,
+    snapshot: list[torch.Tensor],
+) -> float:
+    parameters = list(module.parameters())
+    if len(parameters) != len(snapshot):
+        raise ValueError("Module parameter structure changed after the snapshot.")
+    delta_sq = torch.zeros((), device=parameters[0].device if parameters else "cpu")
+    for current, initial in zip(parameters, snapshot, strict=True):
+        delta_sq = delta_sq + (current.detach() - initial).square().sum()
+    return float(torch.sqrt(delta_sq).cpu())
 
 
 def parse_bool_config(value, *, default: bool) -> bool:
@@ -756,6 +924,7 @@ def _collect_on_policy_tail_bc_samples(
     teacher_center_step: float,
     dmax_multiplier: float,
     dispersion_multiplier: float,
+    min_teacher_disagreement: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Collect teacher labels from policy-visited near-terminal states.
 
@@ -772,6 +941,8 @@ def _collect_on_policy_tail_bc_samples(
         raise ValueError("bc_on_policy_dmax_multiplier must be >= 1.0.")
     if dispersion_multiplier < 1.0:
         raise ValueError("bc_on_policy_dispersion_multiplier must be >= 1.0.")
+    if min_teacher_disagreement < 0.0:
+        raise ValueError("bc_on_policy_min_teacher_disagreement must be non-negative.")
 
     was_training = policy.training
     policy.eval()
@@ -798,11 +969,19 @@ def _collect_on_policy_tail_bc_samples(
                 teacher_mode=teacher_mode,
                 teacher_center_step=teacher_center_step,
             )
+            action, _ = policy.compute(
+                {"observations": actor_obs.reshape(-1, actor_obs.shape[-1])},
+                role="policy",
+            )
+            action = action.reshape(env.num_envs, env.n_agents, -1)
+            if min_teacher_disagreement > 0.0:
+                disagreement = (action - teacher).square().mean(dim=(1, 2))
+                near_terminal = near_terminal & (
+                    disagreement >= min_teacher_disagreement
+                )
             if near_terminal.any():
                 observations.append(actor_obs[near_terminal].reshape(-1, actor_obs.shape[-1]))
                 targets.append(teacher[near_terminal].reshape(-1, teacher.shape[-1]))
-            action, _ = policy.compute({"observations": actor_obs.reshape(-1, actor_obs.shape[-1])}, role="policy")
-            action = action.reshape(env.num_envs, env.n_agents, -1)
             step_output = env.step(action)
             actor_obs = step_output.actor_obs
     policy.train(was_training)
@@ -810,6 +989,70 @@ def _collect_on_policy_tail_bc_samples(
         raise RuntimeError(
             "On-policy BC rollout produced no near-terminal samples; "
             "increase rollout steps or terminal multipliers."
+        )
+    return torch.cat(observations).detach(), torch.cat(targets).detach()
+
+
+def _collect_teacher_rollout_tail_bc_samples(
+    env,
+    *,
+    rollout_steps: int,
+    teacher_stop_radius: float,
+    teacher_slow_distance: float,
+    teacher_max_rho: float | None,
+    teacher_mode: str,
+    teacher_terrain_scale: bool,
+    teacher_center_step: float,
+    dmax_multiplier: float,
+    dispersion_multiplier: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Collect terminal labels along the scripted teacher's own trajectory.
+
+    The direct fixed-slot and dynamic-flat teachers can complete more 96-second
+    episodes than the learned policy.  Unlike on-policy correction data, this
+    reservoir retains the states on the teacher's successful approach into the
+    terminal region, while preserving the same actor observation and action
+    contract used at execution time.
+    """
+    if rollout_steps <= 0:
+        raise ValueError("bc_teacher_rollout_steps must be positive.")
+    if dmax_multiplier < 1.0:
+        raise ValueError("bc_teacher_dmax_multiplier must be >= 1.0.")
+    if dispersion_multiplier < 1.0:
+        raise ValueError("bc_teacher_dispersion_multiplier must be >= 1.0.")
+
+    actor_obs, _ = env.reset()
+    observations: list[torch.Tensor] = []
+    targets: list[torch.Tensor] = []
+    with torch.no_grad():
+        for _ in range(rollout_steps):
+            metrics = compute_team_metrics(env.positions, env.velocities_xy)
+            near_terminal = (
+                metrics.dmax
+                <= float(env.cfg.success_thresholds.dmax) * dmax_multiplier
+            ) & (
+                metrics.dispersion
+                <= float(env.cfg.success_thresholds.dispersion)
+                * dispersion_multiplier
+            )
+            teacher = scripted_gather_action(
+                env,
+                stop_radius=teacher_stop_radius,
+                slow_distance=teacher_slow_distance,
+                max_rho=teacher_max_rho,
+                visible_local=teacher_mode == "visible_local_centroid",
+                terrain_scale=teacher_terrain_scale,
+                teacher_mode=teacher_mode,
+                teacher_center_step=teacher_center_step,
+            )
+            if near_terminal.any():
+                observations.append(actor_obs[near_terminal].reshape(-1, actor_obs.shape[-1]))
+                targets.append(teacher[near_terminal].reshape(-1, teacher.shape[-1]))
+            actor_obs = env.step(teacher).actor_obs
+    if not observations:
+        raise RuntimeError(
+            "Teacher rollout produced no near-terminal samples; increase rollout "
+            "steps or terminal multipliers."
         )
     return torch.cat(observations).detach(), torch.cat(targets).detach()
 
@@ -837,6 +1080,12 @@ def run_skrl_behavior_cloning(
     bc_on_policy_tail_fraction: float = 0.0,
     bc_on_policy_dmax_multiplier: float = 2.0,
     bc_on_policy_dispersion_multiplier: float = 2.0,
+    bc_on_policy_min_teacher_disagreement: float = 0.0,
+    bc_teacher_rollout_steps: int = 0,
+    bc_teacher_tail_fraction: float = 0.0,
+    bc_teacher_dmax_multiplier: float = 2.0,
+    bc_teacher_dispersion_multiplier: float = 2.0,
+    bc_on_policy_anchor_base_policy: bool = False,
 ) -> list[dict[str, float | int | str]]:
     """Warm-start the shared SKRL actor; MAPPO itself remains teacher-loss free."""
     if updates <= 0:
@@ -861,6 +1110,24 @@ def run_skrl_behavior_cloning(
             "bc_on_policy_rollout_steps must be positive when "
             "bc_on_policy_tail_fraction is nonzero."
         )
+    if not 0.0 <= bc_teacher_tail_fraction <= 1.0:
+        raise ValueError("bc_teacher_tail_fraction must be in [0, 1].")
+    if bc_teacher_tail_fraction > 0.0 and bc_teacher_rollout_steps <= 0:
+        raise ValueError(
+            "bc_teacher_rollout_steps must be positive when "
+            "bc_teacher_tail_fraction is nonzero."
+        )
+    if bc_on_policy_tail_fraction > 0.0 and bc_teacher_tail_fraction > 0.0:
+        raise ValueError(
+            "Use either on-policy or teacher-rollout tail BC in one run; "
+            "mixing both reservoirs obscures the terminal supervision source."
+        )
+    tail_fraction = max(bc_on_policy_tail_fraction, bc_teacher_tail_fraction)
+    if bc_on_policy_anchor_base_policy and tail_fraction <= 0.0:
+        raise ValueError(
+            "bc_on_policy_anchor_base_policy requires a nonzero "
+            "tail BC fraction."
+        )
     bc_cfg = copy.deepcopy(cfg)
     bc_cfg.simulation.num_envs = max(
         bc_cfg.simulation.num_envs,
@@ -873,10 +1140,12 @@ def run_skrl_behavior_cloning(
     snapshots_per_batch = max(1, math.ceil(batch_size / samples_per_snapshot))
     records: list[dict[str, float | int | str]] = []
     policy.train()
-    on_policy_obs: torch.Tensor | None = None
-    on_policy_targets: torch.Tensor | None = None
+    tail_obs: torch.Tensor | None = None
+    tail_targets: torch.Tensor | None = None
+    tail_source: str | None = None
+    anchor_policy: Model | None = None
     if bc_on_policy_tail_fraction > 0.0:
-        on_policy_obs, on_policy_targets = _collect_on_policy_tail_bc_samples(
+        tail_obs, tail_targets = _collect_on_policy_tail_bc_samples(
             policy,
             env,
             rollout_steps=bc_on_policy_rollout_steps,
@@ -888,7 +1157,28 @@ def run_skrl_behavior_cloning(
             teacher_center_step=teacher_center_step,
             dmax_multiplier=bc_on_policy_dmax_multiplier,
             dispersion_multiplier=bc_on_policy_dispersion_multiplier,
+            min_teacher_disagreement=bc_on_policy_min_teacher_disagreement,
         )
+        tail_source = "on_policy"
+    elif bc_teacher_tail_fraction > 0.0:
+        tail_obs, tail_targets = _collect_teacher_rollout_tail_bc_samples(
+            env,
+            rollout_steps=bc_teacher_rollout_steps,
+            teacher_stop_radius=teacher_stop_radius,
+            teacher_slow_distance=teacher_slow_distance,
+            teacher_max_rho=teacher_max_rho,
+            teacher_mode=teacher_mode,
+            teacher_terrain_scale=teacher_terrain_scale,
+            teacher_center_step=teacher_center_step,
+            dmax_multiplier=bc_teacher_dmax_multiplier,
+            dispersion_multiplier=bc_teacher_dispersion_multiplier,
+        )
+        tail_source = "teacher_rollout"
+    if bc_on_policy_anchor_base_policy and tail_obs is not None:
+        # Preserve the source policy away from the diagnosed terminal states.
+        # This makes the BC update a local correction instead of re-anchoring
+        # global approach behaviour to the scripted teacher.
+        anchor_policy = copy.deepcopy(policy).eval()
 
     for update in range(1, updates + 1):
         observations = []
@@ -905,34 +1195,42 @@ def run_skrl_behavior_cloning(
                 terminal_jitter_std=bc_terminal_jitter_std,
             )
             actor_obs, _ = env.get_observations()
-            target = scripted_gather_action(
-                env,
-                stop_radius=teacher_stop_radius,
-                slow_distance=teacher_slow_distance,
-                max_rho=teacher_max_rho,
-                visible_local=teacher_mode == "visible_local_centroid",
-                terrain_scale=teacher_terrain_scale,
-                teacher_mode=teacher_mode,
-                teacher_center_step=teacher_center_step,
-            )
+            if anchor_policy is None:
+                target = scripted_gather_action(
+                    env,
+                    stop_radius=teacher_stop_radius,
+                    slow_distance=teacher_slow_distance,
+                    max_rho=teacher_max_rho,
+                    visible_local=teacher_mode == "visible_local_centroid",
+                    terrain_scale=teacher_terrain_scale,
+                    teacher_mode=teacher_mode,
+                    teacher_center_step=teacher_center_step,
+                )
+            else:
+                with torch.no_grad():
+                    target, _ = anchor_policy.compute(
+                        {"observations": actor_obs.reshape(-1, actor_obs.shape[-1])},
+                        role="policy",
+                    )
+                target = target.reshape(env.num_envs, env.n_agents, -1)
             observations.append(actor_obs.reshape(-1, actor_obs.shape[-1]).detach())
             targets.append(target.reshape(-1, target.shape[-1]).detach())
         normal_count = batch_size
-        if on_policy_obs is not None and on_policy_targets is not None:
-            tail_count = int(round(batch_size * bc_on_policy_tail_fraction))
+        if tail_obs is not None and tail_targets is not None:
+            tail_count = int(round(batch_size * tail_fraction))
             normal_count = batch_size - tail_count
             if tail_count > 0:
                 indices = torch.randint(
-                    on_policy_obs.shape[0],
+                    tail_obs.shape[0],
                     (tail_count,),
                     device=env.device,
                     generator=env.generator,
                 )
-                observations.append(on_policy_obs[indices])
-                targets.append(on_policy_targets[indices])
+                observations.append(tail_obs[indices])
+                targets.append(tail_targets[indices])
         obs = torch.cat(observations, dim=0)[:normal_count]
         target = torch.cat(targets, dim=0)[:normal_count]
-        if on_policy_obs is not None and on_policy_targets is not None and tail_count > 0:
+        if tail_obs is not None and tail_targets is not None and tail_count > 0:
             obs = torch.cat((obs, observations[-1]), dim=0)
             target = torch.cat((target, targets[-1]), dim=0)
         prediction, _ = policy.compute({"observations": obs}, role="policy")
@@ -948,7 +1246,13 @@ def run_skrl_behavior_cloning(
                 "update": update,
                 "bc_loss": float(loss.detach().cpu()),
                 "bc_on_policy_tail_samples": (
-                    int(on_policy_obs.shape[0]) if on_policy_obs is not None else 0
+                    int(tail_obs.shape[0]) if tail_source == "on_policy" else 0
+                ),
+                "bc_teacher_rollout_tail_samples": (
+                    int(tail_obs.shape[0]) if tail_source == "teacher_rollout" else 0
+                ),
+                "bc_on_policy_anchor_base_policy": int(
+                    bc_on_policy_anchor_base_policy
                 ),
             }
         )
@@ -1928,8 +2232,78 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
                     path_terrain["height_change_mean"].detach().float().mean().cpu()
                 ),
             }
+            if "reference_risk_mean" in path_terrain:
+                path_metrics["path_terrain_reference_risk_mean"] = float(
+                    path_terrain["reference_risk_mean"]
+                    .detach()
+                    .float()
+                    .mean()
+                    .cpu()
+                )
+                path_metrics["path_terrain_relative_risk_mean"] = float(
+                    path_terrain["relative_risk_mean"]
+                    .detach()
+                    .float()
+                    .mean()
+                    .cpu()
+                )
             telemetry_state["path_terrain"] = path_metrics
             _accumulate_numeric_metrics(telemetry_state, "path_terrain", path_metrics)
+        actor_credit = info.get("actor_credit")
+        if actor_credit is not None:
+            centered = actor_credit["centered"].detach().float()
+            policy_credit = actor_credit.get("policy", centered).detach().float()
+            raw_credit = actor_credit.get("raw", policy_credit).detach().float()
+            actor_credit_metrics = {
+                "actor_credit_abs_mean": float(policy_credit.abs().mean().cpu()),
+                "actor_credit_std": float(policy_credit.std().cpu()),
+                "actor_credit_active_rate": float(
+                    (raw_credit.abs() > 1.0e-8).float().mean().cpu()
+                ),
+                "actor_credit_zero_sum_error": float(
+                    centered.sum(dim=1).abs().amax().cpu()
+                ),
+                "actor_credit_policy_step_sum_abs_max": float(
+                    policy_credit.sum(dim=1).abs().amax().cpu()
+                ),
+                "actor_credit_policy_is_step_zero_sum": float(
+                    bool(actor_credit.get("policy_is_step_zero_sum", True))
+                ),
+                "actor_credit_source_reconstruction_error": float(
+                    actor_credit.get(
+                        "source_reconstruction_error",
+                        torch.zeros((), device=policy_credit.device),
+                    )
+                    .detach()
+                    .float()
+                    .amax()
+                    .cpu()
+                ),
+                "actor_credit_team_reward_preservation_error": float(
+                    actor_credit["team_reward_preservation_error"]
+                    .detach()
+                    .float()
+                    .amax()
+                    .cpu()
+                ),
+            }
+            for info_key, metric_key in (
+                ("collision_participant_rate", "actor_credit_collision_participant_rate"),
+                ("collision_event", "actor_credit_collision_event_rate"),
+                ("allocation_mean_error", "actor_credit_allocation_mean_error"),
+                ("credit_zero_sum_error", "actor_credit_collision_zero_sum_error"),
+            ):
+                value = actor_credit.get(info_key)
+                if isinstance(value, torch.Tensor):
+                    actor_credit_metrics[metric_key] = float(
+                        value.detach().float().mean().cpu()
+                    )
+            telemetry_state["actor_credit"] = actor_credit_metrics
+            _accumulate_numeric_metrics(
+                telemetry_state,
+                "actor_credit",
+                actor_credit_metrics,
+            )
         centroid_flatness = info.get("centroid_flatness_reward")
         if centroid_flatness is not None:
             centroid_flatness_values = (
@@ -1953,6 +2327,32 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
                 telemetry_state,
                 "centroid_flatness",
                 centroid_flatness_metrics,
+            )
+        communication = info.get("communication")
+        if communication is not None:
+            communication_metrics = {
+                key: float(value.detach().float().mean().cpu())
+                for key, value in communication.items()
+                if isinstance(value, torch.Tensor)
+            }
+            telemetry_state["communication"] = communication_metrics
+            _accumulate_numeric_metrics(
+                telemetry_state,
+                "communication",
+                communication_metrics,
+            )
+        trajectory_conflicts = info.get("trajectory_conflicts")
+        if trajectory_conflicts is not None:
+            conflict_metrics = {
+                key: float(value.detach().float().mean().cpu())
+                for key, value in trajectory_conflicts.items()
+                if isinstance(value, torch.Tensor) and value.ndim <= 1
+            }
+            telemetry_state["mapf_conflicts"] = conflict_metrics
+            _accumulate_numeric_metrics(
+                telemetry_state,
+                "mapf_conflicts",
+                conflict_metrics,
             )
         action_filter = info.get("action_filter")
         if action_filter is not None:
@@ -2255,6 +2655,195 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
     env.step = checked_step
 
 
+def collision_participant_centered_credit(
+    positions: torch.Tensor,
+    collision_done: torch.Tensor,
+    *,
+    collision_distance: float,
+    collision_penalty: float,
+) -> dict[str, torch.Tensor]:
+    """Reallocate the existing team collision terminal term across participants.
+
+    The returned policy credit is the zero-sum residual between an allocation
+    that penalizes only actual collision participants and the original team
+    term copied to every agent. It is training-only and does not alter rewards.
+    """
+
+    if positions.ndim != 3 or positions.shape[-1] < 2:
+        raise ValueError("positions must have shape [environment, agent, xyz].")
+    if collision_done.shape != positions.shape[:1]:
+        raise ValueError("collision_done must have shape [environment].")
+    if collision_distance <= 0.0 or collision_penalty <= 0.0:
+        raise ValueError("collision_distance and collision_penalty must be positive.")
+    num_envs, n_agents = positions.shape[:2]
+    distances = pairwise_distances_xy(positions[..., :2])
+    eye = torch.eye(n_agents, dtype=torch.bool, device=positions.device).unsqueeze(0)
+    colliding_pairs = (
+        (distances < float(collision_distance))
+        & ~eye
+        & collision_done[:, None, None].bool()
+    )
+    participants = colliding_pairs.any(dim=2)
+    participant_count = participants.sum(dim=1)
+    missing = collision_done.bool() & (participant_count == 0)
+    if missing.any():
+        missing_ids = torch.nonzero(missing, as_tuple=False).flatten().tolist()
+        raise RuntimeError(
+            "Collision termination has no actual participant under the configured "
+            f"collision distance for environments {missing_ids}."
+        )
+    team_component = -float(collision_penalty) * collision_done.float()
+    scale = float(n_agents) / participant_count.clamp_min(1).to(positions.dtype)
+    allocated = (
+        team_component[:, None]
+        * scale[:, None]
+        * participants.to(dtype=positions.dtype)
+    )
+    policy_credit = allocated - team_component[:, None]
+    # Remove the tiny float32 remainder created by ratios such as 4 / 3. The
+    # allocation itself remains available for an independent mean-preservation
+    # audit; the Actor residual is required to be numerically step-zero-sum.
+    policy_credit = policy_credit - policy_credit.mean(dim=1, keepdim=True)
+    allocation_mean_error = (allocated.mean(dim=1) - team_component).abs()
+    zero_sum_error = policy_credit.sum(dim=1).abs()
+    return {
+        "raw": policy_credit,
+        "policy": policy_credit,
+        "centered": policy_credit,
+        "participants": participants,
+        "participant_count": participant_count,
+        "allocated": allocated,
+        "team_component": team_component,
+        "allocation_mean_error": allocation_mean_error,
+        "zero_sum_error": zero_sum_error,
+    }
+
+
+def install_actor_credit_rewards(
+    env: MultiRoverGatheringSKRLEnv,
+    *,
+    assignment: str,
+) -> None:
+    """Attach training-only Actor credit without changing environment rewards."""
+
+    supported = {
+        "terrain_relative_centered",
+        "near_potential_local",
+        "collision_participant_centered",
+    }
+    if assignment not in supported:
+        raise ValueError(
+            "actor_credit_assignment must be one of "
+            f"{sorted(supported)} (or 'none' before installation)."
+        )
+    original_step = env.step
+
+    def credited_step(actions):
+        nearest_before = (
+            env.core.metrics.nearest_neighbor_distance.detach().clone()
+            if assignment == "near_potential_local"
+            else None
+        )
+        observations, rewards, terminated, truncated, info = original_step(actions)
+        if assignment == "terrain_relative_centered":
+            path_terrain = info.get("path_terrain") or {}
+            relative_risk = path_terrain.get("relative_risk_mean")
+            if not isinstance(relative_risk, torch.Tensor):
+                raise RuntimeError(
+                    "terrain_relative_centered credit requires relative quintic path risk."
+                )
+            # Lower selected-vs-reference risk is better. Centering across
+            # vehicles makes this historical credit exactly zero-sum.
+            raw_credit = -relative_risk
+            policy_credit = raw_credit - raw_credit.mean(dim=1, keepdim=True)
+            centered_credit = policy_credit
+            policy_is_step_zero_sum = True
+            source_reconstruction_error = torch.zeros(
+                raw_credit.shape[0],
+                dtype=raw_credit.dtype,
+                device=raw_credit.device,
+            )
+            credit_extras: dict[str, Any] = {}
+        elif assignment == "near_potential_local":
+            if nearest_before is None:
+                raise RuntimeError("Missing pre-step nearest-neighbor distances.")
+            metrics = info.get("metrics")
+            nearest_after = getattr(metrics, "nearest_neighbor_distance", None)
+            if not isinstance(nearest_after, torch.Tensor):
+                raise RuntimeError(
+                    "near_potential_local credit requires post-step nearest distances."
+                )
+            near_distance = float(env.cfg.safety.near_distance)
+            before_potential = -torch.relu(near_distance - nearest_before)
+            after_potential = -torch.relu(near_distance - nearest_after)
+            raw_credit = after_potential - before_potential
+            policy_credit = raw_credit
+            centered_credit = raw_credit - raw_credit.mean(dim=1, keepdim=True)
+            policy_is_step_zero_sum = False
+            source_reconstruction_error = (
+                raw_credit.mean(dim=1)
+                - (after_potential.mean(dim=1) - before_potential.mean(dim=1))
+            ).abs()
+            credit_extras = {}
+        else:
+            done = info.get("done")
+            collision_done = getattr(done, "collision", None)
+            positions = info.get("positions")
+            if not isinstance(collision_done, torch.Tensor) or not isinstance(
+                positions, torch.Tensor
+            ):
+                raise RuntimeError(
+                    "collision_participant_centered credit requires collision flags "
+                    "and pre-reset positions."
+                )
+            coefficients = env.cfg.reward_coefficients
+            weights = env.cfg.reward_weights
+            collision_penalty = (
+                float(weights.safety) * float(coefficients.inter_agent_collision)
+                + float(weights.terminal) * float(coefficients.failure_penalty)
+            )
+            allocation = collision_participant_centered_credit(
+                positions,
+                collision_done,
+                collision_distance=float(env.cfg.safety.collision_distance),
+                collision_penalty=collision_penalty,
+            )
+            raw_credit = allocation["raw"]
+            policy_credit = allocation["policy"]
+            centered_credit = allocation["centered"]
+            policy_is_step_zero_sum = True
+            source_reconstruction_error = allocation["allocation_mean_error"]
+            credit_extras = {
+                "collision_participant_rate": allocation["participants"]
+                .float()
+                .mean(dim=1),
+                "collision_event": collision_done.float(),
+                "allocation_mean_error": allocation["allocation_mean_error"],
+                "credit_zero_sum_error": allocation["zero_sum_error"],
+                "collision_penalty": torch.full_like(
+                    collision_done.float(), collision_penalty
+                ),
+            }
+        team_reward_before = torch.stack(
+            [rewards[agent] for agent in env.possible_agents], dim=1
+        ).mean(dim=1)
+        info["actor_credit"] = {
+            "assignment": assignment,
+            "raw": raw_credit.detach().clone(),
+            "centered": centered_credit.detach().clone(),
+            "policy": policy_credit.detach().clone(),
+            "policy_is_step_zero_sum": policy_is_step_zero_sum,
+            "source_reconstruction_error": source_reconstruction_error.detach().clone(),
+            # Rewards are returned untouched. Keep an explicit zero diagnostic
+            # so the training screen can enforce this invariant.
+            "team_reward_preservation_error": torch.zeros_like(team_reward_before),
+            **credit_extras,
+        }
+        return observations, rewards, terminated, truncated, info
+
+    env.step = credited_step
+
+
 def build_training_telemetry(
     env: MultiRoverGatheringSKRLEnv,
     *,
@@ -2299,6 +2888,7 @@ def build_training_telemetry(
         "mean_reward": telemetry_state.get("mean_reward"),
         "episode_length": float(env.core.step_count.float().mean().detach().cpu()),
         "mean_pairwise_distance": float(metrics.mean_pairwise_distance.mean().detach().cpu()),
+        "dmax_mean": float(metrics.dmax.mean().detach().cpu()),
         "final_nearest_neighbor_distance": float(nearest.mean().detach().cpu()),
         "mean_oracle_distance": float(mean_oracle_distance.mean().detach().cpu()),
         "success_rate": float(success_gates.instant_success.float().mean().detach().cpu()),
@@ -2359,6 +2949,8 @@ def build_training_telemetry(
     action_metrics.update(telemetry_state.get("action_window", {}))
     path_metrics = dict(telemetry_state.get("path_terrain", {}))
     path_metrics.update(telemetry_state.get("path_terrain_window", {}))
+    actor_credit_metrics = dict(telemetry_state.get("actor_credit", {}))
+    actor_credit_metrics.update(telemetry_state.get("actor_credit_window", {}))
     centroid_flatness_metrics = dict(
         telemetry_state.get("centroid_flatness", {})
     )
@@ -2385,9 +2977,14 @@ def build_training_telemetry(
     )
     kinematics_metrics = dict(telemetry_state.get("kinematics", {}))
     kinematics_metrics.update(telemetry_state.get("kinematics_window", {}))
+    communication_metrics = dict(telemetry_state.get("communication", {}))
+    communication_metrics.update(telemetry_state.get("communication_window", {}))
+    mapf_conflict_metrics = dict(telemetry_state.get("mapf_conflicts", {}))
+    mapf_conflict_metrics.update(telemetry_state.get("mapf_conflicts_window", {}))
     telemetry.update(reward_metrics)
     telemetry.update(action_metrics)
     telemetry.update(path_metrics)
+    telemetry.update(actor_credit_metrics)
     telemetry.update(centroid_flatness_metrics)
     telemetry.update(filter_metrics)
     telemetry.update(control_safety_metrics)
@@ -2395,6 +2992,8 @@ def build_training_telemetry(
     telemetry.update(terminal_slot_capture_metrics)
     telemetry.update(flat_geometry_capture_metrics)
     telemetry.update(kinematics_metrics)
+    telemetry.update(communication_metrics)
+    telemetry.update(mapf_conflict_metrics)
     telemetry.update(telemetry_state.get("done_counts", _empty_done_counts()))
     telemetry.update(_stats("final_pairwise_distance", pairwise))
     telemetry.update(_stats("final_oracle_distance", oracle))
@@ -2542,6 +3141,8 @@ def skrl_mappo_checkpoint_payload(
     critic_state_dim: int | None = None,
     device: str | None = None,
     checkpoint_path: str | None = None,
+    collision_cost_value: Model | None = None,
+    lagrangian_multiplier: float | None = None,
     extra_metadata: dict | None = None,
 ) -> dict:
     payload = {
@@ -2551,6 +3152,15 @@ def skrl_mappo_checkpoint_payload(
         }
         for agent_id in possible_agents
     }
+    if collision_cost_value is not None:
+        if lagrangian_multiplier is None:
+            raise ValueError(
+                "lagrangian_multiplier is required with collision_cost_value."
+            )
+        payload["collision_constraint"] = {
+            "cost_value": collision_cost_value.state_dict(),
+            "lagrangian_multiplier": float(lagrangian_multiplier),
+        }
     experiment = raw_cfg.get("experiment", {}) if isinstance(raw_cfg.get("experiment", {}), dict) else {}
     algorithm = raw_cfg.get("algorithm", {}) if isinstance(raw_cfg.get("algorithm", {}), dict) else {}
     terrain = raw_cfg.get("terrain", {}) if isinstance(raw_cfg.get("terrain", {}), dict) else {}
@@ -2610,6 +3220,7 @@ def skrl_mappo_checkpoint_payload(
         "timesteps": timesteps,
         "device": device,
         "checkpoint_path": checkpoint_path,
+        "collision_constraint_enabled": collision_cost_value is not None,
         "terrain_randomize_per_reset": bool(
             terrain.get("randomize_per_reset", False)
         ),
@@ -2752,6 +3363,16 @@ def main() -> None:
     if args.bc_batch_size is not None:
         algo["bc_batch_size"] = args.bc_batch_size
     init_checkpoint_value = args.init_checkpoint or algo.get("init_checkpoint")
+    if cfg.observation.schema_version == "ego_v8_decentralized_tiered":
+        if int(algo.get("bc_updates", algo.get("bc_steps", 0))) != 0:
+            raise SystemExit(
+                "ego_v8_decentralized_tiered is a pure-RL contract and requires bc_updates=0."
+            )
+        if init_checkpoint_value is not None and str(init_checkpoint_value).strip():
+            raise SystemExit(
+                "ego_v8_decentralized_tiered requires random initialization; "
+                "init_checkpoint must be null."
+            )
     init_checkpoint_path: Path | None = None
     if init_checkpoint_value is not None and str(init_checkpoint_value).strip():
         init_checkpoint_path = Path(str(init_checkpoint_value))
@@ -2934,6 +3555,23 @@ def main() -> None:
             bc_on_policy_dispersion_multiplier=float(
                 algo.get("bc_on_policy_dispersion_multiplier", 2.0)
             ),
+            bc_on_policy_min_teacher_disagreement=float(
+                algo.get("bc_on_policy_min_teacher_disagreement", 0.0)
+            ),
+            bc_teacher_rollout_steps=int(algo.get("bc_teacher_rollout_steps", 0)),
+            bc_teacher_tail_fraction=float(
+                algo.get("bc_teacher_tail_fraction", 0.0)
+            ),
+            bc_teacher_dmax_multiplier=float(
+                algo.get("bc_teacher_dmax_multiplier", 2.0)
+            ),
+            bc_teacher_dispersion_multiplier=float(
+                algo.get("bc_teacher_dispersion_multiplier", 2.0)
+            ),
+            bc_on_policy_anchor_base_policy=parse_bool_config(
+                algo.get("bc_on_policy_anchor_base_policy"),
+                default=False,
+            ),
         )
     else:
         bc_records = []
@@ -2971,12 +3609,98 @@ def main() -> None:
             agent_kwargs["entropy_schedule_timesteps"] = int(
                 algo["entropy_schedule_timesteps"]
             )
+        actor_credit_assignment = str(
+            algo.get("actor_credit_assignment", "none")
+        )
+        actor_credit_scale = float(algo.get("actor_credit_scale", 0.0))
+        if actor_credit_assignment == "none" and actor_credit_scale != 0.0:
+            raise ValueError(
+                "actor_credit_scale must be zero when actor_credit_assignment is none."
+            )
+        if actor_credit_assignment != "none" and actor_credit_scale <= 0.0:
+            raise ValueError(
+                "actor_credit_scale must be positive when actor credit is enabled."
+            )
+        agent_kwargs["actor_credit_scale"] = actor_credit_scale
+        agent_kwargs["actor_credit_trace_lambda"] = float(
+            algo.get("actor_credit_trace_lambda", 0.95)
+        )
+        agent_kwargs["actor_credit_gradient_mode"] = str(
+            algo.get("actor_credit_gradient_mode", "additive_advantage")
+        )
+        collision_constraint_enabled = parse_bool_config(
+            algo.get("collision_constraint_enabled"),
+            default=False,
+        )
+        agent_kwargs["collision_constraint_enabled"] = collision_constraint_enabled
+        if collision_constraint_enabled:
+            if actor_credit_assignment != "none":
+                raise ValueError(
+                    "Collision constraint screening cannot be combined with Actor credit."
+                )
+            first_agent = possible_agents[0]
+            agent_kwargs["collision_cost_value"] = SKRLValue(
+                env.observation_spaces[first_agent],
+                env.state_space,
+                env.action_spaces[first_agent],
+                env.device,
+                architecture="mlp_v1",
+            )
+            agent_kwargs["collision_cost_discount_factor"] = float(
+                algo.get("collision_cost_discount_factor", 0.99)
+            )
+            agent_kwargs["collision_cost_gae_lambda"] = float(
+                algo.get("collision_cost_gae_lambda", 0.95)
+            )
+            agent_kwargs["collision_cost_limit"] = float(
+                algo.get("collision_cost_limit", 0.02)
+            )
+            agent_kwargs["collision_episode_steps"] = int(
+                algo.get("collision_episode_steps", cfg.simulation.max_episode_steps)
+            )
+            agent_kwargs["lagrangian_init"] = float(
+                algo.get("lagrangian_init", 0.0)
+            )
+            agent_kwargs["lagrangian_learning_rate"] = float(
+                algo.get("lagrangian_learning_rate", 0.1)
+            )
+            agent_kwargs["lagrangian_max"] = float(
+                algo.get("lagrangian_max", 2.0)
+            )
+            agent_kwargs["collision_cost_value_learning_rate"] = float(
+                algo.get("collision_cost_value_learning_rate", 3.0e-4)
+            )
+            agent_kwargs["collision_cost_value_loss_scale"] = float(
+                algo.get("collision_cost_value_loss_coef", 0.5)
+            )
+    else:
+        actor_credit_assignment = str(algo.get("actor_credit_assignment", "none"))
+        if actor_credit_assignment != "none":
+            raise ValueError("Actor credit assignment requires update_mode=shared_joint.")
+        collision_constraint_enabled = parse_bool_config(
+            algo.get("collision_constraint_enabled"),
+            default=False,
+        )
+        if collision_constraint_enabled:
+            raise ValueError("Collision constraint requires update_mode=shared_joint.")
     agent = agent_class(**agent_kwargs)
     initial_policy_parameters = [
         parameter.detach().clone()
         for parameter in policy.parameters()
     ]
     initial_terrain_weight = terrain_input_weight_snapshot(policy)
+    initial_neighbor_encoder = module_parameter_snapshot(
+        getattr(policy, "neighbor_encoder", nn.Identity())
+    )
+    initial_terrain_encoder = module_parameter_snapshot(
+        getattr(policy, "terrain_encoder", nn.Identity())
+    )
+    initial_reward_critic = module_parameter_snapshot(models[possible_agents[0]]["value"])
+    initial_collision_cost_value = (
+        module_parameter_snapshot(agent.collision_cost_value)
+        if getattr(agent, "collision_constraint_enabled", False)
+        else []
+    )
 
     if args.bc_only:
         if output_layout != "run":
@@ -2999,6 +3723,8 @@ def main() -> None:
                 timesteps=0,
                 device=str(env.device),
                 checkpoint_path=str(bc_checkpoint),
+                collision_cost_value=getattr(agent, "collision_cost_value", None),
+                lagrangian_multiplier=getattr(agent, "lagrangian_multiplier", None),
                 extra_metadata={
                     "phase": "bc",
                     "update_mode": update_mode,
@@ -3160,6 +3886,7 @@ def main() -> None:
         _snapshot_numeric_metrics(telemetry_state, "action", "action_window")
         _snapshot_numeric_metrics(telemetry_state, "reward", "reward_window")
         _snapshot_numeric_metrics(telemetry_state, "path_terrain", "path_terrain_window")
+        _snapshot_numeric_metrics(telemetry_state, "actor_credit", "actor_credit_window")
         _snapshot_numeric_metrics(
             telemetry_state,
             "centroid_flatness",
@@ -3183,6 +3910,16 @@ def main() -> None:
             "flat_geometry_capture_window",
         )
         _snapshot_numeric_metrics(telemetry_state, "kinematics", "kinematics_window")
+        _snapshot_numeric_metrics(
+            telemetry_state,
+            "communication",
+            "communication_window",
+        )
+        _snapshot_numeric_metrics(
+            telemetry_state,
+            "mapf_conflicts",
+            "mapf_conflicts_window",
+        )
         append_metrics_jsonl(
             telemetry_dir,
             build_training_telemetry(
@@ -3200,6 +3937,8 @@ def main() -> None:
         )
 
     telemetry_state["writer"] = write_interval_telemetry
+    if actor_credit_assignment != "none":
+        install_actor_credit_rewards(env, assignment=actor_credit_assignment)
     install_nan_checks(env, telemetry_state)
     trainer = SequentialTrainer(
         env=wrapped_env,
@@ -3235,6 +3974,8 @@ def main() -> None:
                 timesteps=timestep,
                 device=str(env.device),
                 checkpoint_path=str(candidate_path),
+                collision_cost_value=getattr(agent, "collision_cost_value", None),
+                lagrangian_multiplier=getattr(agent, "lagrangian_multiplier", None),
                 extra_metadata={
                     "phase": "ppo",
                     "update_mode": update_mode,
@@ -3244,6 +3985,13 @@ def main() -> None:
                     "subgoal_filter": subgoal_filter_metadata(cfg),
                     "control_safety": control_safety_metadata(cfg),
                     "bc_updates": bc_updates,
+                    "actor_credit_assignment": actor_credit_assignment,
+                    "actor_credit_scale": float(
+                        getattr(agent, "actor_credit_scale", 0.0)
+                    ),
+                    "actor_credit_trace_lambda": float(
+                        getattr(agent, "actor_credit_trace_lambda", 0.0)
+                    ),
                     "bc_batch_size": bc_batch_size,
                     "bc_learning_rate": bc_learning_rate,
                     "entropy_schedule_timesteps": algo.get(
@@ -3324,6 +4072,17 @@ def main() -> None:
         "terrain_input_weight_delta_l2": float(
             terrain_input_weight_delta_l2(policy, initial_terrain_weight)
         ),
+        "neighbor_encoder_parameter_delta_l2": module_parameter_delta_l2(
+            getattr(policy, "neighbor_encoder", nn.Identity()),
+            initial_neighbor_encoder,
+        ),
+        "terrain_encoder_parameter_delta_l2": module_parameter_delta_l2(
+            getattr(policy, "terrain_encoder", nn.Identity()),
+            initial_terrain_encoder,
+        ),
+        "policy_parameters_finite": all(
+            bool(torch.isfinite(parameter).all()) for parameter in policy.parameters()
+        ),
         "bc_parameter_delta_l2": float(torch.sqrt(bc_parameter_delta_sq).cpu()),
         "bc_updates": bc_updates,
         "bc_initial_loss": bc_records[0]["bc_loss"] if bc_records else None,
@@ -3333,12 +4092,83 @@ def main() -> None:
         "optimizer_count": int(getattr(agent, "optimizer_count", len(agent.optimizers))),
         "joint_update_count": int(getattr(agent, "joint_update_count", 0)),
         "critic_update_count": int(getattr(agent, "critic_update_count", 0)),
+        "reward_critic_parameter_delta_l2": module_parameter_delta_l2(
+            models[possible_agents[0]]["value"],
+            initial_reward_critic,
+        ),
+        "collision_constraint_enabled": bool(
+            getattr(agent, "collision_constraint_enabled", False)
+        ),
+        "collision_cost_critic_update_count": int(
+            getattr(agent, "collision_cost_critic_update_count", 0)
+        ),
+        "collision_cost_value_parameter_delta_l2": (
+            module_parameter_delta_l2(
+                agent.collision_cost_value,
+                initial_collision_cost_value,
+            )
+            if getattr(agent, "collision_constraint_enabled", False)
+            else 0.0
+        ),
+        "collision_cost_value_parameters_finite": (
+            all(
+                bool(torch.isfinite(parameter).all())
+                for parameter in agent.collision_cost_value.parameters()
+            )
+            if getattr(agent, "collision_constraint_enabled", False)
+            else True
+        ),
+        "last_collision_cost_value_loss": float(
+            getattr(agent, "last_collision_cost_value_loss", 0.0)
+        ),
+        "last_collision_episode_equivalent_rate": float(
+            getattr(agent, "last_collision_episode_equivalent_rate", 0.0)
+        ),
+        "lagrangian_multiplier": float(
+            getattr(agent, "lagrangian_multiplier", 0.0)
+        ),
+        "last_lagrangian_multiplier_applied": float(
+            getattr(agent, "last_lagrangian_multiplier_applied", 0.0)
+        ),
+        "collision_constraint_history": list(
+            getattr(agent, "collision_constraint_history", [])
+        ),
         "last_actor_sample_count": int(getattr(agent, "last_actor_sample_count", 0)),
         "last_critic_sample_count": int(getattr(agent, "last_critic_sample_count", 0)),
+        "actor_credit_assignment": actor_credit_assignment,
+        "actor_credit_scale": float(getattr(agent, "actor_credit_scale", 0.0)),
+        "actor_credit_trace_lambda": float(
+            getattr(agent, "actor_credit_trace_lambda", 0.0)
+        ),
+        "actor_credit_gradient_mode": str(
+            getattr(agent, "actor_credit_gradient_mode", "additive_advantage")
+        ),
+        "last_actor_credit_abs_mean": float(
+            getattr(agent, "last_actor_credit_abs_mean", 0.0)
+        ),
+        "last_actor_credit_std": float(
+            getattr(agent, "last_actor_credit_std", 0.0)
+        ),
+        "last_actor_gradient_conflict_fraction": float(
+            getattr(agent, "last_actor_gradient_conflict_fraction", 0.0)
+        ),
+        "last_actor_gradient_cosine_mean": float(
+            getattr(agent, "last_actor_gradient_cosine_mean", 0.0)
+        ),
+        "last_actor_gradient_projected_dot_min": float(
+            getattr(agent, "last_actor_gradient_projected_dot_min", 0.0)
+        ),
+        "last_actor_gradient_combined_cosine_min": float(
+            getattr(agent, "last_actor_gradient_combined_cosine_min", 1.0)
+        ),
+        "last_actor_gradient_norm_cap_scale_mean": float(
+            getattr(agent, "last_actor_gradient_norm_cap_scale_mean", 1.0)
+        ),
     }
     _snapshot_numeric_metrics(telemetry_state, "action", "action_window")
     _snapshot_numeric_metrics(telemetry_state, "reward", "reward_window")
     _snapshot_numeric_metrics(telemetry_state, "path_terrain", "path_terrain_window")
+    _snapshot_numeric_metrics(telemetry_state, "actor_credit", "actor_credit_window")
     _snapshot_numeric_metrics(
         telemetry_state,
         "centroid_flatness",
@@ -3362,6 +4192,16 @@ def main() -> None:
         "flat_geometry_capture_window",
     )
     _snapshot_numeric_metrics(telemetry_state, "kinematics", "kinematics_window")
+    _snapshot_numeric_metrics(
+        telemetry_state,
+        "communication",
+        "communication_window",
+    )
+    _snapshot_numeric_metrics(
+        telemetry_state,
+        "mapf_conflicts",
+        "mapf_conflicts_window",
+    )
 
     candidate_evaluations: list[dict] = []
     best_candidate = candidate_paths[-1]
