@@ -21,10 +21,17 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.action_interpreter import (
     apply_terminal_slot_capture,
     decode_action,
 )
+from lunar_rover_tasks.tasks.multi_rover_gathering.communication import (
+    CommunicationSnapshot,
+    TieredCommunicationCache,
+)
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import (
     MultiRoverGatheringEnvCfg,
 )
 from lunar_rover_tasks.tasks.multi_rover_gathering.metrics import TeamMetrics, compute_team_metrics
+from lunar_rover_tasks.tasks.multi_rover_gathering.mapf_diagnostics import (
+    TrajectoryConflictTracker,
+)
 from lunar_rover_tasks.tasks.multi_rover_gathering.observation import build_actor_observation
 from lunar_rover_tasks.tasks.multi_rover_gathering.oracle import (
     OptimalGatherPointResult,
@@ -53,8 +60,9 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
     query_height,
     query_terrain_features,
     randomize_terrain_runtime,
-    sample_path_terrain_risk,
+    sample_trajectory_terrain_risk,
     search_local_flatness_center,
+    summarize_local_terrain_grid_per_agent,
 )
 from lunar_rover_tasks.tasks.multi_rover_gathering.termination import (
     DoneFlags,
@@ -173,6 +181,24 @@ class MultiRoverGatheringCore:
             float("inf"),
             device=self.device,
         )
+        self.communication_cache: TieredCommunicationCache | None = None
+        self.last_communication_snapshot: CommunicationSnapshot | None = None
+        if self.cfg.observation.schema_version == "ego_v8_decentralized_tiered":
+            self.communication_cache = TieredCommunicationCache(
+                num_envs=self.num_envs,
+                n_agents=self.n_agents,
+                max_neighbors=self.cfg.observation.max_neighbors,
+                device=self.device,
+                full_radius_m=self.communication_radius,
+                map_max_distance_m=(
+                    2.0 * float(self.cfg.safety.world_xy_limit) * (2.0**0.5)
+                ),
+            )
+        self.trajectory_conflicts = TrajectoryConflictTracker(
+            self.num_envs,
+            self.n_agents,
+            self.device,
+        )
         self.reset()
 
     @property
@@ -182,6 +208,38 @@ class MultiRoverGatheringCore:
     @property
     def max_episode_steps(self) -> int:
         return self.cfg.simulation.max_episode_steps
+
+    def _terrain_grid(self) -> torch.Tensor:
+        return build_local_terrain_grid(
+            self.positions,
+            self.yaws,
+            self.cfg.terrain,
+            self.terrain_runtime,
+        )
+
+    def _reset_communication(self, env_ids: torch.Tensor) -> None:
+        if self.communication_cache is None:
+            return
+        terrain_grid = self._terrain_grid()
+        self.communication_cache.reset(
+            env_ids,
+            self.positions,
+            self.velocities_xy,
+            self.yaws,
+            summarize_local_terrain_grid_per_agent(terrain_grid),
+        )
+
+    def _advance_communication(self) -> None:
+        if self.communication_cache is None:
+            return
+        terrain_grid = self._terrain_grid()
+        self.communication_cache.advance(
+            dt=float(self.cfg.simulation.planning_dt),
+            positions=self.positions,
+            velocities_xy=self.velocities_xy,
+            yaws=self.yaws,
+            terrain_summary=summarize_local_terrain_grid_per_agent(terrain_grid),
+        )
 
     def _effective_initial_state_values(self) -> tuple[float, float, float, float]:
         initial_state = self.cfg.initial_state
@@ -550,6 +608,8 @@ class MultiRoverGatheringCore:
         self.previous_physical_action[env_ids] = 0.0
         self.step_count[env_ids] = 0
         self.success_hold_count[env_ids] = 0
+        self.trajectory_conflicts.reset(env_ids)
+        self._reset_communication(env_ids)
         self.refresh_oracle_point(env_ids)
         reset_metrics = compute_team_metrics(
             self.positions[env_ids],
@@ -572,12 +632,13 @@ class MultiRoverGatheringCore:
     def get_observations(self) -> tuple[torch.Tensor, torch.Tensor]:
         metrics = compute_team_metrics(self.positions, self.velocities_xy)
         self._refresh_dynamic_terminal_slot_goal(metrics)
-        terrain_grid = build_local_terrain_grid(
-            self.positions,
-            self.yaws,
-            self.cfg.terrain,
-            self.terrain_runtime,
+        terrain_grid = self._terrain_grid()
+        communication_snapshot = (
+            self.communication_cache.snapshot()
+            if self.communication_cache is not None
+            else None
         )
+        self.last_communication_snapshot = communication_snapshot
         execution_target = None
         execution_slot_target = None
         if self.cfg.task.explicit_goal_in_execution:
@@ -600,6 +661,7 @@ class MultiRoverGatheringCore:
             self.success_hold_count,
             gather_site_point=execution_target,
             gather_slot_point=execution_slot_target,
+            communication_snapshot=communication_snapshot,
         )
         critic_state = build_critic_state(
             self.positions,
@@ -711,17 +773,6 @@ class MultiRoverGatheringCore:
             if self._terrain_dynamics_enabled
             else None
         )
-        path_terrain = (
-            sample_path_terrain_risk(
-                self.positions,
-                decoded.world_subgoal,
-                self.cfg.terrain,
-                self.terrain_runtime,
-                num_samples=5,
-            )
-            if self._terrain_dynamics_enabled
-            else None
-        )
         trajectory = generate_trajectory(
             self.positions,
             decoded.world_subgoal,
@@ -729,11 +780,91 @@ class MultiRoverGatheringCore:
             self.cfg.simulation.planning_dt,
             current_yaws=self.yaws,
         )
+        path_terrain = (
+            sample_trajectory_terrain_risk(
+                trajectory.points,
+                self.cfg.terrain,
+                self.terrain_runtime,
+            )
+            if self._terrain_dynamics_enabled
+            else None
+        )
+        if (
+            path_terrain is not None
+            and self.cfg.reward_coefficients.path_terrain_relative_cost != 0.0
+        ):
+            straight_action = action.clone()
+            straight_action[..., 1] = 0.0
+            straight_decoded = decode_action(
+                straight_action,
+                self.positions,
+                self.yaws,
+                self.cfg.planner,
+            )
+            straight_trajectory = generate_trajectory(
+                self.positions,
+                straight_decoded.world_subgoal,
+                self.cfg.trajectory_generator,
+                self.cfg.simulation.planning_dt,
+                current_yaws=self.yaws,
+            )
+            reference_risk = sample_trajectory_terrain_risk(
+                straight_trajectory.points,
+                self.cfg.terrain,
+                self.terrain_runtime,
+            )["risk_mean"]
+            path_terrain["reference_risk_mean"] = reference_risk
+            path_terrain["relative_risk_mean"] = (
+                path_terrain["risk_mean"] - reference_risk
+            )
+        conflict_safe_distance = max(
+            float(self.cfg.success_thresholds.min_pairwise_distance),
+            float(self.cfg.safety.collision_distance),
+        )
+        trajectory_conflicts = self.trajectory_conflicts.update(
+            trajectory.points,
+            conflict_safe_distance,
+            timestamps=(
+                trajectory.timestamps
+                if self.cfg.trajectory_generator.time_parameterization
+                == "arc_length_reference_speed"
+                else None
+            ),
+        )
+        if self.communication_cache is not None:
+            pair_age = 0.5 * (
+                self.communication_cache.age
+                + self.communication_cache.age.transpose(1, 2)
+            )
+            active = trajectory_conflicts["active"]
+            active_count = active.sum(dim=(1, 2)).clamp_min(1)
+            trajectory_conflicts["message_age_at_conflict"] = (
+                pair_age.masked_fill(~active, 0.0).sum(dim=(1, 2)) / active_count
+            )
+            pair_full = self.communication_cache.full & self.communication_cache.full.transpose(1, 2)
+            trajectory_conflicts["full_message_conflict_ratio"] = (
+                pair_full.masked_fill(~active, False).sum(dim=(1, 2)).float()
+                / active_count
+            )
+        else:
+            trajectory_conflicts["message_age_at_conflict"] = torch.zeros(
+                self.num_envs,
+                device=self.device,
+            )
+            trajectory_conflicts["full_message_conflict_ratio"] = torch.zeros(
+                self.num_envs,
+                device=self.device,
+            )
+        resolved_count = trajectory_conflicts["resolved"].sum(dim=(1, 2)).clamp_min(1)
+        trajectory_conflicts["mean_conflict_resolution_steps"] = (
+            trajectory_conflicts["resolved_steps"].sum(dim=(1, 2)) / resolved_count
+        )
         control = compute_control(
             self.positions,
             self.yaws,
             trajectory,
             self.cfg.low_level_control,
+            self.cfg.simulation.planning_dt,
         )
         raw_control = control
         control_safety = apply_control_safety_projection(
@@ -748,6 +879,7 @@ class MultiRoverGatheringCore:
         )
         control = control_safety.control
         self._integrate(control)
+        self._advance_communication()
         self.global_step_count += 1
         self.step_count += 1
 
@@ -812,6 +944,11 @@ class MultiRoverGatheringCore:
             ),
             path_terrain_risk_max=(
                 path_terrain["risk_max"] if path_terrain is not None else None
+            ),
+            path_terrain_reference_risk_mean=(
+                path_terrain.get("reference_risk_mean")
+                if path_terrain is not None
+                else None
             ),
             path_height_change_mean=(
                 path_terrain["height_change_mean"] if path_terrain is not None else None
@@ -900,6 +1037,11 @@ class MultiRoverGatheringCore:
             "progress": centroid_flatness_progress.clone(),
             "activation": centroid_flatness_activation.clone(),
         }
+        # Centralized diagnostic snapshot taken before auto-reset. It is exposed
+        # only through ``info`` and is never part of the Actor observation or the
+        # execution chain. Offline audits need it to compute terminal-transition
+        # progress without accidentally reading the next episode's reset state.
+        positions_snapshot = self.positions.clone()
 
         if done.done.any():
             env_ids = torch.nonzero(done.done, as_tuple=False).flatten()
@@ -920,7 +1062,11 @@ class MultiRoverGatheringCore:
                 "success_hold_count": success_hold_count,
                 "reward_terms": terms,
                 "metrics": metrics,
+                "positions": positions_snapshot,
                 "trajectory": trajectory,
+                "trajectory_conflicts": {
+                    key: value.clone() for key, value in trajectory_conflicts.items()
+                },
                 "control": control,
                 "raw_control": raw_control,
                 "control_safety": control_safety_snapshot,
@@ -937,6 +1083,14 @@ class MultiRoverGatheringCore:
                 "terrain_runtime": terrain_runtime,
                 "gather_point_flatness": gather_point_flatness_snapshot,
                 "centroid_flatness_reward": centroid_flatness_reward_snapshot,
+                "communication": (
+                    {
+                        key: value.clone()
+                        for key, value in self.last_communication_snapshot.diagnostics.items()
+                    }
+                    if self.last_communication_snapshot is not None
+                    else None
+                ),
                 "oracle_point": oracle_point,
                 "oracle_search": oracle_search_snapshot,
             },

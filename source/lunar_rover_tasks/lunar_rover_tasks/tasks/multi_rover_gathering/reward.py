@@ -119,6 +119,7 @@ def compute_terrain_reward(
     height_delta: torch.Tensor | None = None,
     path_terrain_risk_mean: torch.Tensor | None = None,
     path_terrain_risk_max: torch.Tensor | None = None,
+    path_terrain_reference_risk_mean: torch.Tensor | None = None,
     path_height_change_mean: torch.Tensor | None = None,
     filter_raw_path_risk_mean: torch.Tensor | None = None,
     filter_deviation: torch.Tensor | None = None,
@@ -143,6 +144,13 @@ def compute_terrain_reward(
         cost = cost + coeff.path_terrain_mean_cost * path_terrain_risk_mean.mean(dim=-1)
     if path_terrain_risk_max is not None and coeff.path_terrain_max_cost != 0.0:
         cost = cost + coeff.path_terrain_max_cost * path_terrain_risk_max.amax(dim=-1)
+    if coeff.path_terrain_relative_cost != 0.0:
+        if path_terrain_risk_mean is None or path_terrain_reference_risk_mean is None:
+            raise ValueError(
+                "Relative trajectory risk requires selected and reference risk tensors."
+            )
+        relative_risk = path_terrain_risk_mean - path_terrain_reference_risk_mean
+        cost = cost + coeff.path_terrain_relative_cost * relative_risk.mean(dim=-1)
     if path_height_change_mean is not None and coeff.path_height_change_cost != 0.0:
         cost = cost + coeff.path_height_change_cost * path_height_change_mean.mean(dim=-1)
     if filter_raw_path_risk_mean is not None and coeff.filter_raw_path_risk_cost != 0.0:
@@ -290,6 +298,7 @@ def compute_reward(
     height_delta: torch.Tensor | None = None,
     path_terrain_risk_mean: torch.Tensor | None = None,
     path_terrain_risk_max: torch.Tensor | None = None,
+    path_terrain_reference_risk_mean: torch.Tensor | None = None,
     path_height_change_mean: torch.Tensor | None = None,
     filter_raw_path_risk_mean: torch.Tensor | None = None,
     filter_deviation: torch.Tensor | None = None,
@@ -315,6 +324,7 @@ def compute_reward(
         height_delta=height_delta,
         path_terrain_risk_mean=path_terrain_risk_mean,
         path_terrain_risk_max=path_terrain_risk_max,
+        path_terrain_reference_risk_mean=path_terrain_reference_risk_mean,
         path_height_change_mean=path_height_change_mean,
         filter_raw_path_risk_mean=filter_raw_path_risk_mean,
         filter_deviation=filter_deviation,

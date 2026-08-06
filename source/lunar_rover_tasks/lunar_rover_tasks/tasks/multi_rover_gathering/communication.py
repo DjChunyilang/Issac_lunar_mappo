@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+import math
+
 import torch
 
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import ObservationCfg
@@ -88,3 +91,380 @@ def build_neighbor_features(
     features[..., :slot_count, :] = selected_features
     masks[..., :slot_count] = valid.to(dtype=positions.dtype)
     return features.flatten(start_dim=2), masks
+
+
+@dataclass(slots=True)
+class CommunicationSnapshot:
+    """Actor-visible messages selected exclusively from a communication cache."""
+
+    features: torch.Tensor
+    masks: torch.Tensor
+    ages: torch.Tensor
+    full_messages: torch.Tensor
+    sender_indices: torch.Tensor
+    diagnostics: dict[str, torch.Tensor]
+
+
+def _world_to_body(vector: torch.Tensor, receiver_yaw: torch.Tensor) -> torch.Tensor:
+    cos_yaw = torch.cos(receiver_yaw)
+    sin_yaw = torch.sin(receiver_yaw)
+    return torch.stack(
+        (
+            cos_yaw * vector[..., 0] + sin_yaw * vector[..., 1],
+            -sin_yaw * vector[..., 0] + cos_yaw * vector[..., 1],
+        ),
+        dim=-1,
+    )
+
+
+class TieredCommunicationCache:
+    """Stateful 12 m full / distance-dependent sparse communication cache.
+
+    Cache mutation is explicit through :meth:`reset` and :meth:`advance`.
+    Observation reads call :meth:`snapshot`, which is deliberately pure so
+    repeated reads cannot refresh a remote message or change its age.
+    """
+
+    message_dim = 12
+
+    def __init__(
+        self,
+        *,
+        num_envs: int,
+        n_agents: int,
+        max_neighbors: int,
+        device: torch.device | str,
+        dtype: torch.dtype = torch.float32,
+        full_radius_m: float = 12.0,
+        map_max_distance_m: float = 25.0 * math.sqrt(2.0),
+        min_sparse_period_s: float = 1.0,
+        max_sparse_period_s: float = 4.0,
+    ) -> None:
+        if full_radius_m <= 0.0:
+            raise ValueError("full_radius_m must be positive.")
+        if map_max_distance_m <= full_radius_m:
+            raise ValueError("map_max_distance_m must exceed full_radius_m.")
+        if min_sparse_period_s <= 0.0 or max_sparse_period_s < min_sparse_period_s:
+            raise ValueError("sparse communication periods are invalid.")
+        self.num_envs = int(num_envs)
+        self.n_agents = int(n_agents)
+        self.max_neighbors = int(max_neighbors)
+        self.device = torch.device(device)
+        self.dtype = dtype
+        self.full_radius_m = float(full_radius_m)
+        self.map_max_distance_m = float(map_max_distance_m)
+        self.min_sparse_period_s = float(min_sparse_period_s)
+        self.max_sparse_period_s = float(max_sparse_period_s)
+        pair_shape = (self.num_envs, self.n_agents, self.n_agents)
+        self.features = torch.zeros(
+            *pair_shape,
+            self.message_dim,
+            device=self.device,
+            dtype=self.dtype,
+        )
+        self.valid = torch.zeros(pair_shape, device=self.device, dtype=torch.bool)
+        self.full = torch.zeros_like(self.valid)
+        self.age = torch.zeros(pair_shape, device=self.device, dtype=self.dtype)
+        self.update_period = torch.ones(pair_shape, device=self.device, dtype=self.dtype)
+        self.last_distance = torch.zeros(pair_shape, device=self.device, dtype=self.dtype)
+        self._self_mask = torch.eye(
+            self.n_agents,
+            device=self.device,
+            dtype=torch.bool,
+        ).unsqueeze(0)
+
+    def _period(self, distance: torch.Tensor) -> torch.Tensor:
+        alpha = ((distance - self.full_radius_m) / (
+            self.map_max_distance_m - self.full_radius_m
+        )).clamp(0.0, 1.0)
+        return self.min_sparse_period_s + (
+            self.max_sparse_period_s - self.min_sparse_period_s
+        ) * alpha
+
+    def _pair_state(
+        self,
+        positions: torch.Tensor,
+        velocities_xy: torch.Tensor,
+        yaws: torch.Tensor,
+        terrain_summary: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        receiver_yaw = yaws[:, :, None]
+        delta_world = positions[:, None, :, :2] - positions[:, :, None, :2]
+        relative_velocity_world = (
+            velocities_xy[:, None, :, :] - velocities_xy[:, :, None, :]
+        )
+        delta_body = _world_to_body(delta_world, receiver_yaw)
+        velocity_body = _world_to_body(relative_velocity_world, receiver_yaw)
+        yaw_delta = wrap_to_pi(yaws[:, None, :] - receiver_yaw)
+        sender_terrain = terrain_summary[:, None, :, :].expand(
+            -1,
+            self.n_agents,
+            -1,
+            -1,
+        )
+        quality = torch.ones(
+            *delta_body.shape[:-1],
+            1,
+            device=self.device,
+            dtype=self.dtype,
+        )
+        features = torch.cat(
+            (
+                delta_body,
+                velocity_body,
+                torch.cos(yaw_delta).unsqueeze(-1),
+                torch.sin(yaw_delta).unsqueeze(-1),
+                sender_terrain,
+                quality,
+            ),
+            dim=-1,
+        )
+        return features, torch.linalg.norm(delta_world, dim=-1)
+
+    def reset(
+        self,
+        env_ids: torch.Tensor,
+        positions: torch.Tensor,
+        velocities_xy: torch.Tensor,
+        yaws: torch.Tensor,
+        terrain_summary: torch.Tensor,
+    ) -> None:
+        env_ids = env_ids.to(device=self.device, dtype=torch.long)
+        current, distance = self._pair_state(
+            positions[env_ids],
+            velocities_xy[env_ids],
+            yaws[env_ids],
+            terrain_summary[env_ids],
+        )
+        nonself = (~self._self_mask).expand(env_ids.numel(), -1, -1)
+        full = (distance <= self.full_radius_m) & nonself
+        sparse = nonself & ~full
+        current[..., 2:4] = torch.where(
+            sparse.unsqueeze(-1),
+            torch.zeros_like(current[..., 2:4]),
+            current[..., 2:4],
+        )
+        current[..., 6:11] = torch.where(
+            sparse.unsqueeze(-1),
+            torch.zeros_like(current[..., 6:11]),
+            current[..., 6:11],
+        )
+        current[..., 11] = torch.where(
+            full,
+            torch.ones_like(distance),
+            torch.full_like(distance, 0.5),
+        )
+        current = torch.where(nonself.unsqueeze(-1), current, torch.zeros_like(current))
+        self.features[env_ids] = current
+        self.valid[env_ids] = nonself
+        self.full[env_ids] = full
+        self.age[env_ids] = 0.0
+        self.update_period[env_ids] = torch.where(
+            full,
+            torch.zeros_like(distance),
+            self._period(distance),
+        )
+        self.last_distance[env_ids] = distance
+
+    def advance(
+        self,
+        *,
+        dt: float,
+        positions: torch.Tensor,
+        velocities_xy: torch.Tensor,
+        yaws: torch.Tensor,
+        terrain_summary: torch.Tensor,
+    ) -> None:
+        if dt <= 0.0:
+            raise ValueError("communication dt must be positive.")
+        current, distance = self._pair_state(
+            positions,
+            velocities_xy,
+            yaws,
+            terrain_summary,
+        )
+        nonself = (~self._self_mask).expand(self.num_envs, -1, -1)
+        now_full = (distance <= self.full_radius_m) & nonself
+        leaving = self.full & ~now_full & nonself
+        staying_sparse = ~self.full & ~now_full & nonself
+        self.age = torch.where(nonself, self.age + float(dt), self.age)
+
+        # Full-range messages are refreshed every real planning step.
+        self.features = torch.where(now_full.unsqueeze(-1), current, self.features)
+        self.features[..., 11] = torch.where(
+            now_full,
+            torch.ones_like(self.age),
+            self.features[..., 11],
+        )
+        self.age = torch.where(now_full, torch.zeros_like(self.age), self.age)
+        self.update_period = torch.where(
+            now_full,
+            torch.zeros_like(self.update_period),
+            self.update_period,
+        )
+
+        # Leaving the full range immediately removes forbidden payload fields
+        # without transmitting a fresh far-range pose.
+        restricted = leaving | staying_sparse
+        self.features[..., 2:4] = torch.where(
+            restricted.unsqueeze(-1),
+            torch.zeros_like(self.features[..., 2:4]),
+            self.features[..., 2:4],
+        )
+        self.features[..., 6:11] = torch.where(
+            restricted.unsqueeze(-1),
+            torch.zeros_like(self.features[..., 6:11]),
+            self.features[..., 6:11],
+        )
+        leaving_period = self._period(distance)
+        self.update_period = torch.where(leaving, leaving_period, self.update_period)
+
+        due = staying_sparse & (self.age >= self.update_period)
+        sparse_current = current.clone()
+        sparse_current[..., 2:4] = 0.0
+        sparse_current[..., 6:11] = 0.0
+        sparse_current[..., 11] = 0.5
+        self.features = torch.where(due.unsqueeze(-1), sparse_current, self.features)
+        self.age = torch.where(due, torch.zeros_like(self.age), self.age)
+        self.update_period = torch.where(due, self._period(distance), self.update_period)
+
+        sparse = ~now_full & nonself
+        decayed_quality = 0.5 * torch.exp(
+            -self.age / self.update_period.clamp_min(torch.finfo(self.dtype).eps)
+        )
+        self.features[..., 11] = torch.where(
+            sparse,
+            decayed_quality,
+            self.features[..., 11],
+        )
+        self.features = torch.where(
+            nonself.unsqueeze(-1),
+            self.features,
+            torch.zeros_like(self.features),
+        )
+        self.valid = nonself.clone()
+        self.full = now_full
+        self.last_distance = torch.where(nonself, distance, self.last_distance)
+
+    def snapshot(self) -> CommunicationSnapshot:
+        slot_count = min(self.max_neighbors, max(self.n_agents - 1, 0))
+        output = torch.zeros(
+            self.num_envs,
+            self.n_agents,
+            self.max_neighbors,
+            self.message_dim,
+            device=self.device,
+            dtype=self.dtype,
+        )
+        masks = torch.zeros(
+            self.num_envs,
+            self.n_agents,
+            self.max_neighbors,
+            device=self.device,
+            dtype=self.dtype,
+        )
+        ages = torch.zeros_like(masks)
+        full_messages = torch.zeros_like(masks, dtype=torch.bool)
+        sender_indices = torch.full(
+            masks.shape,
+            -1,
+            device=self.device,
+            dtype=torch.long,
+        )
+        if slot_count > 0:
+            distance = torch.linalg.norm(self.features[..., :2], dim=-1)
+            sender_tiebreak = torch.arange(
+                self.n_agents,
+                device=self.device,
+                dtype=self.dtype,
+            ).view(1, 1, -1) * 1.0e-6
+            ranking_distance = (distance + sender_tiebreak).masked_fill(
+                ~self.valid,
+                float("inf"),
+            )
+            selected_distance, selected = torch.topk(
+                ranking_distance,
+                k=slot_count,
+                dim=-1,
+                largest=False,
+                sorted=True,
+            )
+            selected_valid = torch.isfinite(selected_distance)
+            gather_features = selected[..., None].expand(-1, -1, -1, self.message_dim)
+            selected_features = torch.gather(self.features, dim=2, index=gather_features)
+            selected_age = torch.gather(self.age, dim=2, index=selected)
+            selected_full = torch.gather(self.full, dim=2, index=selected)
+            selected_features = torch.where(
+                selected_valid.unsqueeze(-1),
+                selected_features,
+                torch.zeros_like(selected_features),
+            )
+            output[..., :slot_count, :] = selected_features
+            masks[..., :slot_count] = selected_valid.to(self.dtype)
+            ages[..., :slot_count] = torch.where(
+                selected_valid,
+                selected_age,
+                torch.zeros_like(selected_age),
+            )
+            full_messages[..., :slot_count] = selected_full & selected_valid
+            sender_indices[..., :slot_count] = torch.where(
+                selected_valid,
+                selected,
+                torch.full_like(selected, -1),
+            )
+
+        nonself = self.valid
+        pair_count = nonself.sum(dim=(1, 2)).clamp_min(1)
+        far = nonself & ~self.full
+        diagnostics = {
+            "full_message_ratio": self.full.sum(dim=(1, 2)).to(self.dtype) / pair_count,
+            "sparse_message_ratio": far.sum(dim=(1, 2)).to(self.dtype) / pair_count,
+            "mean_message_age": self.age.masked_fill(~nonself, 0.0).sum(dim=(1, 2))
+            / pair_count,
+            "mean_update_period": self.update_period.masked_fill(
+                ~nonself,
+                0.0,
+            ).sum(dim=(1, 2))
+            / pair_count,
+            "far_pair_ratio": far.sum(dim=(1, 2)).to(self.dtype) / pair_count,
+        }
+        return CommunicationSnapshot(
+            features=output.flatten(start_dim=2),
+            masks=masks,
+            ages=ages,
+            full_messages=full_messages,
+            sender_indices=sender_indices,
+            diagnostics=diagnostics,
+        )
+
+
+def build_cached_aggregation_features(
+    snapshot: CommunicationSnapshot,
+    *,
+    map_max_distance_m: float,
+    max_message_age_s: float = 4.0,
+) -> torch.Tensor:
+    messages = snapshot.features.reshape(
+        *snapshot.features.shape[:2],
+        snapshot.masks.shape[-1],
+        TieredCommunicationCache.message_dim,
+    )
+    mask = snapshot.masks
+    count = mask.sum(dim=-1, keepdim=True)
+    safe_count = count.clamp_min(1.0)
+    distance = torch.linalg.norm(messages[..., :2], dim=-1)
+    mean_distance = (distance * mask).sum(dim=-1, keepdim=True) / safe_count
+    max_distance = distance.masked_fill(mask <= 0.0, 0.0).amax(dim=-1, keepdim=True)
+    mean_quality = (messages[..., 11] * mask).sum(dim=-1, keepdim=True) / safe_count
+    mean_age = (snapshot.ages * mask).sum(dim=-1, keepdim=True) / safe_count
+    features = torch.cat(
+        (
+            count / float(max(snapshot.masks.shape[-1], 1)),
+            mean_distance / float(map_max_distance_m),
+            max_distance / float(map_max_distance_m),
+            mean_quality,
+            mean_age / float(max_message_age_s),
+        ),
+        dim=-1,
+    )
+    return torch.where(count > 0.0, features, torch.zeros_like(features))

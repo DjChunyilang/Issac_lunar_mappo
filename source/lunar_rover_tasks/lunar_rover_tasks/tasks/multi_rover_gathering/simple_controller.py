@@ -37,13 +37,55 @@ def select_tracking_point(trajectory: Trajectory, index: int = 1) -> torch.Tenso
     return trajectory.points[:, :, index, :]
 
 
+def interpolate_trajectory_point(
+    trajectory: Trajectory,
+    query_time_s: float,
+) -> torch.Tensor:
+    """Interpolate each rover trajectory at one physical lookahead time."""
+
+    if query_time_s < 0.0:
+        raise ValueError("Trajectory query time must be non-negative.")
+    timestamps = trajectory.timestamps
+    n_points = timestamps.shape[-1]
+    if n_points < 2:
+        raise ValueError("Trajectory interpolation requires at least two points.")
+    query = torch.full_like(timestamps[..., 0], float(query_time_s))
+    upper = (timestamps < query[..., None]).sum(dim=-1).clamp(1, n_points - 1)
+    lower = upper - 1
+    point_dim = trajectory.points.shape[-1]
+    lower_points = torch.gather(
+        trajectory.points,
+        2,
+        lower[..., None, None].expand(-1, -1, 1, point_dim),
+    ).squeeze(2)
+    upper_points = torch.gather(
+        trajectory.points,
+        2,
+        upper[..., None, None].expand(-1, -1, 1, point_dim),
+    ).squeeze(2)
+    lower_time = torch.gather(timestamps, 2, lower[..., None]).squeeze(-1)
+    upper_time = torch.gather(timestamps, 2, upper[..., None]).squeeze(-1)
+    alpha = ((query - lower_time) / (upper_time - lower_time).clamp_min(1.0e-8)).clamp(
+        0.0, 1.0
+    )
+    return torch.lerp(lower_points, upper_points, alpha[..., None])
+
+
 def compute_control(
     positions: torch.Tensor,
     yaws: torch.Tensor,
     trajectory: Trajectory,
     cfg: LowLevelControlCfg,
+    planning_dt: float | None = None,
 ) -> ControlCommand:
-    target = select_tracking_point(trajectory)
+    if cfg.tracking_point_mode == "fixed_index":
+        target = select_tracking_point(trajectory)
+    elif cfg.tracking_point_mode == "planning_time":
+        if planning_dt is None or planning_dt <= 0.0:
+            raise ValueError("planning_time tracking requires a positive planning_dt.")
+        target = interpolate_trajectory_point(trajectory, planning_dt)
+    else:
+        raise ValueError(f"Unsupported tracking_point_mode: {cfg.tracking_point_mode}")
     delta = target[..., :2] - positions[..., :2]
     distance = torch.linalg.norm(delta, dim=-1)
     desired_yaw = torch.atan2(delta[..., 1], delta[..., 0])

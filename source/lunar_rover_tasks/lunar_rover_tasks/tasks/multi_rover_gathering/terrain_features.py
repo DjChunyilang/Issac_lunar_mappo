@@ -579,6 +579,48 @@ def sample_path_terrain_risk(
     }
 
 
+def sample_trajectory_terrain_risk(
+    trajectory_points: torch.Tensor,
+    terrain_cfg: TerrainCfg | None = None,
+    runtime: TerrainRuntime | None = None,
+) -> dict[str, torch.Tensor]:
+    """Summarize risk on the actual generated trajectory samples.
+
+    ``trajectory_points`` has shape ``[num_envs, num_agents, samples, 3]``.
+    Unlike :func:`sample_path_terrain_risk`, this function does not replace the
+    trajectory geometry with a straight segment to the endpoint.
+    """
+    if trajectory_points.ndim != 4 or trajectory_points.shape[-1] != 3:
+        raise ValueError(
+            "trajectory_points must have shape [num_envs, num_agents, samples, 3]."
+        )
+    if trajectory_points.shape[-2] < 1:
+        raise ValueError("trajectory_points must contain at least one sample.")
+    shape = trajectory_points.shape[:2]
+    if _is_flat(terrain_cfg):
+        zeros = torch.zeros(
+            shape,
+            dtype=trajectory_points.dtype,
+            device=trajectory_points.device,
+        )
+        return {
+            "risk_mean": zeros,
+            "risk_max": zeros,
+            "height_change_mean": zeros,
+        }
+
+    sample_xy = trajectory_points[..., :2]
+    features = query_terrain_features(sample_xy, terrain_cfg, runtime)
+    risk = (1.0 - features[..., 4]).clamp(0.0, 1.0)
+    start_height = query_height(sample_xy[..., 0, :], terrain_cfg, runtime)
+    height_change = (features[..., 0] - start_height).abs()
+    return {
+        "risk_mean": risk.mean(dim=-1),
+        "risk_max": risk.amax(dim=-1),
+        "height_change_mean": height_change.mean(dim=-1),
+    }
+
+
 def local_terrain_grid_offsets(
     *,
     device: torch.device | str,
@@ -650,6 +692,28 @@ def summarize_local_terrain_grid(grid: torch.Tensor) -> torch.Tensor:
     max_risk = risk.amax(dim=reduce_dims)
     return torch.stack(
         (mean_abs_height, max_rise, max_descent, mean_risk, max_risk),
+        dim=-1,
+    )
+
+
+def summarize_local_terrain_grid_per_agent(grid: torch.Tensor) -> torch.Tensor:
+    """Return the five sender-local terrain statistics for each rover."""
+    if grid.ndim < 5 or grid.shape[-1] != 2:
+        raise ValueError(
+            "local terrain grid must have shape [..., agents, x, y, 2], got "
+            f"{tuple(grid.shape)}."
+        )
+    relative_height = grid[..., 0]
+    risk = grid[..., 1]
+    reduce_dims = (-2, -1)
+    return torch.stack(
+        (
+            relative_height.abs().mean(dim=reduce_dims),
+            relative_height.clamp_min(0.0).amax(dim=reduce_dims),
+            (-relative_height).clamp_min(0.0).amax(dim=reduce_dims),
+            risk.mean(dim=reduce_dims),
+            risk.amax(dim=reduce_dims),
+        ),
         dim=-1,
     )
 

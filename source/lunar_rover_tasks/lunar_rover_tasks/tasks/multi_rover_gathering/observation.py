@@ -12,6 +12,8 @@ from __future__ import annotations
 import torch
 
 from lunar_rover_tasks.tasks.multi_rover_gathering.communication import (
+    CommunicationSnapshot,
+    build_cached_aggregation_features,
     build_neighbor_features,
     compute_visibility_mask,
 )
@@ -163,15 +165,31 @@ def build_actor_observation(
     success_hold_count: torch.Tensor | None = None,
     gather_site_point: torch.Tensor | None = None,
     gather_slot_point: torch.Tensor | None = None,
+    communication_snapshot: CommunicationSnapshot | None = None,
 ) -> torch.Tensor:
     ego = build_ego_features(positions, yaws, velocities_xy, angular_velocities)
-    neighbor, _ = build_neighbor_features(
-        positions,
-        velocities_xy,
-        yaws,
-        communication_radius,
-        cfg.observation,
-    )
+    if cfg.observation.schema_version == "ego_v8_decentralized_tiered":
+        if communication_snapshot is None:
+            raise ValueError(
+                "ego_v8_decentralized_tiered requires an explicit communication cache snapshot."
+            )
+        neighbor = communication_snapshot.features
+        expected_neighbor_dim = (
+            cfg.observation.max_neighbors * cfg.observation.effective_neighbor_dim
+        )
+        if neighbor.shape[-1] != expected_neighbor_dim:
+            raise ValueError(
+                f"Tiered neighbor messages have dim {neighbor.shape[-1]}, "
+                f"expected {expected_neighbor_dim}."
+            )
+    else:
+        neighbor, _ = build_neighbor_features(
+            positions,
+            velocities_xy,
+            yaws,
+            communication_radius,
+            cfg.observation,
+        )
     if terrain_grid is None:
         terrain_grid = build_local_terrain_grid(positions, yaws, cfg.terrain)
     terrain = flatten_local_terrain_grid(terrain_grid)
@@ -180,7 +198,15 @@ def build_actor_observation(
             f"Local terrain grid has dim {terrain.shape[-1]}, "
             f"expected {cfg.observation.terrain_dim}."
         )
-    aggregation = build_aggregation_features(positions, velocities_xy, communication_radius)
+    if communication_snapshot is not None and (
+        cfg.observation.schema_version == "ego_v8_decentralized_tiered"
+    ):
+        aggregation = build_cached_aggregation_features(
+            communication_snapshot,
+            map_max_distance_m=2.0 * float(cfg.safety.world_xy_limit) * (2.0**0.5),
+        )
+    else:
+        aggregation = build_aggregation_features(positions, velocities_xy, communication_radius)
     parts = [ego, neighbor, terrain, aggregation]
     if cfg.observation.terminal_gate_dim > 0:
         if metrics is None or success_hold_count is None:

@@ -30,6 +30,43 @@ class Trajectory:
         )
 
 
+def _trajectory_timing(
+    points: torch.Tensor,
+    fractions: torch.Tensor,
+    cfg: TrajectoryGeneratorCfg,
+    dt: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return per-rover physical timestamps and reference-speed samples."""
+
+    if dt <= 0.0:
+        raise ValueError("Trajectory planning dt must be positive.")
+    reference_speed_value = float(cfg.reference_speed)
+    if reference_speed_value <= 0.0:
+        raise ValueError("Trajectory reference speed must be positive.")
+    if cfg.time_parameterization == "planning_step":
+        duration = torch.full(
+            points.shape[:2],
+            float(dt),
+            device=points.device,
+            dtype=points.dtype,
+        )
+    elif cfg.time_parameterization == "arc_length_reference_speed":
+        segment_length = torch.linalg.vector_norm(
+            points[..., 1:, :2] - points[..., :-1, :2],
+            dim=-1,
+        )
+        arc_length = segment_length.sum(dim=-1)
+        duration = (arc_length / reference_speed_value).clamp_min(float(dt))
+    else:
+        raise ValueError(
+            "Unsupported trajectory time_parameterization: "
+            f"{cfg.time_parameterization}"
+        )
+    timestamps = fractions[None, None, :] * duration[..., None]
+    reference_speed = torch.full_like(timestamps, reference_speed_value)
+    return timestamps, reference_speed
+
+
 def generate_line_path(
     positions: torch.Tensor,
     subgoals: torch.Tensor,
@@ -46,8 +83,7 @@ def generate_line_path(
     fallback = current_yaws if current_yaws is not None else torch.zeros_like(delta[..., 0])
     heading = heading_from_delta(delta, fallback=fallback)
     headings = heading[:, :, None].expand(-1, -1, n_points)
-    timestamps = fractions[None, None, :].expand(positions.shape[0], positions.shape[1], -1) * dt
-    reference_speed = torch.full_like(timestamps, cfg.reference_speed)
+    timestamps, reference_speed = _trajectory_timing(points, fractions, cfg, dt)
     return Trajectory(
         points=points,
         headings=headings,
@@ -114,8 +150,7 @@ def generate_quintic_path(
         derivative,
         fallback=fallback[:, :, None].expand(-1, -1, n_points),
     )
-    timestamps = fractions[None, None, :].expand(positions.shape[0], positions.shape[1], -1) * dt
-    reference_speed = torch.full_like(timestamps, cfg.reference_speed)
+    timestamps, reference_speed = _trajectory_timing(points, fractions, cfg, dt)
     return Trajectory(
         points=points,
         headings=headings,

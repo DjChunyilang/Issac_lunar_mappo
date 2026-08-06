@@ -129,6 +129,9 @@ class TrajectoryGeneratorCfg:
     reference_speed: float = 0.8
     quintic_tangent_scale: float = 0.5
     end_heading_mode: str = "subgoal_direction"
+    # ``planning_step`` preserves the historical fixed-dt timestamp contract.
+    # New physically timed runs explicitly opt into arc-length timing.
+    time_parameterization: str = "planning_step"
 
 
 @dataclass(slots=True)
@@ -141,6 +144,9 @@ class LowLevelControlCfg:
     max_angular_speed: float = 2.5
     k_linear: float = 1.6
     k_angular: float = 3.0
+    # Historical runs select trajectory point index 1. New time-consistent
+    # runs interpolate the trajectory at the next physical planning instant.
+    tracking_point_mode: str = "fixed_index"
     safety_projection_enabled: bool = False
     projection_activation_distance: float = 0.0
     projection_stop_distance: float = 0.0
@@ -286,6 +292,7 @@ class RewardCoefficientsCfg:
     terrain_height_change_cost: float = 0.0
     path_terrain_mean_cost: float = 0.0
     path_terrain_max_cost: float = 0.0
+    path_terrain_relative_cost: float = 0.0
     path_height_change_cost: float = 0.0
     filter_raw_path_risk_cost: float = 0.0
     filter_deviation_cost: float = 0.0
@@ -333,6 +340,12 @@ class ObservationCfg:
     aggregation_dim: int = 5
 
     @property
+    def effective_neighbor_dim(self) -> int:
+        if self.schema_version == "ego_v8_decentralized_tiered":
+            return 12
+        return self.neighbor_dim
+
+    @property
     def terminal_gate_dim(self) -> int:
         if self.schema_version == "ego_v4_terminal_gate":
             return 5
@@ -361,7 +374,7 @@ class ObservationCfg:
     def actor_obs_dim(self) -> int:
         return (
             self.ego_dim
-            + self.max_neighbors * self.neighbor_dim
+            + self.max_neighbors * self.effective_neighbor_dim
             + self.terrain_dim
             + self.aggregation_dim
             + self.terminal_gate_dim
