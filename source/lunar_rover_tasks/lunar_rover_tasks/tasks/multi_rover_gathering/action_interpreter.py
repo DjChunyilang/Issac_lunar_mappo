@@ -10,12 +10,70 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import Plan
 from lunar_rover_tasks.utils.math_utils import rotate_2d
 
 
+SPATIOTEMPORAL_ENDPOINTS = (
+    (0.4, -0.4),
+    (0.4, 0.0),
+    (0.4, 0.4),
+    (0.8, -0.8),
+    (0.8, -0.4),
+    (0.8, 0.0),
+    (0.8, 0.4),
+    (0.8, 0.8),
+    (1.2, -0.8),
+    (1.2, -0.4),
+    (1.2, 0.0),
+    (1.2, 0.4),
+    (1.2, 0.8),
+)
+SPATIOTEMPORAL_SPEEDS = (0.45, 0.80, 1.15)
+SPATIOTEMPORAL_ACTION_COUNT = 1 + len(SPATIOTEMPORAL_ENDPOINTS) * len(
+    SPATIOTEMPORAL_SPEEDS
+)
+
+# exp156 keeps the historical 40-action interface intact and introduces a
+# separate differential-drive primitive library.  Indices 1..39 have exactly
+# the same endpoint/speed ordering as the exp155 actions.
+DIFFERENTIAL_REVERSE_ENDPOINTS = (
+    (-0.4, -0.4),
+    (-0.4, 0.0),
+    (-0.4, 0.4),
+)
+DIFFERENTIAL_YIELD_ENDPOINTS = (
+    (0.8, 0.8),
+    (0.8, -0.8),
+)
+DIFFERENTIAL_SPIN_YAW_DELTAS = (torch.pi / 4.0, -torch.pi / 4.0)
+DIFFERENTIAL_FORWARD_ACTION_COUNT = len(SPATIOTEMPORAL_ENDPOINTS) * len(
+    SPATIOTEMPORAL_SPEEDS
+)
+DIFFERENTIAL_REVERSE_ACTION_START = 1 + DIFFERENTIAL_FORWARD_ACTION_COUNT
+DIFFERENTIAL_SPIN_ACTION_START = (
+    DIFFERENTIAL_REVERSE_ACTION_START + len(DIFFERENTIAL_REVERSE_ENDPOINTS)
+)
+DIFFERENTIAL_YIELD_ACTION_START = (
+    DIFFERENTIAL_SPIN_ACTION_START + len(DIFFERENTIAL_SPIN_YAW_DELTAS)
+)
+DIFFERENTIAL_PRIMITIVE_ACTION_COUNT = (
+    DIFFERENTIAL_YIELD_ACTION_START + len(DIFFERENTIAL_YIELD_ENDPOINTS)
+)
+
+PRIMITIVE_HOLD = 0
+PRIMITIVE_FORWARD = 1
+PRIMITIVE_REVERSE = 2
+PRIMITIVE_SPIN = 3
+PRIMITIVE_YIELD = 4
+
+
 @dataclass(slots=True)
 class DecodedAction:
     clipped_normalized: torch.Tensor
     physical: torch.Tensor
     local_subgoal_xy: torch.Tensor
     world_subgoal: torch.Tensor
+    reference_speed: torch.Tensor | None = None
+    motion_direction: torch.Tensor | None = None
+    planned_yaw_delta: torch.Tensor | None = None
+    primitive_type: torch.Tensor | None = None
 
 
 @dataclass(slots=True)
@@ -76,6 +134,12 @@ def decode_action(
     yaws: torch.Tensor,
     cfg: PlannerCfg,
 ) -> DecodedAction:
+    if cfg.action_type == "spatiotemporal_primitives":
+        return decode_spatiotemporal_action(action, positions, yaws, cfg)
+    if cfg.action_type == "differential_trajectory_primitives":
+        return decode_differential_trajectory_action(action, positions, yaws, cfg)
+    if cfg.action_type != "local_subgoal_polar":
+        raise ValueError(f"Unsupported planner.action_type: {cfg.action_type}")
     clipped = clip_action(action)
     physical = scale_action(clipped, cfg)
     local_subgoal_xy = polar_to_local_subgoal(physical)
@@ -85,6 +149,278 @@ def decode_action(
         physical=physical,
         local_subgoal_xy=local_subgoal_xy,
         world_subgoal=world_subgoal,
+        motion_direction=torch.ones_like(physical[..., 0]),
+        planned_yaw_delta=torch.zeros_like(physical[..., 0]),
+        primitive_type=torch.full_like(
+            physical[..., 0],
+            PRIMITIVE_FORWARD,
+            dtype=torch.long,
+        ),
+    )
+
+
+def decode_spatiotemporal_action(
+    action: torch.Tensor,
+    positions: torch.Tensor,
+    yaws: torch.Tensor,
+    cfg: PlannerCfg,
+) -> DecodedAction:
+    """Decode one of the fixed hold/endpoint/speed primitives."""
+
+    if action.ndim == positions.ndim and action.shape[-1] == 1:
+        action = action.squeeze(-1)
+    expected_shape = positions.shape[:-1]
+    if action.shape != expected_shape:
+        raise ValueError(
+            f"Discrete action must have shape {expected_shape} or {(*expected_shape, 1)}, "
+            f"got {tuple(action.shape)}."
+        )
+    indices = action.to(dtype=torch.long)
+    if torch.any(indices < 0) or torch.any(indices >= SPATIOTEMPORAL_ACTION_COUNT):
+        raise ValueError(
+            f"Discrete actions must be in [0, {SPATIOTEMPORAL_ACTION_COUNT - 1}]."
+        )
+    endpoints = torch.tensor(
+        SPATIOTEMPORAL_ENDPOINTS,
+        device=positions.device,
+        dtype=positions.dtype,
+    )
+    speeds = torch.tensor(
+        SPATIOTEMPORAL_SPEEDS,
+        device=positions.device,
+        dtype=positions.dtype,
+    )
+    moving = indices > 0
+    moving_index = (indices - 1).clamp_min(0)
+    endpoint_index = torch.div(
+        moving_index,
+        len(SPATIOTEMPORAL_SPEEDS),
+        rounding_mode="floor",
+    )
+    speed_index = moving_index.remainder(len(SPATIOTEMPORAL_SPEEDS))
+    local_subgoal_xy = endpoints[endpoint_index]
+    local_subgoal_xy = torch.where(
+        moving.unsqueeze(-1),
+        local_subgoal_xy,
+        torch.zeros_like(local_subgoal_xy),
+    )
+    reference_speed = torch.where(
+        moving,
+        speeds[speed_index],
+        torch.zeros_like(indices, dtype=positions.dtype),
+    )
+    rho = torch.linalg.vector_norm(local_subgoal_xy, dim=-1)
+    beta = torch.atan2(local_subgoal_xy[..., 1], local_subgoal_xy[..., 0])
+    physical = torch.stack((rho, beta), dim=-1)
+    normalized = torch.stack(
+        (
+            2.0 * rho / max(float(cfg.rho_max), 1.0e-6) - 1.0,
+            beta / max(float(cfg.beta_max), 1.0e-6),
+        ),
+        dim=-1,
+    ).clamp(-1.0, 1.0)
+    world_subgoal = local_to_world_subgoal(positions, yaws, local_subgoal_xy)
+    return DecodedAction(
+        clipped_normalized=normalized,
+        physical=physical,
+        local_subgoal_xy=local_subgoal_xy,
+        world_subgoal=world_subgoal,
+        reference_speed=reference_speed,
+        motion_direction=moving.to(dtype=positions.dtype),
+        planned_yaw_delta=torch.zeros_like(reference_speed),
+        primitive_type=torch.where(
+            moving,
+            torch.full_like(indices, PRIMITIVE_FORWARD),
+            torch.full_like(indices, PRIMITIVE_HOLD),
+        ),
+    )
+
+
+def decode_differential_trajectory_action(
+    action: torch.Tensor,
+    positions: torch.Tensor,
+    yaws: torch.Tensor,
+    cfg: PlannerCfg,
+) -> DecodedAction:
+    """Decode exp156 hold, translation, reverse, spin and yield primitives."""
+
+    if action.ndim == positions.ndim and action.shape[-1] == 1:
+        action = action.squeeze(-1)
+    expected_shape = positions.shape[:-1]
+    if action.shape != expected_shape:
+        raise ValueError(
+            f"Discrete action must have shape {expected_shape} or {(*expected_shape, 1)}, "
+            f"got {tuple(action.shape)}."
+        )
+    indices = action.to(dtype=torch.long)
+    if torch.any(indices < 0) or torch.any(
+        indices >= DIFFERENTIAL_PRIMITIVE_ACTION_COUNT
+    ):
+        raise ValueError(
+            "Differential primitive actions must be in "
+            f"[0, {DIFFERENTIAL_PRIMITIVE_ACTION_COUNT - 1}]."
+        )
+
+    endpoints = torch.tensor(
+        SPATIOTEMPORAL_ENDPOINTS,
+        device=positions.device,
+        dtype=positions.dtype,
+    )
+    speeds = torch.tensor(
+        SPATIOTEMPORAL_SPEEDS,
+        device=positions.device,
+        dtype=positions.dtype,
+    )
+    reverse_endpoints = torch.tensor(
+        DIFFERENTIAL_REVERSE_ENDPOINTS,
+        device=positions.device,
+        dtype=positions.dtype,
+    )
+    yield_endpoints = torch.tensor(
+        DIFFERENTIAL_YIELD_ENDPOINTS,
+        device=positions.device,
+        dtype=positions.dtype,
+    )
+    spin_yaw = torch.tensor(
+        DIFFERENTIAL_SPIN_YAW_DELTAS,
+        device=positions.device,
+        dtype=positions.dtype,
+    )
+
+    local_subgoal_xy = torch.zeros(
+        *expected_shape,
+        2,
+        device=positions.device,
+        dtype=positions.dtype,
+    )
+    reference_speed = torch.zeros(
+        expected_shape,
+        device=positions.device,
+        dtype=positions.dtype,
+    )
+    motion_direction = torch.zeros_like(reference_speed)
+    planned_yaw_delta = torch.zeros_like(reference_speed)
+    primitive_type = torch.full_like(indices, PRIMITIVE_HOLD)
+
+    forward = (indices >= 1) & (indices < DIFFERENTIAL_REVERSE_ACTION_START)
+    forward_index = (indices - 1).clamp(0, DIFFERENTIAL_FORWARD_ACTION_COUNT - 1)
+    forward_endpoint_index = torch.div(
+        forward_index,
+        len(SPATIOTEMPORAL_SPEEDS),
+        rounding_mode="floor",
+    )
+    forward_speed_index = forward_index.remainder(len(SPATIOTEMPORAL_SPEEDS))
+    local_subgoal_xy = torch.where(
+        forward.unsqueeze(-1),
+        endpoints[forward_endpoint_index],
+        local_subgoal_xy,
+    )
+    reference_speed = torch.where(
+        forward,
+        speeds[forward_speed_index],
+        reference_speed,
+    )
+    motion_direction = torch.where(
+        forward,
+        torch.ones_like(motion_direction),
+        motion_direction,
+    )
+    primitive_type = torch.where(
+        forward,
+        torch.full_like(primitive_type, PRIMITIVE_FORWARD),
+        primitive_type,
+    )
+
+    reverse = (indices >= DIFFERENTIAL_REVERSE_ACTION_START) & (
+        indices < DIFFERENTIAL_SPIN_ACTION_START
+    )
+    reverse_index = (indices - DIFFERENTIAL_REVERSE_ACTION_START).clamp(
+        0, len(DIFFERENTIAL_REVERSE_ENDPOINTS) - 1
+    )
+    local_subgoal_xy = torch.where(
+        reverse.unsqueeze(-1),
+        reverse_endpoints[reverse_index],
+        local_subgoal_xy,
+    )
+    reference_speed = torch.where(
+        reverse,
+        torch.full_like(reference_speed, -0.45),
+        reference_speed,
+    )
+    motion_direction = torch.where(
+        reverse,
+        -torch.ones_like(motion_direction),
+        motion_direction,
+    )
+    primitive_type = torch.where(
+        reverse,
+        torch.full_like(primitive_type, PRIMITIVE_REVERSE),
+        primitive_type,
+    )
+
+    spin = (indices >= DIFFERENTIAL_SPIN_ACTION_START) & (
+        indices < DIFFERENTIAL_YIELD_ACTION_START
+    )
+    spin_index = (indices - DIFFERENTIAL_SPIN_ACTION_START).clamp(
+        0, len(DIFFERENTIAL_SPIN_YAW_DELTAS) - 1
+    )
+    planned_yaw_delta = torch.where(
+        spin,
+        spin_yaw[spin_index],
+        planned_yaw_delta,
+    )
+    primitive_type = torch.where(
+        spin,
+        torch.full_like(primitive_type, PRIMITIVE_SPIN),
+        primitive_type,
+    )
+
+    yielding = indices >= DIFFERENTIAL_YIELD_ACTION_START
+    yield_index = (indices - DIFFERENTIAL_YIELD_ACTION_START).clamp(
+        0, len(DIFFERENTIAL_YIELD_ENDPOINTS) - 1
+    )
+    local_subgoal_xy = torch.where(
+        yielding.unsqueeze(-1),
+        yield_endpoints[yield_index],
+        local_subgoal_xy,
+    )
+    reference_speed = torch.where(
+        yielding,
+        torch.full_like(reference_speed, 0.45),
+        reference_speed,
+    )
+    motion_direction = torch.where(
+        yielding,
+        torch.ones_like(motion_direction),
+        motion_direction,
+    )
+    primitive_type = torch.where(
+        yielding,
+        torch.full_like(primitive_type, PRIMITIVE_YIELD),
+        primitive_type,
+    )
+
+    rho = torch.linalg.vector_norm(local_subgoal_xy, dim=-1)
+    beta = torch.atan2(local_subgoal_xy[..., 1], local_subgoal_xy[..., 0])
+    beta = torch.where(spin, planned_yaw_delta, beta)
+    physical = torch.stack((rho, beta), dim=-1)
+    normalized = torch.stack(
+        (
+            2.0 * rho / max(float(cfg.rho_max), 1.0e-6) - 1.0,
+            beta / max(float(cfg.beta_max), 1.0e-6),
+        ),
+        dim=-1,
+    ).clamp(-1.0, 1.0)
+    world_subgoal = local_to_world_subgoal(positions, yaws, local_subgoal_xy)
+    return DecodedAction(
+        clipped_normalized=normalized,
+        physical=physical,
+        local_subgoal_xy=local_subgoal_xy,
+        world_subgoal=world_subgoal,
+        reference_speed=reference_speed,
+        motion_direction=motion_direction,
+        planned_yaw_delta=planned_yaw_delta,
+        primitive_type=primitive_type,
     )
 
 
@@ -154,6 +490,7 @@ def apply_formation_center_correction(
             physical=decoded.physical,
             local_subgoal_xy=decoded.local_subgoal_xy,
             world_subgoal=world_subgoal,
+            reference_speed=decoded.reference_speed,
         ),
         active=active,
         offset_xy=offset_xy,
@@ -208,6 +545,7 @@ def apply_terminal_slot_capture(
             physical=decoded.physical,
             local_subgoal_xy=decoded.local_subgoal_xy,
             world_subgoal=world_subgoal,
+            reference_speed=decoded.reference_speed,
         ),
         active=active,
     )
@@ -275,6 +613,7 @@ def apply_flat_geometry_capture(
             physical=decoded.physical,
             local_subgoal_xy=decoded.local_subgoal_xy,
             world_subgoal=world_subgoal,
+            reference_speed=decoded.reference_speed,
         ),
         active=active,
     )

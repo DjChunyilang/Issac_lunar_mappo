@@ -1,0 +1,84 @@
+extends: exp155_multiscale_network_ablation.yaml
+
+experiment:
+  name: exp155_full_rl_ablation
+  seed: 23
+  num_envs: 256
+  rollout_steps: 64
+  eval_num_envs: 384
+  eval_steps: 480
+  checkpoint_interval: 6400
+
+algorithm:
+  training_semantics: exp155_full_rl_ablation
+  # The runner overrides this for N0, N1 and N2. Keeping N0 makes direct
+  # validation deterministic without privileging the path-conditioned model.
+  actor_architecture: multiscale_n0_mlp
+  bc_updates: 0
+  init_checkpoint: null
+
+bounded_curriculum:
+  enabled: true
+  transition_mode: fixed_schedule
+  evaluation_num_envs: 384
+  evaluation_steps: 480
+  evaluation_seed_offset: 15500
+  maximum_extension_iterations: 0
+  stages:
+    - name: stage_a_open_near_soft_collision
+      policy_iterations: 800
+      evaluation_interval_iterations: 100
+      environment_overrides:
+        safety.collision_termination_enabled: false
+        initial_state.spawn_radius_min: 2.4
+        initial_state.spawn_radius_max: 3.4
+        initial_state.center_xy_range: 1.0
+        initial_state.jitter_std: 0.25
+        terrain.topology_profile: runtime_bucketed
+        terrain.topology_curriculum_stage: open
+        terrain.crater_count: 100
+        terrain.crater_seed: 4
+        terrain.crater_depth_to_diameter: 0.15
+      # Diagnostic only. It never changes the fixed transition time.
+      gate:
+        success_rate: 0.50
+        collision_rate: 0.20
+        dmax_reduction_ratio: 0.45
+    - name: stage_b_open_near_hard_collision
+      policy_iterations: 800
+      evaluation_interval_iterations: 100
+      environment_overrides:
+        safety.collision_termination_enabled: true
+        initial_state.spawn_radius_min: 2.4
+        initial_state.spawn_radius_max: 3.4
+        initial_state.center_xy_range: 1.0
+        initial_state.jitter_std: 0.25
+        terrain.topology_profile: runtime_bucketed
+        terrain.topology_curriculum_stage: open
+        terrain.crater_count: 100
+        terrain.crater_seed: 4
+        terrain.crater_depth_to_diameter: 0.15
+      gate:
+        success_rate: 0.75
+        collision_rate: 0.08
+        timeout_rate: 0.15
+        timeout_operator: le
+    - name: stage_c_mixed_bottleneck_far_tiered_communication
+      policy_iterations: 800
+      evaluation_interval_iterations: 100
+      environment_overrides:
+        safety.collision_termination_enabled: true
+        initial_state.spawn_radius_min: 4.5
+        initial_state.spawn_radius_max: 6.5
+        initial_state.center_xy_range: 2.0
+        initial_state.jitter_std: 0.40
+        terrain.topology_profile: runtime_bucketed
+        terrain.topology_curriculum_stage: mixed_bottleneck
+        terrain.crater_count: 100
+        terrain.crater_seed: 4
+        terrain.crater_depth_to_diameter: 0.15
+      gate:
+        success_rate: 0.85
+        collision_rate: 0.04
+        timeout_rate: 0.10
+        timeout_operator: lt

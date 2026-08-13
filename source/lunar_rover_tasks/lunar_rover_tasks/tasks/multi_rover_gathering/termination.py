@@ -121,7 +121,8 @@ def compute_done(
     collision = check_collision(positions, safety)
     out_of_bounds = check_out_of_bounds(positions, safety)
     timeout = step_count >= max_episode_steps
-    terminated = success | collision | out_of_bounds
+    collision_terminal = collision if safety.collision_termination_enabled else torch.zeros_like(collision)
+    terminated = success | collision_terminal | out_of_bounds
     truncated = timeout & ~terminated
     done = terminated | truncated
     return (

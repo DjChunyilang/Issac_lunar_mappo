@@ -1,0 +1,7 @@
+extends: ../../outputs/runs/exp156_differential_multiscale_ablation/n0_seed23_full_2400iter/metrics/paired_configs/far_bottleneck.json
+
+experiment:
+  name: exp156_timeout_diag_far_bottleneck_192s
+
+simulation:
+  episode_length_s: 192.0

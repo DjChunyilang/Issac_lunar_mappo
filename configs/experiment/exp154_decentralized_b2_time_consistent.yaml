@@ -1,0 +1,26 @@
+extends: exp137_decentralized_b2_graph_attention.yaml
+
+experiment:
+  name: exp154_decentralized_b2_time_consistent
+
+algorithm:
+  # B2 graph attention + trajectory time consistency fix (exp148 baseline)
+  # This is the first experiment combining graph attention neighbor encoding
+  # with physically correct trajectory timing.  The hypothesis is:
+  #   exp137 B2 failed (collision 0.7881) partly because the broken trajectory
+  #   timing (78%+ paths exceeding max speed, 1.77% arc utilization) gave
+  #   inconsistent terrain/safety feedback.  With correct timing, graph
+  #   attention may learn to use neighbor information to coordinate trajectories.
+  training_semantics: exp154_decentralized_b2_time_consistent
+  actor_architecture: branched_v6_graph_attention
+  critic_architecture: structured_v1
+  bc_updates: 0
+  init_checkpoint: null
+  teacher_mode: null
+
+# Trajectory time consistency fix from exp148 — the new physical baseline.
+trajectory_generator:
+  time_parameterization: arc_length_reference_speed
+
+low_level_control:
+  tracking_point_mode: planning_time

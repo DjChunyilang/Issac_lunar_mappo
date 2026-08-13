@@ -1,0 +1,9 @@
+extends: exp155_multiscale_network_ablation.yaml
+
+experiment:
+  name: exp155_multiscale_n2_path_conditioned
+
+algorithm:
+  training_semantics: exp155_multiscale_n2_path_conditioned
+  actor_architecture: multiscale_n2_path_conditioned
+

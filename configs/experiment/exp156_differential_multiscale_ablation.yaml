@@ -1,0 +1,121 @@
+extends: exp155_full_rl_ablation.yaml
+
+experiment:
+  name: exp156_differential_multiscale_ablation
+  seed: 23
+  num_envs: 256
+  rollout_steps: 64
+  eval_num_envs: 192
+  eval_steps: 480
+  checkpoint_interval: 6400
+
+evaluation:
+  proxy_eval:
+    enabled: true
+    num_envs: 192
+    steps: 480
+    seed_offset: 15600
+  strict_thresholds:
+    dmax_reduction_ratio: 0.20
+    success_rate: 0.90
+    collision_rate: 0.02
+    timeout_rate: 0.10
+    timeout_operator: lt
+    episodes_per_cell: 192
+    confidence_level: 0.95
+
+initial_state:
+  randomize_formation_rotation: true
+  randomize_agent_yaws: true
+
+planner:
+  action_type: differential_trajectory_primitives
+  action_dim: 47
+  subgoal_filter:
+    enabled: false
+
+trajectory_generator:
+  geometry_method: quintic
+  n_trajectory_points: 12
+  reference_speed: 1.15
+  rotation_reference_speed: 1.40
+  time_parameterization: arc_length_reference_speed
+
+low_level_control:
+  kinematic_model: differential_drive
+  tracking_point_mode: planning_time
+  wheel_radius_m: 0.098
+  track_width_m: 0.376
+  max_wheel_speed_radps: 18.0
+  max_linear_speed: 1.15
+  max_angular_speed: 2.40
+  safety_projection_enabled: false
+  projection_directional_agent_scale: false
+  success_zone_damping_enabled: false
+  formation_center_correction_enabled: false
+  formation_center_local_flatness_search_enabled: false
+  terminal_slot_capture_enabled: false
+  flat_geometry_capture_enabled: false
+
+observation:
+  communication_radius: 12.0
+  schema_version: ego_v10_multiscale_diff_intent
+
+state:
+  include_terminal_min_pairwise: false
+  include_multiscale_agent_terrain: true
+
+reward:
+  weights:
+    oracle: 0.0
+
+algorithm:
+  mode: pure_rl
+  training_semantics: exp156_differential_multiscale_ablation
+  actor_architecture: multiscale_n0_mlp
+  critic_architecture: structured_multiscale_v3
+  bc_updates: 0
+  init_checkpoint: null
+  teacher_mode: null
+  update_mode: shared_joint
+  ppo_epochs: 5
+  mini_batches: 1
+  clip_epsilon: 0.15
+  learning_rate: 0.0001
+  gamma: 0.99
+  gae_lambda: 0.95
+  entropy_loss_scale: 0.0009
+  entropy_loss_scale_end: 0.0001
+  entropy_schedule_timesteps: 153600
+
+scenario_evaluation:
+  manifest: outputs/runs/exp156_differential_multiscale_ablation/_suite/scenario_manifest.json
+  episodes_per_cell: 192
+  light_diagnostic_episodes_per_cell: 64
+  cells:
+    - near_open
+    - near_mixed
+    - near_bottleneck
+    - far_open
+    - far_mixed
+    - far_bottleneck
+
+full_rl_ablation:
+  candidates:
+    - multiscale_n0_mlp
+    - multiscale_n1_cnn
+    - multiscale_n2_path_conditioned
+  seed: 23
+  policy_iterations_per_stage: 800
+  stages: 3
+  timesteps: 153600
+  environment_interactions_per_candidate: 39321600
+  environment_interactions_total: 117964800
+  equal_budget_required: true
+  paired_scenarios_required: true
+
+oracle_reward_ablation:
+  enabled_after_architecture_selection: true
+  restored_oracle_weight: 0.5
+  same_training_seed: 23
+  same_scenario_manifest: true

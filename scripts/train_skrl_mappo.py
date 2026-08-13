@@ -36,7 +36,7 @@ from lunar_rover_tasks.utils.geometry_utils import pairwise_distances_xy
 
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
-from skrl.models.torch import DeterministicMixin, GaussianMixin, Model
+from skrl.models.torch import CategoricalMixin, DeterministicMixin, GaussianMixin, Model
 from skrl.multi_agents.torch.mappo import MAPPO
 from skrl.trainers.torch import SequentialTrainer
 
@@ -44,6 +44,86 @@ from shared_policy_mappo import SharedPolicyMAPPO
 
 
 TRAINING_SEMANTICS = DEFAULT_TRAINING_SEMANTICS
+
+
+class BoundedCurriculumStop(RuntimeError):
+    """Internal control-flow signal for a completed or failed bounded curriculum."""
+
+    def __init__(self, *, status: str, timestep: int, stage: str) -> None:
+        super().__init__(f"bounded curriculum {status} at stage {stage}")
+        self.status = status
+        self.timestep = timestep
+        self.stage = stage
+
+
+def _set_cfg_path(cfg: Any, path: str, value: Any) -> None:
+    target = cfg
+    parts = path.split(".")
+    for part in parts[:-1]:
+        if not hasattr(target, part):
+            raise ValueError(f"Unknown bounded curriculum configuration path: {path}")
+        target = getattr(target, part)
+    if not hasattr(target, parts[-1]):
+        raise ValueError(f"Unknown bounded curriculum configuration path: {path}")
+    setattr(target, parts[-1], value)
+
+
+def _set_mapping_path(mapping: dict[str, Any], path: str, value: Any) -> None:
+    target = mapping
+    parts = path.split(".")
+    for part in parts[:-1]:
+        child = target.get(part)
+        if child is None:
+            child = {}
+            target[part] = child
+        if not isinstance(child, dict):
+            raise ValueError(f"Configuration path crosses a non-mapping value: {path}")
+        target = child
+    target[parts[-1]] = value
+
+
+def _curriculum_gate_checks(metrics: dict[str, Any], gate: dict[str, Any]) -> dict[str, bool]:
+    checks = {
+        "success_rate": float(metrics["eval_success_rate"]) >= float(gate["success_rate"]),
+        "collision_rate": float(metrics["eval_collision_rate"]) <= float(gate["collision_rate"]),
+    }
+    if "dmax_reduction_ratio" in gate:
+        checks["dmax_reduction_ratio"] = (
+            float(metrics["eval_dmax_reduction_ratio"])
+            <= float(gate["dmax_reduction_ratio"])
+        )
+    if "timeout_rate" in gate:
+        timeout = float(metrics["eval_timeout_rate"])
+        checks["timeout_rate"] = (
+            timeout < float(gate["timeout_rate"])
+            if str(gate.get("timeout_operator", "le")) == "lt"
+            else timeout <= float(gate["timeout_rate"])
+        )
+    return checks
+
+
+def _claim_curriculum_evaluation(
+    state: dict[str, Any],
+    *,
+    stage_index: int,
+    stage_iterations: int,
+    interval: int,
+) -> bool:
+    """Claim one frozen evaluation per stage/iteration boundary.
+
+    ``post_interaction`` runs on every environment timestep, while
+    ``stage_iterations`` advances only once per rollout. Without this guard,
+    the same boundary (for example iteration 100) would be evaluated once for
+    every timestep in the following rollout.
+    """
+
+    if stage_iterations <= 0 or interval <= 0 or stage_iterations % interval != 0:
+        return False
+    key = (int(stage_index), int(stage_iterations))
+    if tuple(state.get("last_evaluation_key", (-1, -1))) == key:
+        return False
+    state["last_evaluation_key"] = list(key)
+    return True
 
 ACTOR_ARCHITECTURES = {
     "mlp_v1",
@@ -53,8 +133,16 @@ ACTOR_ARCHITECTURES = {
     "branched_v4",
     "branched_v5",
     "branched_v6_graph_attention",
+    "multiscale_n0_mlp",
+    "multiscale_n1_cnn",
+    "multiscale_n2_path_conditioned",
 }
-CRITIC_ARCHITECTURES = {"mlp_v1", "structured_v1", "structured_v2"}
+CRITIC_ARCHITECTURES = {
+    "mlp_v1",
+    "structured_v1",
+    "structured_v2",
+    "structured_multiscale_v3",
+}
 ACTOR_OBSERVATION_SLICES_V3 = {
     "ego": (0, 10),
     "neighbors": (10, 31),
@@ -79,6 +167,24 @@ ACTOR_OBSERVATION_SLICES_V8 = {
     "terrain": (46, 96),
     "aggregation": (96, 101),
 }
+ACTOR_OBSERVATION_SLICES_V9 = {
+    "ego": (0, 14),
+    "neighbors": (14, 62),
+    "terrain": (62, 286),
+    "terrain_fine": (62, 188),
+    "terrain_medium": (188, 230),
+    "terrain_coarse": (230, 286),
+    "aggregation": (286, 291),
+}
+ACTOR_OBSERVATION_SLICES_V10 = {
+    "ego": (0, 15),
+    "neighbors": (15, 66),
+    "terrain": (66, 290),
+    "terrain_fine": (66, 192),
+    "terrain_medium": (192, 234),
+    "terrain_coarse": (234, 290),
+    "aggregation": (290, 295),
+}
 ACTOR_OBSERVATION_SLICES = ACTOR_OBSERVATION_SLICES_V3
 CRITIC_STATE_SLICES_V3 = {
     "agents": (0, 32),
@@ -91,6 +197,13 @@ CRITIC_STATE_SLICES_V4 = {
     "team": (32, 41),
     "terrain": (41, 46),
     "oracle": (46, 55),
+}
+CRITIC_STATE_SLICES_V10 = {
+    "agents": (0, 32),
+    "team": (32, 40),
+    "terrain": (40, 45),
+    "oracle": (45, 54),
+    "agent_terrain": (54, 950),
 }
 CRITIC_STATE_SLICES = CRITIC_STATE_SLICES_V3
 
@@ -106,6 +219,10 @@ def _actor_slices_for_dim(num_observations: int) -> dict[str, tuple[int, int]]:
         return ACTOR_OBSERVATION_SLICES_V6
     if int(num_observations) == 101:
         return ACTOR_OBSERVATION_SLICES_V8
+    if int(num_observations) == 291:
+        return ACTOR_OBSERVATION_SLICES_V9
+    if int(num_observations) == 295:
+        return ACTOR_OBSERVATION_SLICES_V10
     raise ValueError(f"Unsupported actor observation dim: {num_observations}.")
 
 
@@ -114,6 +231,8 @@ def _critic_slices_for_dim(num_states: int) -> dict[str, tuple[int, int]]:
         return CRITIC_STATE_SLICES_V3
     if int(num_states) == 55:
         return CRITIC_STATE_SLICES_V4
+    if int(num_states) == 950:
+        return CRITIC_STATE_SLICES_V10
     raise ValueError(f"Unsupported critic state dim: {num_states}.")
 
 
@@ -132,6 +251,9 @@ def critic_state_slices_metadata(critic_state_dim: int = 54) -> dict[str, dict[s
     metadata = _slice_metadata(_critic_slices_for_dim(critic_state_dim))
     metadata["agents"]["shape_agents"] = 4
     metadata["agents"]["shape_features"] = 8
+    if "agent_terrain" in metadata:
+        metadata["agent_terrain"]["shape_agents"] = 4
+        metadata["agent_terrain"]["shape_features"] = 224
     return metadata
 
 
@@ -253,6 +375,259 @@ class GraphAttentionNeighborEncoder(nn.Module):
         )
         aggregated = (weights.unsqueeze(-1) * values).sum(dim=-3)
         return aggregated.reshape(*leading_shape, self.output_dim)
+
+
+class MultiScaleTerrainCNN(nn.Module):
+    """Shared two-layer encoder used for all three body-frame terrain scales."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.Conv2d(2, 16, kernel_size=3, padding=1),
+            nn.ELU(),
+            nn.Conv2d(16, 32, kernel_size=3, padding=1),
+            nn.ELU(),
+        )
+
+    def forward(self, grid: torch.Tensor) -> torch.Tensor:
+        return self.network(grid)
+
+
+def _multiscale_terrain_grids(
+    observations: torch.Tensor,
+    slices: dict[str, tuple[int, int]],
+) -> tuple[torch.Tensor, ...]:
+
+    def grid(name: str, x_size: int, y_size: int) -> torch.Tensor:
+        start, end = slices[name]
+        values = observations[..., start:end]
+        leading = values.shape[:-1]
+        values = values.reshape(-1, x_size, y_size, 2).permute(0, 3, 1, 2)
+        return values.reshape(*leading, 2, x_size, y_size)
+
+    return (
+        grid("terrain_fine", 7, 9),
+        grid("terrain_medium", 3, 7),
+        grid("terrain_coarse", 4, 7),
+    )
+
+
+class SKRLCategoricalPolicy(CategoricalMixin, Model):
+    """Categorical multiscale policy for the v9 and exp156 v10 interfaces."""
+
+    def __init__(self, observation_space, action_space, device, *, architecture: str):
+        Model.__init__(
+            self,
+            observation_space=observation_space,
+            action_space=action_space,
+            device=device,
+        )
+        CategoricalMixin.__init__(self, unnormalized_log_prob=True, role="policy")
+        self.architecture = normalize_actor_architecture(architecture)
+        interface = {
+            (291, 40): ACTOR_OBSERVATION_SLICES_V9,
+            (295, 47): ACTOR_OBSERVATION_SLICES_V10,
+        }
+        action_count = int(action_space.n) if hasattr(action_space, "n") else -1
+        key = (int(self.num_observations), action_count)
+        if key not in interface:
+            raise ValueError(
+                f"{self.architecture} requires (291 observations, 40 actions) or "
+                "(295 observations, 47 actions); got "
+                f"({self.num_observations}, {action_count})."
+            )
+        self.slices = interface[key]
+        self.action_count = action_count
+        ego_dim = self.slices["ego"][1] - self.slices["ego"][0]
+        neighbor_dim = self.slices["neighbors"][1] - self.slices["neighbors"][0]
+        self.ego_encoder = nn.Sequential(nn.Linear(ego_dim, 32), nn.ELU())
+        self.neighbor_encoder = nn.Sequential(nn.Linear(neighbor_dim, 48), nn.ELU())
+        self.aggregation_encoder = nn.Sequential(nn.Linear(5, 16), nn.ELU())
+        if self.architecture == "multiscale_n0_mlp":
+            self.terrain_encoder = nn.Sequential(
+                nn.Linear(224, 128),
+                nn.ELU(),
+                nn.Linear(128, 64),
+                nn.ELU(),
+            )
+            self.trunk = nn.Sequential(
+                nn.Linear(160, 128),
+                nn.ELU(),
+                nn.Linear(128, 128),
+                nn.ELU(),
+                nn.Linear(128, self.action_count),
+            )
+        elif self.architecture == "multiscale_n1_cnn":
+            self.terrain_encoder = MultiScaleTerrainCNN()
+            self.terrain_projection = nn.Sequential(
+                nn.Linear(3 * 32 * 3 * 3, 64),
+                nn.ELU(),
+            )
+            self.trunk = nn.Sequential(
+                nn.Linear(160, 128),
+                nn.ELU(),
+                nn.Linear(128, 128),
+                nn.ELU(),
+                nn.Linear(128, self.action_count),
+            )
+        elif self.architecture == "multiscale_n2_path_conditioned":
+            self.terrain_encoder = MultiScaleTerrainCNN()
+            # All scales condition every primitive. The 13 forward routes
+            # additionally receive path-aligned features below.
+            self.context_projection = nn.Sequential(nn.Linear(288, 64), nn.ELU())
+            self.speed_embedding = nn.Embedding(3, 8)
+            self.route_projection = nn.Sequential(nn.Linear(72, 64), nn.ELU())
+            self.hold_embedding = nn.Parameter(torch.zeros(64))
+            self.extra_primitive_embedding = (
+                nn.Embedding(7, 64) if self.action_count == 47 else None
+            )
+            self.register_buffer("fine_path_grid", self._path_sampling_grid(
+                x_min=-0.4, x_max=0.8, y_min=-0.8, y_max=0.8
+            ))
+            self.register_buffer("medium_path_grid", self._path_sampling_grid(
+                x_min=0.8, x_max=1.6, y_min=-1.2, y_max=1.2
+            ))
+        else:
+            raise ValueError(
+                "Categorical v9 policies must use multiscale_n0_mlp, "
+                "multiscale_n1_cnn or multiscale_n2_path_conditioned."
+            )
+
+    @staticmethod
+    def _primitive_endpoints() -> torch.Tensor:
+        return torch.tensor(
+            [
+                (0.4, -0.4), (0.4, 0.0), (0.4, 0.4),
+                (0.8, -0.8), (0.8, -0.4), (0.8, 0.0), (0.8, 0.4), (0.8, 0.8),
+                (1.2, -0.8), (1.2, -0.4), (1.2, 0.0), (1.2, 0.4), (1.2, 0.8),
+            ],
+            dtype=torch.float32,
+        )
+
+    @classmethod
+    def _path_sampling_grid(
+        cls,
+        *,
+        x_min: float,
+        x_max: float,
+        y_min: float,
+        y_max: float,
+    ) -> torch.Tensor:
+        endpoints = cls._primitive_endpoints()
+        fractions = torch.linspace(0.0, 1.0, 12)
+        # The environment's quintic uses a forward start tangent and an end
+        # tangent aligned with the endpoint. Reproduce that body-frame curve.
+        distance = torch.linalg.vector_norm(endpoints, dim=-1, keepdim=True)
+        start = torch.tensor((1.0, 0.0))[None, :] * distance * 0.5
+        end = endpoints / distance.clamp_min(1.0e-8) * distance * 0.5
+        d = endpoints - start
+        e = end - start
+        a3 = 10.0 * d - 4.0 * e
+        a4 = 7.0 * e - 15.0 * d
+        a5 = 6.0 * d - 3.0 * e
+        s = fractions[None, :, None]
+        path = start[:, None, :] * s + a3[:, None, :] * s**3 + a4[:, None, :] * s**4 + a5[:, None, :] * s**5
+        x_norm = 2.0 * (path[..., 0] - x_min) / (x_max - x_min) - 1.0
+        y_norm = 2.0 * (path[..., 1] - y_min) / (y_max - y_min) - 1.0
+        # grid_sample expects [horizontal(y), vertical(x)].
+        return torch.stack((y_norm, x_norm), dim=-1).unsqueeze(0)
+
+    def _encoded_common(self, observations: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        slices = self.slices
+        ego = self.ego_encoder(observations[..., slices["ego"][0]:slices["ego"][1]])
+        neighbor = self.neighbor_encoder(
+            observations[..., slices["neighbors"][0]:slices["neighbors"][1]]
+        )
+        aggregation = self.aggregation_encoder(
+            observations[..., slices["aggregation"][0]:slices["aggregation"][1]]
+        )
+        return ego, neighbor, aggregation
+
+    def compute(self, inputs, role=""):
+        del role
+        observations = inputs["observations"]
+        ego, neighbor, aggregation = self._encoded_common(observations)
+        if self.architecture == "multiscale_n0_mlp":
+            start, end = self.slices["terrain"]
+            terrain = self.terrain_encoder(observations[..., start:end])
+            return self.trunk(torch.cat((ego, neighbor, terrain, aggregation), dim=-1)), {}
+
+        fine, medium, coarse = _multiscale_terrain_grids(observations, self.slices)
+        leading = observations.shape[:-1]
+        fine_feature = self.terrain_encoder(fine.reshape(-1, 2, 7, 9))
+        medium_feature = self.terrain_encoder(medium.reshape(-1, 2, 3, 7))
+        coarse_feature = self.terrain_encoder(coarse.reshape(-1, 2, 4, 7))
+        if self.architecture == "multiscale_n1_cnn":
+            pooled = torch.cat(
+                tuple(
+                    F.adaptive_avg_pool2d(feature, (3, 3)).flatten(start_dim=1)
+                    for feature in (fine_feature, medium_feature, coarse_feature)
+                ),
+                dim=-1,
+            )
+            terrain = self.terrain_projection(pooled).reshape(*leading, 64)
+            return self.trunk(torch.cat((ego, neighbor, terrain, aggregation), dim=-1)), {}
+
+        batch = fine_feature.shape[0]
+        # ``expand`` returns a zero-stride view. cuDNN's CUDA grid sampler does
+        # not support that layout for the large PPO update batch used by N2,
+        # even though the smaller CPU/inference contracts accept it. Materialize
+        # both the feature maps and grids before entering ``grid_sample`` so the
+        # smoke and full-update paths have the same tensor-layout contract.
+        fine_feature = fine_feature.contiguous()
+        medium_feature = medium_feature.contiguous()
+        fine_grid = self.fine_path_grid.expand(batch, -1, -1, -1).contiguous()
+        medium_grid = self.medium_path_grid.expand(batch, -1, -1, -1).contiguous()
+        fine_samples = F.grid_sample(
+            fine_feature, fine_grid, mode="bilinear", padding_mode="zeros", align_corners=True
+        )
+        medium_samples = F.grid_sample(
+            medium_feature, medium_grid, mode="bilinear", padding_mode="zeros", align_corners=True
+        )
+        fine_valid = (fine_grid.abs() <= 1.0).all(dim=-1).unsqueeze(1)
+        medium_valid = (medium_grid.abs() <= 1.0).all(dim=-1).unsqueeze(1)
+        selected = torch.where(fine_valid, fine_samples, medium_samples)
+        selected_valid = fine_valid | medium_valid
+        selected = selected * selected_valid.to(selected.dtype)
+        counts = selected_valid.sum(dim=-1).clamp_min(1).to(selected.dtype)
+        path_mean = selected.sum(dim=-1) / counts
+        path_max = selected.masked_fill(~selected_valid, float("-inf")).amax(dim=-1)
+        path_max = torch.where(torch.isfinite(path_max), path_max, torch.zeros_like(path_max))
+        path_features = torch.cat((path_mean, path_max), dim=1).permute(0, 2, 1)
+        terrain_context = torch.cat(
+            tuple(
+                torch.cat(
+                    (feature.mean(dim=(-2, -1)), feature.amax(dim=(-2, -1))),
+                    dim=-1,
+                )
+                for feature in (fine_feature, medium_feature, coarse_feature)
+            ),
+            dim=-1,
+        ).reshape(*leading, 192)
+        context = self.context_projection(
+            torch.cat((ego, neighbor, aggregation, terrain_context), dim=-1)
+        )
+        speed = self.speed_embedding(torch.arange(3, device=observations.device))
+        route = path_features[:, :, None, :].expand(-1, -1, 3, -1)
+        speed = speed[None, None, :, :].expand(batch, 13, -1, -1)
+        route = self.route_projection(torch.cat((route, speed), dim=-1))
+        context_flat = context.reshape(batch, 64)
+        move_logits = torch.einsum("bd,bnsd->bns", context_flat, route) / 8.0
+        hold_logit = torch.einsum("bd,d->b", context_flat, self.hold_embedding) / 8.0
+        logits = torch.cat((hold_logit[:, None], move_logits.reshape(batch, 39)), dim=-1)
+        if self.extra_primitive_embedding is not None:
+            extra_logits = torch.einsum(
+                "bd,nd->bn",
+                context_flat,
+                self.extra_primitive_embedding.weight,
+            ) / 8.0
+            logits = torch.cat((logits, extra_logits), dim=-1)
+        return logits.reshape(*leading, self.action_count), {}
+
+    def terrain_input_weight(self) -> torch.Tensor:
+        if self.architecture == "multiscale_n0_mlp":
+            return self.terrain_encoder[0].weight
+        return self.terrain_encoder.network[0].weight
 
 
 class SKRLPolicy(GaussianMixin, Model):
@@ -481,13 +856,35 @@ class SKRLValue(DeterministicMixin, Model):
                 nn.ELU(),
                 nn.Linear(128, 1),
             )
-        else:
+        elif self.architecture == "structured_v2":
             if self.num_states != 55:
                 raise ValueError(
                     "structured_v2 critic expects the ego_v4 55-dim terminal-gate state."
                 )
             self.agent_encoder = nn.Sequential(nn.Linear(8, 32), nn.ELU())
             self.team_encoder = nn.Sequential(nn.Linear(9, 32), nn.ELU())
+            self.terrain_encoder = nn.Sequential(nn.Linear(5, 16), nn.ELU())
+            self.oracle_encoder = nn.Sequential(nn.Linear(9, 32), nn.ELU())
+            self.value_trunk = nn.Sequential(
+                nn.Linear(144, 128),
+                nn.ELU(),
+                nn.Linear(128, 128),
+                nn.ELU(),
+                nn.Linear(128, 1),
+            )
+        else:
+            if self.num_states != 950:
+                raise ValueError(
+                    "structured_multiscale_v3 critic expects the exp156 950-dim state."
+                )
+            self.agent_encoder = nn.Sequential(nn.Linear(8, 32), nn.ELU())
+            self.agent_terrain_encoder = MultiScaleTerrainCNN()
+            self.agent_terrain_projection = nn.Sequential(
+                nn.Linear(3 * 32, 32),
+                nn.ELU(),
+            )
+            self.agent_fusion = nn.Sequential(nn.Linear(64, 32), nn.ELU())
+            self.team_encoder = nn.Sequential(nn.Linear(8, 32), nn.ELU())
             self.terrain_encoder = nn.Sequential(nn.Linear(5, 16), nn.ELU())
             self.oracle_encoder = nn.Sequential(nn.Linear(9, 32), nn.ELU())
             self.value_trunk = nn.Sequential(
@@ -509,6 +906,26 @@ class SKRLValue(DeterministicMixin, Model):
         oracle_start, oracle_end = slices["oracle"]
         agent_features = states[..., agents_start:agents_end].reshape(-1, 4, 8)
         encoded_agents = self.agent_encoder(agent_features)
+        if self.architecture == "structured_multiscale_v3":
+            raw_start, raw_end = slices["agent_terrain"]
+            raw_terrain = states[..., raw_start:raw_end].reshape(-1, 4, 224)
+            flat_terrain = raw_terrain.reshape(-1, 224)
+            raw_slices = {
+                "terrain_fine": (0, 126),
+                "terrain_medium": (126, 168),
+                "terrain_coarse": (168, 224),
+            }
+            terrain_grids = _multiscale_terrain_grids(flat_terrain, raw_slices)
+            pooled = []
+            for grid in terrain_grids:
+                feature = self.agent_terrain_encoder(grid)
+                pooled.append(feature.mean(dim=(-2, -1)))
+            terrain_encoded = self.agent_terrain_projection(
+                torch.cat(pooled, dim=-1)
+            ).reshape(-1, 4, 32)
+            encoded_agents = self.agent_fusion(
+                torch.cat((encoded_agents, terrain_encoded), dim=-1)
+            )
         agent_mean = encoded_agents.mean(dim=1)
         agent_max = encoded_agents.amax(dim=1)
         encoded = torch.cat(
@@ -1334,13 +1751,33 @@ SUCCESS_PROGRESS_LONG_THRESHOLDS = {
 
 def proxy_acceptance(metrics: dict, thresholds: dict | None = None) -> dict:
     thresholds = thresholds or STRICT_THRESHOLDS
+    timeout_operator = str(thresholds.get("timeout_operator", "le"))
+    if timeout_operator not in {"le", "lt"}:
+        raise ValueError("timeout_operator must be 'le' or 'lt'.")
     checks = {
         "dmax_reduction_ratio": metrics["dmax_reduction_ratio"] <= thresholds["dmax_reduction_ratio"],
         "success_rate": metrics["success_rate"] >= thresholds["success_rate"],
         "collision_rate": metrics["collision_rate"] <= thresholds["collision_rate"],
-        "timeout_rate": metrics["timeout_rate"] <= thresholds["timeout_rate"],
+        "timeout_rate": (
+            metrics["timeout_rate"] < thresholds["timeout_rate"]
+            if timeout_operator == "lt"
+            else metrics["timeout_rate"] <= thresholds["timeout_rate"]
+        ),
     }
     return {"passed": all(checks.values()), "checks": checks, "thresholds": thresholds}
+
+
+def strict_thresholds_from_config(raw_cfg: dict[str, Any]) -> dict[str, Any]:
+    evaluation = raw_cfg.get("evaluation", {})
+    configured = evaluation.get("strict_thresholds", {}) if isinstance(evaluation, dict) else {}
+    thresholds = dict(STRICT_THRESHOLDS)
+    if not isinstance(configured, dict):
+        raise ValueError("evaluation.strict_thresholds must be a mapping.")
+    for key in STRICT_THRESHOLDS:
+        if key in configured:
+            thresholds[key] = float(configured[key])
+    thresholds["timeout_operator"] = str(configured.get("timeout_operator", "le"))
+    return thresholds
 
 
 def pure_rl_long_acceptance(
@@ -1772,6 +2209,10 @@ def initial_state_metadata(cfg) -> dict[str, Any]:
         "spawn_radius_max": float(initial_state.spawn_radius_max),
         "center_xy_range": float(initial_state.center_xy_range),
         "jitter_std": float(initial_state.jitter_std),
+        "randomize_formation_rotation": bool(
+            initial_state.randomize_formation_rotation
+        ),
+        "randomize_agent_yaws": bool(initial_state.randomize_agent_yaws),
         "curriculum_enabled": bool(initial_state.curriculum_enabled),
         "curriculum_start_spawn_radius_min": float(
             initial_state.curriculum_start_spawn_radius_min
@@ -1859,17 +2300,25 @@ def build_skrl_mappo_models(
     critic_architecture = normalize_critic_architecture(critic_architecture)
 
     first_agent = env.possible_agents[0]
-    shared_policy = (
-        SKRLPolicy(
-            env.observation_spaces[first_agent],
-            env.action_spaces[first_agent],
+    categorical = hasattr(env.action_spaces[first_agent], "n")
+
+    def make_policy(agent_id: str) -> Model:
+        if categorical:
+            return SKRLCategoricalPolicy(
+                env.observation_spaces[agent_id],
+                env.action_spaces[agent_id],
+                env.device,
+                architecture=actor_architecture,
+            )
+        return SKRLPolicy(
+            env.observation_spaces[agent_id],
+            env.action_spaces[agent_id],
             env.device,
             initial_log_std,
             architecture=actor_architecture,
         )
-        if shared_actor
-        else None
-    )
+
+    shared_policy = make_policy(first_agent) if shared_actor else None
     shared_critic = (
         SKRLValue(
             env.observation_spaces[first_agent],
@@ -1887,13 +2336,7 @@ def build_skrl_mappo_models(
         models[agent_id] = {
             "policy": shared_policy
             if shared_actor
-            else SKRLPolicy(
-                env.observation_spaces[agent_id],
-                env.action_spaces[agent_id],
-                env.device,
-                initial_log_std,
-                architecture=actor_architecture,
-            ),
+            else make_policy(agent_id),
             "value": shared_critic
             if shared_value
             else SKRLValue(
@@ -1965,6 +2408,40 @@ def _std_float(values: torch.Tensor) -> float:
 
 def _action_telemetry(action: torch.Tensor, cfg=None) -> dict[str, float | bool]:
     action = action.detach().float()
+    action_type = getattr(getattr(cfg, "planner", None), "action_type", None)
+    if action_type in {
+        "spatiotemporal_primitives",
+        "differential_trajectory_primitives",
+    }:
+        action_count = 47 if action_type == "differential_trajectory_primitives" else 40
+        telemetry = {
+            "action_mean": _mean_float(action),
+            "action_std": _std_float(action),
+            "action_min": float(action.min().cpu()),
+            "action_max": float(action.max().cpu()),
+            "action_hold_fraction": _mean_float((action == 0.0).float()),
+            "action_unique_fraction": float(
+                torch.unique(action).numel() / float(action_count)
+            ),
+            "action_near_zero": bool((action == 0.0).float().mean() > 0.80),
+            "action_saturated": False,
+        }
+        if action_type == "differential_trajectory_primitives":
+            telemetry.update(
+                action_forward_family_fraction=_mean_float(
+                    ((action >= 1.0) & (action <= 39.0)).float()
+                ),
+                action_reverse_family_fraction=_mean_float(
+                    ((action >= 40.0) & (action <= 42.0)).float()
+                ),
+                action_spin_family_fraction=_mean_float(
+                    ((action >= 43.0) & (action <= 44.0)).float()
+                ),
+                action_yield_family_fraction=_mean_float(
+                    ((action >= 45.0) & (action <= 46.0)).float()
+                ),
+            )
+        return telemetry
     abs_action = action.abs()
     forward = action[..., 0]
     turn = action[..., 1]
@@ -2003,6 +2480,46 @@ def _action_telemetry(action: torch.Tensor, cfg=None) -> dict[str, float | bool]
     telemetry.update(_stats("physical_rho", physical_rho))
     telemetry.update(_stats("physical_beta", physical_beta))
     return telemetry
+
+
+@torch.no_grad()
+def _categorical_policy_telemetry(
+    policy: Model,
+    env: MultiRoverGatheringSKRLEnv,
+) -> dict[str, float]:
+    """Measure exploration from probabilities, independently of sampled actions."""
+
+    if not isinstance(policy, SKRLCategoricalPolicy):
+        return {}
+    observations, _ = env.core.get_observations()
+    logits, _ = policy.compute(
+        {"observations": observations.reshape(-1, observations.shape[-1])}
+    )
+    probabilities = torch.softmax(logits.float(), dim=-1)
+    entropy = -(probabilities * probabilities.clamp_min(1.0e-12).log()).sum(dim=-1)
+    metrics = {
+        "policy_normalized_entropy": float(
+            (entropy / math.log(float(policy.action_count))).mean().cpu()
+        ),
+        "policy_effective_action_count": float(torch.exp(entropy).mean().cpu()),
+        "policy_hold_probability": float(probabilities[:, 0].mean().cpu()),
+    }
+    if policy.action_count == 47:
+        metrics.update(
+            policy_forward_family_probability=float(
+                probabilities[:, 1:40].sum(dim=-1).mean().cpu()
+            ),
+            policy_reverse_family_probability=float(
+                probabilities[:, 40:43].sum(dim=-1).mean().cpu()
+            ),
+            policy_spin_family_probability=float(
+                probabilities[:, 43:45].sum(dim=-1).mean().cpu()
+            ),
+            policy_yield_family_probability=float(
+                probabilities[:, 45:47].sum(dim=-1).mean().cpu()
+            ),
+        )
+    return metrics
 
 
 def _empty_done_counts() -> dict[str, int]:
@@ -2630,6 +3147,10 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
                 "kinematic_model_bicycle": float(
                     str(kinematics.get("kinematic_model", "unicycle")) == "bicycle"
                 ),
+                "kinematic_model_differential_drive": float(
+                    str(kinematics.get("kinematic_model", "unicycle"))
+                    == "differential_drive"
+                ),
                 "steering_angle_abs_mean": float(
                     kinematics["steering_angle"].detach().float().abs().mean().cpu()
                 ),
@@ -2644,6 +3165,22 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
                 ),
                 "turning_radius_mean": turning_radius_mean,
             }
+            wheel_commands = info.get("wheel_commands")
+            if wheel_commands is not None:
+                kinematics_metrics.update(
+                    left_wheel_speed_abs_mean=float(
+                        wheel_commands["left_radps"].detach().float().abs().mean().cpu()
+                    ),
+                    right_wheel_speed_abs_mean=float(
+                        wheel_commands["right_radps"].detach().float().abs().mean().cpu()
+                    ),
+                    wheel_speed_abs_max=float(
+                        torch.maximum(
+                            wheel_commands["left_radps"].detach().float().abs().amax(),
+                            wheel_commands["right_radps"].detach().float().abs().amax(),
+                        ).cpu()
+                    ),
+                )
             telemetry_state["kinematics"] = kinematics_metrics
             _accumulate_numeric_metrics(telemetry_state, "kinematics", kinematics_metrics)
         writer = telemetry_state.get("writer")
@@ -3025,6 +3562,11 @@ def append_metrics_jsonl(
 
 
 def _split_action(env: MultiRoverGatheringSKRLEnv, action: torch.Tensor) -> dict[str, torch.Tensor]:
+    if action.ndim == 2:
+        return {
+            agent: action[:, index]
+            for index, agent in enumerate(env.possible_agents)
+        }
     return {
         agent: action[:, index, :]
         for index, agent in enumerate(env.possible_agents)
@@ -3039,8 +3581,16 @@ def _policy_actions(
     actions = {}
     with torch.no_grad():
         for agent in env.possible_agents:
-            mean, _ = policy.compute({"observations": observations[agent]}, role="policy")
-            actions[agent] = mean.clamp(-1.0, 1.0)
+            output, _ = policy.compute({"observations": observations[agent]}, role="policy")
+            actions[agent] = (
+                output.argmax(dim=-1)
+                if env.cfg.planner.action_type
+                in {
+                    "spatiotemporal_primitives",
+                    "differential_trajectory_primitives",
+                }
+                else output.clamp(-1.0, 1.0)
+            )
     return actions
 
 
@@ -3064,8 +3614,13 @@ def evaluate_policy_signal(
     reward_sums: dict[str, float] = {}
     reward_counts: dict[str, int] = {}
     success_seen = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    collision_seen = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    timeout_seen = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
     first_done_step = torch.full((env.num_envs,), steps, dtype=torch.float32, device=env.device)
     active = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+    initial_metrics = compute_team_metrics(env.core.positions, env.core.velocities_xy)
+    initial_dmax = initial_metrics.dmax.detach().clone()
+    final_dmax = initial_dmax.clone()
 
     for step in range(1, steps + 1):
         if mode == "random":
@@ -3088,7 +3643,16 @@ def evaluate_policy_signal(
         done = info.get("done")
         if done is not None:
             done_now = done.done.detach().bool()
-            success_seen |= done.success.detach().bool()
+            step_metrics = info.get("metrics")
+            if step_metrics is not None:
+                final_dmax = torch.where(
+                    active,
+                    step_metrics.dmax.detach(),
+                    final_dmax,
+                )
+            success_seen |= active & done.success.detach().bool()
+            collision_seen |= active & done.collision.detach().bool()
+            timeout_seen |= active & done.timeout.detach().bool() & done_now
             first_done_step = torch.where(
                 active & done_now,
                 torch.full_like(first_done_step, float(step)),
@@ -3109,6 +3673,11 @@ def evaluate_policy_signal(
         f"{prefix}_mean_pairwise_distance": _mean_float(metrics.mean_pairwise_distance),
         f"{prefix}_mean_oracle_distance": _mean_float(oracle_distance),
         f"{prefix}_success_rate": _mean_float(success_seen.float()),
+        f"{prefix}_collision_rate": _mean_float(collision_seen.float()),
+        f"{prefix}_timeout_rate": _mean_float(timeout_seen.float()),
+        f"{prefix}_dmax_reduction_ratio": _mean_float(
+            final_dmax / initial_dmax.clamp_min(1.0e-6)
+        ),
         f"{prefix}_episode_length": _mean_float(first_done_step),
     }
     result.update(
@@ -3208,12 +3777,28 @@ def skrl_mappo_checkpoint_payload(
         "max_steer_angle_rad": float(
             low_level_control.get("max_steer_angle_rad", 0.610865)
         ),
+        "wheel_radius_m": float(low_level_control.get("wheel_radius_m", 0.098)),
+        "track_width_m": float(low_level_control.get("track_width_m", 0.376)),
+        "max_wheel_speed_radps": float(
+            low_level_control.get("max_wheel_speed_radps", 18.0)
+        ),
         "trajectory_geometry_method": str(
             trajectory_generator.get("geometry_method", "line")
         ),
         "observation_schema_version": observation_schema_version,
         "actor_obs_dim": actor_obs_dim,
         "critic_state_dim": critic_state_dim,
+        "action_type": str(raw_cfg.get("planner", {}).get("action_type", "local_subgoal_polar")),
+        "action_dim": int(raw_cfg.get("planner", {}).get("action_dim", 2)),
+        "action_distribution": (
+            "categorical"
+            if str(raw_cfg.get("planner", {}).get("action_type", "local_subgoal_polar"))
+            in {
+                "spatiotemporal_primitives",
+                "differential_trajectory_primitives",
+            }
+            else "gaussian"
+        ),
         "shared_actor": shared_actor,
         "centralized_critic": centralized_critic,
         "shared_value": shared_value,
@@ -3317,6 +3902,12 @@ def main() -> None:
     parser.add_argument("--eval-steps", type=int, default=None)
     parser.add_argument("--eval-seed-offset", type=int, default=None)
     parser.add_argument("--rollout-steps", type=int, default=None)
+    parser.add_argument(
+        "--actor-architecture",
+        choices=tuple(sorted(ACTOR_ARCHITECTURES)),
+        default=None,
+        help="Override the Actor architecture without changing the fixed experiment contract.",
+    )
     parser.add_argument("--bc-updates", type=int, default=None)
     parser.add_argument("--bc-batch-size", type=int, default=None)
     parser.add_argument(
@@ -3347,6 +3938,7 @@ def main() -> None:
     exp = raw_cfg.get("experiment", {})
     algo = raw_cfg.get("algorithm", {})
     cfg = cfg_from_experiment(args.config)
+    configured_strict_thresholds = strict_thresholds_from_config(raw_cfg)
     if args.device is not None:
         cfg.simulation.device = args.device
         raw_cfg.setdefault("experiment", {})["device"] = args.device
@@ -3358,19 +3950,45 @@ def main() -> None:
         raw_cfg.setdefault("experiment", {})["num_envs"] = args.num_envs
     if args.rollout_steps is not None:
         exp["rollout_steps"] = args.rollout_steps
+    if args.actor_architecture is not None:
+        algo["actor_architecture"] = args.actor_architecture
     if args.bc_updates is not None:
         algo["bc_updates"] = args.bc_updates
     if args.bc_batch_size is not None:
         algo["bc_batch_size"] = args.bc_batch_size
+    bounded_curriculum_cfg = raw_cfg.get("bounded_curriculum", {})
+    bounded_curriculum_stages = list(bounded_curriculum_cfg.get("stages", []))
+    bounded_curriculum_transition_mode = str(
+        bounded_curriculum_cfg.get("transition_mode", "performance_gated")
+    ).strip().lower()
+    if bounded_curriculum_transition_mode not in {
+        "performance_gated",
+        "fixed_schedule",
+    }:
+        raise SystemExit(
+            "bounded_curriculum.transition_mode must be performance_gated or "
+            "fixed_schedule."
+        )
+    if bool(bounded_curriculum_cfg.get("enabled", False)):
+        if not bounded_curriculum_stages:
+            raise SystemExit("bounded_curriculum.enabled requires at least one stage.")
+        for path, value in bounded_curriculum_stages[0].get(
+            "environment_overrides", {}
+        ).items():
+            _set_cfg_path(cfg, str(path), value)
+            _set_mapping_path(raw_cfg, str(path), value)
     init_checkpoint_value = args.init_checkpoint or algo.get("init_checkpoint")
-    if cfg.observation.schema_version == "ego_v8_decentralized_tiered":
+    if cfg.observation.schema_version in {
+        "ego_v8_decentralized_tiered",
+        "ego_v9_multiscale_intent",
+    }:
         if int(algo.get("bc_updates", algo.get("bc_steps", 0))) != 0:
             raise SystemExit(
-                "ego_v8_decentralized_tiered is a pure-RL contract and requires bc_updates=0."
+                "Tiered decentralized schemas are pure-RL contracts and require bc_updates=0."
             )
         if init_checkpoint_value is not None and str(init_checkpoint_value).strip():
             raise SystemExit(
-                "ego_v8_decentralized_tiered requires random initialization; "
+                "Tiered decentralized schemas require random initialization; "
                 "init_checkpoint must be null."
             )
     init_checkpoint_path: Path | None = None
@@ -3760,7 +4378,7 @@ def main() -> None:
             output=telemetry_dir / "final_eval_proxy.json",
             run_dir=run_dir,
         )
-        strict = proxy_acceptance(final_eval)
+        strict = proxy_acceptance(final_eval, configured_strict_thresholds)
         parameter_delta_sq = torch.zeros((), device=env.device)
         for initial, current in zip(
             random_initial_policy_parameters,
@@ -3883,6 +4501,14 @@ def main() -> None:
         return
 
     def write_interval_telemetry(step: int) -> None:
+        probability_metrics = _categorical_policy_telemetry(policy, env)
+        if probability_metrics:
+            telemetry_state.setdefault("action", {}).update(probability_metrics)
+            _accumulate_numeric_metrics(
+                telemetry_state,
+                "action",
+                probability_metrics,
+            )
         _snapshot_numeric_metrics(telemetry_state, "action", "action_window")
         _snapshot_numeric_metrics(telemetry_state, "reward", "reward_window")
         _snapshot_numeric_metrics(telemetry_state, "path_terrain", "path_terrain_window")
@@ -3956,6 +4582,81 @@ def main() -> None:
         else exp.get("checkpoint_interval", 0)
     )
     candidate_paths: list[Path] = []
+    rollout_steps = int(exp.get("rollout_steps", 32))
+    bounded_curriculum_enabled = bool(bounded_curriculum_cfg.get("enabled", False))
+    curriculum_state: dict[str, Any] = {
+        "enabled": bounded_curriculum_enabled,
+        "status": "disabled" if not bounded_curriculum_enabled else "running",
+        "transition_mode": bounded_curriculum_transition_mode,
+        "stage_index": 0,
+        "stage_start_timestep": 0,
+        "consecutive_passes": 0,
+        "records": [],
+        "last_evaluation_key": [-1, -1],
+        "actual_training_timesteps": int(args.timesteps),
+    }
+    curriculum_metrics_path = telemetry_dir / "bounded_curriculum_eval.jsonl"
+
+    if bounded_curriculum_enabled:
+        for index, stage in enumerate(bounded_curriculum_stages):
+            name = str(stage.get("name", f"stage_{index}"))
+            interval = int(stage.get("evaluation_interval_iterations", 0))
+            if bounded_curriculum_transition_mode == "fixed_schedule":
+                budget = int(stage.get("policy_iterations", 0))
+                if budget <= 0 or interval <= 0 or budget % interval != 0:
+                    raise SystemExit(
+                        f"Invalid fixed curriculum limits for {name}: require a "
+                        "positive policy_iterations exactly divisible by the "
+                        "evaluation_interval_iterations."
+                    )
+            else:
+                minimum = int(stage.get("minimum_policy_iterations", 0))
+                maximum = int(stage.get("maximum_policy_iterations", 0))
+                required = int(stage.get("consecutive_passes", 0))
+                if not (0 < minimum <= maximum and interval > 0 and required > 0):
+                    raise SystemExit(
+                        f"Invalid bounded curriculum limits for {name}: require "
+                        "0 < minimum <= maximum, evaluation_interval > 0, and "
+                        "consecutive_passes > 0."
+                    )
+        required_max_timesteps = sum(
+            int(
+                stage[
+                    "policy_iterations"
+                    if bounded_curriculum_transition_mode == "fixed_schedule"
+                    else "maximum_policy_iterations"
+                ]
+            )
+            * rollout_steps
+            for stage in bounded_curriculum_stages
+        )
+        extension_iterations = int(
+            bounded_curriculum_cfg.get("maximum_extension_iterations", 0)
+        )
+        if (
+            bounded_curriculum_transition_mode == "fixed_schedule"
+            and extension_iterations != 0
+        ):
+            raise SystemExit(
+                "fixed_schedule curriculum forbids extension iterations so that "
+                "architecture budgets remain identical."
+            )
+        allowed_timesteps = (
+            required_max_timesteps + extension_iterations * rollout_steps
+        )
+        if (
+            bounded_curriculum_transition_mode == "fixed_schedule"
+            and int(args.timesteps) != allowed_timesteps
+        ):
+            raise SystemExit(
+                "Fixed curriculum requires the exact declared budget: "
+                f"requested {args.timesteps} timesteps, required {allowed_timesteps}."
+            )
+        if int(args.timesteps) > allowed_timesteps:
+            raise SystemExit(
+                "Bounded curriculum refuses an open-ended budget: "
+                f"requested {args.timesteps} timesteps, maximum is {allowed_timesteps}."
+            )
 
     def save_candidate(timestep: int) -> Path:
         candidate_path = checkpoint_dir / f"ppo_timestep_{timestep:06d}.pt"
@@ -4009,7 +4710,8 @@ def main() -> None:
             ),
             candidate_path,
         )
-        candidate_paths.append(candidate_path)
+        if candidate_path not in candidate_paths:
+            candidate_paths.append(candidate_path)
         return candidate_path
 
     # Keep the exact initialized policy as a selectable baseline.  This makes
@@ -4024,6 +4726,170 @@ def main() -> None:
         cfg.initial_state.progress_timestep_override = 0
         env.core.reset()
 
+    def evaluate_bounded_curriculum(completed_timestep: int) -> None:
+        stage_index = int(curriculum_state["stage_index"])
+        stage = bounded_curriculum_stages[stage_index]
+        stage_name = str(stage.get("name", f"stage_{stage_index}"))
+        stage_iterations = (
+            completed_timestep - int(curriculum_state["stage_start_timestep"])
+        ) // rollout_steps
+        interval = int(stage["evaluation_interval_iterations"])
+        if not _claim_curriculum_evaluation(
+            curriculum_state,
+            stage_index=stage_index,
+            stage_iterations=stage_iterations,
+            interval=interval,
+        ):
+            return
+
+        eval_cfg = copy.deepcopy(cfg)
+        eval_cfg.simulation.num_envs = int(
+            bounded_curriculum_cfg.get("evaluation_num_envs", eval_num_envs)
+        )
+        eval_cfg.seed = (
+            training_seed
+            + int(bounded_curriculum_cfg.get("evaluation_seed_offset", eval_seed_offset))
+            + stage_index * 1000
+        )
+        evaluation_env = MultiRoverGatheringSKRLEnv(eval_cfg)
+        evaluation = evaluate_policy_signal(
+            evaluation_env,
+            mode="policy",
+            policy=policy,
+            max_steps=int(bounded_curriculum_cfg.get("evaluation_steps", eval_steps)),
+        )
+        del evaluation_env
+        checks = _curriculum_gate_checks(evaluation, dict(stage.get("gate", {})))
+        fixed_schedule = bounded_curriculum_transition_mode == "fixed_schedule"
+        stage_budget = int(
+            stage[
+                "policy_iterations" if fixed_schedule else "maximum_policy_iterations"
+            ]
+        )
+        minimum_reached = (
+            stage_iterations >= stage_budget
+            if fixed_schedule
+            else stage_iterations >= int(stage["minimum_policy_iterations"])
+        )
+        passed = (
+            all(checks.values())
+            if fixed_schedule
+            else minimum_reached and all(checks.values())
+        )
+        curriculum_state["consecutive_passes"] = (
+            int(curriculum_state["consecutive_passes"]) + 1 if passed else 0
+        )
+        record = {
+            "stage": stage_name,
+            "stage_index": stage_index,
+            "stage_policy_iterations": stage_iterations,
+            "completed_timestep": completed_timestep,
+            "minimum_reached": minimum_reached,
+            "checks": checks,
+            "passed": passed,
+            "consecutive_passes": int(curriculum_state["consecutive_passes"]),
+            "required_consecutive_passes": (
+                None if fixed_schedule else int(stage["consecutive_passes"])
+            ),
+            "transition_due": fixed_schedule and stage_iterations >= stage_budget,
+            "metrics": evaluation,
+        }
+        curriculum_state["records"].append(record)
+        with curriculum_metrics_path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        transition_due = (
+            stage_iterations >= stage_budget
+            if fixed_schedule
+            else int(curriculum_state["consecutive_passes"])
+            >= int(stage["consecutive_passes"])
+        )
+        if transition_due:
+            save_candidate(completed_timestep)
+            if stage_index + 1 == len(bounded_curriculum_stages):
+                curriculum_state["status"] = "completed"
+                curriculum_state["actual_training_timesteps"] = completed_timestep
+                raise BoundedCurriculumStop(
+                    status="completed",
+                    timestep=completed_timestep,
+                    stage=stage_name,
+                )
+            next_index = stage_index + 1
+            next_stage = bounded_curriculum_stages[next_index]
+            for path, value in next_stage.get("environment_overrides", {}).items():
+                _set_cfg_path(cfg, str(path), value)
+                _set_mapping_path(raw_cfg, str(path), value)
+            if output_layout == "run":
+                config_path.write_text(
+                    yaml.safe_dump(raw_cfg, sort_keys=False),
+                    encoding="utf-8",
+                )
+            curriculum_state.update(
+                stage_index=next_index,
+                stage_start_timestep=completed_timestep,
+                consecutive_passes=0,
+            )
+            return
+
+        if (
+            not fixed_schedule
+            and stage_iterations >= int(stage["maximum_policy_iterations"])
+        ):
+            extension_iterations = int(
+                bounded_curriculum_cfg.get("maximum_extension_iterations", 0)
+            )
+            stage_records = [
+                item
+                for item in curriculum_state["records"]
+                if int(item["stage_index"]) == stage_index
+            ]
+            trend_window = int(bounded_curriculum_cfg.get("extension_trend_window", 3))
+            recent = stage_records[-trend_window:]
+            extension_allowed = (
+                stage_index + 1 == len(bounded_curriculum_stages)
+                and extension_iterations > 0
+                and not bool(curriculum_state.get("extension_used", False))
+                and len(recent) == trend_window
+            )
+            if extension_allowed:
+                first_metrics = recent[0]["metrics"]
+                last_metrics = recent[-1]["metrics"]
+                success_gain = float(last_metrics["eval_success_rate"]) - float(
+                    first_metrics["eval_success_rate"]
+                )
+                extension_allowed = (
+                    success_gain
+                    >= float(
+                        bounded_curriculum_cfg.get(
+                            "minimum_extension_success_gain", 0.02
+                        )
+                    )
+                    and float(last_metrics["eval_collision_rate"])
+                    <= float(first_metrics["eval_collision_rate"])
+                    and float(last_metrics["eval_timeout_rate"])
+                    <= float(first_metrics["eval_timeout_rate"])
+                )
+            if extension_allowed:
+                stage["maximum_policy_iterations"] = (
+                    int(stage["maximum_policy_iterations"]) + extension_iterations
+                )
+                curriculum_state["extension_used"] = True
+                curriculum_state["extension_reason"] = {
+                    "success_gain": success_gain,
+                    "collision_non_worsening": True,
+                    "timeout_non_worsening": True,
+                    "extension_iterations": extension_iterations,
+                }
+                return
+            curriculum_state["status"] = "failed"
+            curriculum_state["actual_training_timesteps"] = completed_timestep
+            save_candidate(completed_timestep)
+            raise BoundedCurriculumStop(
+                status="failed",
+                timestep=completed_timestep,
+                stage=stage_name,
+            )
+
     def post_interaction_with_housekeeping(*, timestep: int, timesteps: int) -> None:
         original_post_interaction(timestep=timestep, timesteps=timesteps)
         completed_timestep = timestep + 1
@@ -4031,17 +4897,33 @@ def main() -> None:
             cfg.initial_state.progress_timestep_override = completed_timestep
         if checkpoint_interval > 0 and completed_timestep % checkpoint_interval == 0:
             save_candidate(completed_timestep)
+        if bounded_curriculum_enabled:
+            evaluate_bounded_curriculum(completed_timestep)
 
-    if checkpoint_interval > 0 or use_initial_state_curriculum:
+    if checkpoint_interval > 0 or use_initial_state_curriculum or bounded_curriculum_enabled:
         agent.post_interaction = post_interaction_with_housekeeping
 
     if env.device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(env.device)
     start_time = time.perf_counter()
     telemetry_state["training_start_time"] = start_time
-    trainer.train()
-    if not candidate_paths or candidate_paths[-1].stem != f"ppo_timestep_{args.timesteps:06d}":
-        save_candidate(args.timesteps)
+    try:
+        trainer.train()
+    except BoundedCurriculumStop as stop:
+        if stop.status == "failed":
+            print(
+                f"Bounded curriculum stopped at {stop.stage}: maximum budget reached "
+                "without the required consecutive frozen evaluations."
+            )
+    actual_training_timesteps = int(curriculum_state["actual_training_timesteps"])
+    if bounded_curriculum_enabled and curriculum_state["status"] == "running":
+        curriculum_state["status"] = "budget_exhausted"
+        curriculum_state["actual_training_timesteps"] = actual_training_timesteps
+    if (
+        not candidate_paths
+        or candidate_paths[-1].stem != f"ppo_timestep_{actual_training_timesteps:06d}"
+    ):
+        save_candidate(actual_training_timesteps)
     wall_time_s = time.perf_counter() - start_time
     peak_cuda_memory_mb = (
         torch.cuda.max_memory_allocated(env.device) / (1024.0 * 1024.0)
@@ -4206,7 +5088,11 @@ def main() -> None:
     candidate_evaluations: list[dict] = []
     best_candidate = candidate_paths[-1]
     final_eval: dict | None = None
-    strict = {"passed": False, "checks": {}, "thresholds": STRICT_THRESHOLDS}
+    strict = {
+        "passed": False,
+        "checks": {},
+        "thresholds": configured_strict_thresholds,
+    }
     if output_layout == "run":
         from evaluate_proxy_policy import evaluate_checkpoint
 
@@ -4242,7 +5128,7 @@ def main() -> None:
             if args.selection_gate == "progress_preserving_long"
             else SUCCESS_PROGRESS_LONG_THRESHOLDS
             if args.selection_gate == "success_progress_long"
-            else STRICT_THRESHOLDS
+            else configured_strict_thresholds
         )
         ranker = (
             pure_rl_long_checkpoint_rank
@@ -4273,7 +5159,7 @@ def main() -> None:
             output=telemetry_dir / "final_eval_proxy.json",
             run_dir=run_dir,
         )
-        strict = proxy_acceptance(final_eval)
+        strict = proxy_acceptance(final_eval, configured_strict_thresholds)
         (telemetry_dir / "eval_metrics.json").write_text(
             json.dumps(
                 {
@@ -4307,7 +5193,7 @@ def main() -> None:
         telemetry_dir,
         build_training_telemetry(
             env,
-            timesteps=args.timesteps,
+            timesteps=actual_training_timesteps,
             wall_time_s=wall_time_s,
             checkpoint_path=checkpoint_path,
             training_semantics=training_semantics,
@@ -4322,7 +5208,11 @@ def main() -> None:
         filename=metrics_filename,
     )
     summary = {
-        "status": "ok",
+        "status": (
+            "ok"
+            if curriculum_state["status"] in {"disabled", "completed"}
+            else f"bounded_curriculum_{curriculum_state['status']}"
+        ),
         "backend": "skrl.mappo",
         "training_semantics": training_semantics,
         "shared_actor": shared_actor,
@@ -4340,8 +5230,8 @@ def main() -> None:
         "trajectory_geometry_method": cfg.trajectory_generator.geometry_method,
         "seed": training_seed,
         "num_envs": cfg.simulation.num_envs,
-        "timesteps": args.timesteps,
-        "env_steps": args.timesteps * cfg.simulation.num_envs,
+        "timesteps": actual_training_timesteps,
+        "env_steps": actual_training_timesteps * cfg.simulation.num_envs,
         "rollout_steps": int(exp.get("rollout_steps", 32)),
         "device": str(env.device),
         "wall_time_s": wall_time_s,
@@ -4393,6 +5283,7 @@ def main() -> None:
         "post_training_eval": post_training_eval,
         "final_eval": final_eval,
         "strict_acceptance": strict,
+        "bounded_curriculum": curriculum_state,
     }
     if output_layout == "run":
         summary_path = telemetry_dir / "summary.json"
@@ -4405,11 +5296,15 @@ def main() -> None:
             "producer": "scripts/train_skrl_mappo.py",
             "command": " ".join(sys.argv),
             "summary": {
-                "status": "candidate" if not strict["passed"] else "proxy_passed",
+                "status": (
+                    f"bounded_curriculum_{curriculum_state['status']}"
+                    if curriculum_state["status"] in {"failed", "budget_exhausted"}
+                    else "candidate" if not strict["passed"] else "proxy_passed"
+                ),
                 "seed": training_seed,
                 "device": str(env.device),
-                "timesteps": args.timesteps,
-                "env_steps": args.timesteps * cfg.simulation.num_envs,
+                "timesteps": actual_training_timesteps,
+                "env_steps": actual_training_timesteps * cfg.simulation.num_envs,
                 "observation_schema_version": cfg.observation.schema_version,
                 "actor_obs_dim": cfg.actor_obs_dim,
                 "critic_state_dim": cfg.critic_state_dim,
@@ -4439,6 +5334,8 @@ def main() -> None:
             sort_keys=False,
         )
     )
+    if curriculum_state["status"] in {"failed", "budget_exhausted"}:
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

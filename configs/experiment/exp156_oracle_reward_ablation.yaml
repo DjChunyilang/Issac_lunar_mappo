@@ -1,0 +1,14 @@
+extends: exp156_differential_multiscale_ablation.yaml
+
+experiment:
+  name: exp156_oracle_reward_ablation
+
+reward:
+  weights:
+    oracle: 0.5
+
+algorithm:
+  training_semantics: exp156_oracle_reward_ablation
+  bc_updates: 0
+  init_checkpoint: null
+

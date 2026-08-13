@@ -12,6 +12,10 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import (
     SuccessThresholdsCfg,
 )
 from lunar_rover_tasks.tasks.multi_rover_gathering.metrics import TeamMetrics
+from lunar_rover_tasks.tasks.multi_rover_gathering.action_interpreter import (
+    PRIMITIVE_HOLD,
+    PRIMITIVE_SPIN,
+)
 from lunar_rover_tasks.tasks.multi_rover_gathering.trajectory_generator import Trajectory
 from lunar_rover_tasks.utils.math_utils import wrap_to_pi
 
@@ -71,6 +75,48 @@ def interpolate_trajectory_point(
     return torch.lerp(lower_points, upper_points, alpha[..., None])
 
 
+def interpolate_trajectory_sample(
+    values: torch.Tensor,
+    timestamps: torch.Tensor,
+    query_time_s: float,
+) -> torch.Tensor:
+    """Interpolate one scalar trajectory channel at a physical lookahead."""
+
+    query = torch.full_like(timestamps[..., 0], float(query_time_s))
+    n_points = timestamps.shape[-1]
+    upper = (timestamps < query[..., None]).sum(dim=-1).clamp(1, n_points - 1)
+    lower = upper - 1
+    lower_value = torch.gather(values, 2, lower[..., None]).squeeze(-1)
+    upper_value = torch.gather(values, 2, upper[..., None]).squeeze(-1)
+    lower_time = torch.gather(timestamps, 2, lower[..., None]).squeeze(-1)
+    upper_time = torch.gather(timestamps, 2, upper[..., None]).squeeze(-1)
+    alpha = ((query - lower_time) / (upper_time - lower_time).clamp_min(1.0e-8)).clamp(
+        0.0, 1.0
+    )
+    return torch.lerp(lower_value, upper_value, alpha)
+
+
+def interpolate_trajectory_angle(
+    values: torch.Tensor,
+    timestamps: torch.Tensor,
+    query_time_s: float,
+) -> torch.Tensor:
+    """Interpolate a wrapped angular channel along its shortest arc."""
+
+    query = torch.full_like(timestamps[..., 0], float(query_time_s))
+    n_points = timestamps.shape[-1]
+    upper = (timestamps < query[..., None]).sum(dim=-1).clamp(1, n_points - 1)
+    lower = upper - 1
+    lower_value = torch.gather(values, 2, lower[..., None]).squeeze(-1)
+    upper_value = torch.gather(values, 2, upper[..., None]).squeeze(-1)
+    lower_time = torch.gather(timestamps, 2, lower[..., None]).squeeze(-1)
+    upper_time = torch.gather(timestamps, 2, upper[..., None]).squeeze(-1)
+    alpha = ((query - lower_time) / (upper_time - lower_time).clamp_min(1.0e-8)).clamp(
+        0.0, 1.0
+    )
+    return wrap_to_pi(lower_value + alpha * wrap_to_pi(upper_value - lower_value))
+
+
 def compute_control(
     positions: torch.Tensor,
     yaws: torch.Tensor,
@@ -88,6 +134,53 @@ def compute_control(
         raise ValueError(f"Unsupported tracking_point_mode: {cfg.tracking_point_mode}")
     delta = target[..., :2] - positions[..., :2]
     distance = torch.linalg.norm(delta, dim=-1)
+
+    if trajectory.primitive_type is not None:
+        if trajectory.motion_direction is None:
+            raise ValueError("Primitive trajectories require motion_direction samples.")
+        if cfg.tracking_point_mode == "fixed_index":
+            index = min(1, trajectory.headings.shape[-1] - 1)
+            desired_yaw = trajectory.headings[..., index]
+            reference_speed = trajectory.reference_speed[..., index]
+            motion_direction = trajectory.motion_direction[..., index]
+            primitive_type = trajectory.primitive_type[..., index]
+        else:
+            if planning_dt is None:
+                raise ValueError("Primitive planning-time tracking requires planning_dt.")
+            desired_yaw = interpolate_trajectory_angle(
+                trajectory.headings,
+                trajectory.timestamps,
+                planning_dt,
+            )
+            reference_speed = interpolate_trajectory_sample(
+                trajectory.reference_speed,
+                trajectory.timestamps,
+                planning_dt,
+            )
+            motion_direction = interpolate_trajectory_sample(
+                trajectory.motion_direction,
+                trajectory.timestamps,
+                planning_dt,
+            )
+            primitive_type = trajectory.primitive_type[..., 0]
+        heading_error = wrap_to_pi(desired_yaw - yaws)
+        speed_limit = torch.minimum(
+            reference_speed.abs(),
+            torch.full_like(reference_speed, float(cfg.max_linear_speed)),
+        )
+        linear_magnitude = torch.minimum(cfg.k_linear * distance, speed_limit)
+        linear = torch.sign(motion_direction) * linear_magnitude
+        angular = torch.clamp(
+            cfg.k_angular * heading_error,
+            -cfg.max_angular_speed,
+            cfg.max_angular_speed,
+        )
+        hold = primitive_type == PRIMITIVE_HOLD
+        spin = primitive_type == PRIMITIVE_SPIN
+        linear = torch.where(hold | spin, torch.zeros_like(linear), linear)
+        angular = torch.where(hold, torch.zeros_like(angular), angular)
+        return ControlCommand(linear=linear, angular=angular)
+
     desired_yaw = torch.atan2(delta[..., 1], delta[..., 0])
     heading_error = wrap_to_pi(desired_yaw - yaws)
     linear = torch.clamp(cfg.k_linear * distance, 0.0, cfg.max_linear_speed)

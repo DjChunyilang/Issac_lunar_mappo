@@ -67,11 +67,23 @@ def resolve_checkpoint_name(raw_cfg: dict[str, Any], config_path: str | Path) ->
 
 
 def observation_interface_metadata(cfg: Any) -> dict[str, Any]:
-    return {
+    metadata = {
         "observation_schema_version": str(cfg.observation.schema_version),
         "actor_obs_dim": int(cfg.actor_obs_dim),
         "critic_state_dim": int(cfg.critic_state_dim),
     }
+    if str(cfg.observation.schema_version) in {
+        "ego_v9_multiscale_intent",
+        "ego_v10_multiscale_diff_intent",
+    }:
+        metadata.update(
+            {
+                "action_type": str(cfg.planner.action_type),
+                "action_dim": int(cfg.planner.action_dim),
+                "action_distribution": "categorical",
+            }
+        )
+    return metadata
 
 
 def _metadata_value_with_default(

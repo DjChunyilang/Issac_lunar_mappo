@@ -1,0 +1,129 @@
+extends: exp125_decentralized_tiered_b0_pure_rl.yaml
+
+experiment:
+  name: exp155_multiscale_network_ablation
+  seed: 23
+  num_envs: 256
+  rollout_steps: 64
+  eval_num_envs: 384
+  eval_steps: 480
+  checkpoint_interval: 6400
+
+evaluation:
+  proxy_eval:
+    enabled: true
+    num_envs: 384
+    steps: 480
+    seed_offset: 15500
+  strict_thresholds:
+    dmax_reduction_ratio: 0.20
+    success_rate: 0.90
+    collision_rate: 0.02
+    timeout_rate: 0.10
+    timeout_operator: lt
+
+simulation:
+  episode_length_s: 96.0
+
+initial_state:
+  spawn_radius_min: 2.4
+  spawn_radius_max: 3.4
+  center_xy_range: 1.0
+  jitter_std: 0.25
+  curriculum_enabled: false
+
+planner:
+  action_type: spatiotemporal_primitives
+  action_dim: 40
+  rho_max: 1.6
+  beta_max: 1.0471975512
+  subgoal_filter:
+    enabled: false
+
+trajectory_generator:
+  geometry_method: quintic
+  n_trajectory_points: 12
+  reference_speed: 1.15
+  time_parameterization: arc_length_reference_speed
+
+low_level_control:
+  kinematic_model: bicycle
+  tracking_point_mode: planning_time
+  safety_projection_enabled: false
+  projection_directional_agent_scale: false
+  success_zone_damping_enabled: false
+  formation_center_correction_enabled: false
+  formation_center_local_flatness_search_enabled: false
+  terminal_slot_capture_enabled: false
+  flat_geometry_capture_enabled: false
+
+safety:
+  collision_termination_enabled: false
+
+observation:
+  communication_radius: 12.0
+  schema_version: ego_v9_multiscale_intent
+
+reward:
+  coefficients:
+    # Preserve the existing action-dependent quintic terrain-risk reward.
+    path_terrain_mean_cost: 0.26
+    path_terrain_max_cost: 0.16
+    path_terrain_relative_cost: 0.0
+    filter_raw_path_risk_cost: 0.0
+    filter_deviation_cost: 0.0
+
+algorithm:
+  mode: pure_rl
+  training_semantics: exp155_multiscale_network_ablation
+  actor_architecture: multiscale_n2_path_conditioned
+  critic_architecture: structured_v1
+  bc_updates: 0
+  init_checkpoint: null
+  teacher_mode: null
+  ppo_epochs: 5
+  mini_batches: 1
+  clip_epsilon: 0.15
+  learning_rate: 0.0001
+  gamma: 0.99
+  gae_lambda: 0.95
+
+network_ablation:
+  offline_role: diagnostic_only
+  candidates:
+    - multiscale_n0_mlp
+    - multiscale_n1_cnn
+    - multiscale_n2_path_conditioned
+  dataset_samples: 120000
+  train_samples: 80000
+  validation_samples: 20000
+  test_samples: 20000
+  terrain_seeds: [23, 31, 47]
+  epochs: 30
+  dense_path_spacing_m: 0.05
+  rl_finalists: 2
+  rl_policy_iterations: 800
+  max_actor_parameters: 120000
+  max_peak_memory_gb: 8.0
+  minimum_relative_throughput: 0.75
+
+full_rl_ablation:
+  candidates:
+    - multiscale_n0_mlp
+    - multiscale_n1_cnn
+    - multiscale_n2_path_conditioned
+  seed: 23
+  policy_iterations_per_stage: 800
+  stages: 3
+  timesteps: 153600
+  environment_interactions_per_candidate: 39321600
+  environment_interactions_total: 117964800
+
+curriculum_gate:
+  minimum_policy_iterations: 400
+  maximum_policy_iterations: 800
+  evaluation_interval_iterations: 100
+  consecutive_passes: 3
+  success_rate: 0.50
+  collision_rate: 0.20
+  dmax_reduction_ratio: 0.45

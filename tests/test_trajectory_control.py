@@ -37,7 +37,7 @@ def test_local_subgoal_trajectory_and_velocity_control_chain() -> None:
     )
     control = compute_control(positions, yaws, trajectory, cfg.low_level_control)
 
-    assert trajectory.packed.shape == (1, cfg.task.n_agents, 5, 6)
+    assert trajectory.packed.shape == (1, cfg.task.n_agents, 5, 9)
     assert torch.allclose(trajectory.points[:, :, 0], positions)
     assert torch.allclose(trajectory.points[:, :, -1], decoded.world_subgoal)
     assert torch.all(trajectory.timestamps[..., 1:] >= trajectory.timestamps[..., :-1])

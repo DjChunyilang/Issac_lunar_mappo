@@ -1,0 +1,24 @@
+extends: exp156_differential_multiscale_ablation.yaml
+
+experiment:
+  name: exp156_smoke
+  seed: 23
+  num_envs: 2
+  rollout_steps: 16
+  eval_num_envs: 8
+  eval_steps: 16
+  checkpoint_interval: 0
+
+evaluation:
+  proxy_eval:
+    enabled: false
+    num_envs: 8
+    steps: 16
+
+bounded_curriculum:
+  enabled: false
+  stages: []
+
+initial_state:
+  curriculum_enabled: false
+

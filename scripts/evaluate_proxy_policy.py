@@ -25,11 +25,18 @@ STRICT_PROXY_THRESHOLDS = {
 
 def proxy_acceptance(metrics: dict, thresholds: dict | None = None) -> dict:
     thresholds = thresholds or STRICT_PROXY_THRESHOLDS
+    timeout_operator = str(thresholds.get("timeout_operator", "le"))
+    if timeout_operator not in {"le", "lt"}:
+        raise ValueError("timeout_operator must be 'le' or 'lt'.")
     checks = {
         "dmax_reduction_ratio": metrics["dmax_reduction_ratio"] <= thresholds["dmax_reduction_ratio"],
         "success_rate": metrics["success_rate"] >= thresholds["success_rate"],
         "collision_rate": metrics["collision_rate"] <= thresholds["collision_rate"],
-        "timeout_rate": metrics["timeout_rate"] <= thresholds["timeout_rate"],
+        "timeout_rate": (
+            metrics["timeout_rate"] < thresholds["timeout_rate"]
+            if timeout_operator == "lt"
+            else metrics["timeout_rate"] <= thresholds["timeout_rate"]
+        ),
     }
     return {"passed": all(checks.values()), "checks": checks, "thresholds": thresholds}
 
@@ -837,6 +844,22 @@ def evaluate_checkpoint(
         "safe_success_rate": float((success_seen & final_safe).float().mean().detach().cpu()),
         "collision_rate": float(collision_seen.float().mean().detach().cpu()),
         "timeout_rate": float(timeout_seen.float().mean().detach().cpu()),
+        "episode_metrics": [
+            {
+                "episode_id": index,
+                "success": bool(success_seen[index].detach().cpu()),
+                "collision": bool(collision_seen[index].detach().cpu()),
+                "timeout": bool(timeout_seen[index].detach().cpu()),
+                "dmax_ratio": float(
+                    (
+                        final_dmax[index]
+                        / initial_dmax[index].clamp_min(1.0e-6)
+                    ).detach().cpu()
+                ),
+                "done_step": int(done_step[index].detach().cpu()),
+            }
+            for index in range(env.num_envs)
+        ],
         "finished_rate": float((~active).float().mean().detach().cpu()),
         "mean_done_step": float(done_step[done_step > 0].float().mean().detach().cpu())
         if (done_step > 0).any()

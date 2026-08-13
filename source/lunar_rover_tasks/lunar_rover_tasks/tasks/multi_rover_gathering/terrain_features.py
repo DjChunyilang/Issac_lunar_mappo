@@ -14,6 +14,19 @@ LOCAL_TERRAIN_GRID_X = (-0.4, 0.0, 0.4, 0.8, 1.2)
 LOCAL_TERRAIN_GRID_Y = (-0.8, -0.4, 0.0, 0.4, 0.8)
 LOCAL_TERRAIN_GRID_CHANNELS = ("relative_height", "risk")
 
+# The v9 decentralized policy uses a bounded body-frame multi-scale map.  The
+# near patch resolves the smallest configured crater rims, the middle patch
+# covers the complete action horizon, and the coarse patch supplies directional
+# context without constructing a global map.
+MULTISCALE_TERRAIN_FINE_X = (-0.4, -0.2, 0.0, 0.2, 0.4, 0.6, 0.8)
+MULTISCALE_TERRAIN_FINE_Y = (-0.8, -0.6, -0.4, -0.2, 0.0, 0.2, 0.4, 0.6, 0.8)
+MULTISCALE_TERRAIN_MEDIUM_X = (0.8, 1.2, 1.6)
+MULTISCALE_TERRAIN_MEDIUM_Y = (-1.2, -0.8, -0.4, 0.0, 0.4, 0.8, 1.2)
+MULTISCALE_TERRAIN_COARSE_X = (1.6, 2.4, 3.2, 4.0)
+MULTISCALE_TERRAIN_COARSE_Y = (-2.4, -1.6, -0.8, 0.0, 0.8, 1.6, 2.4)
+MULTISCALE_TERRAIN_DIMS = (126, 42, 56)
+MULTISCALE_TERRAIN_DIM = sum(MULTISCALE_TERRAIN_DIMS)
+
 
 @dataclass(slots=True)
 class TerrainRuntime:
@@ -25,6 +38,7 @@ class TerrainRuntime:
     amplitude_scale: torch.Tensor
     crater_radius_scale: torch.Tensor
     crater_depth_scale: torch.Tensor
+    topology_bucket: torch.Tensor
 
     def subset(self, env_ids: torch.Tensor) -> TerrainRuntime:
         return TerrainRuntime(
@@ -34,6 +48,7 @@ class TerrainRuntime:
             amplitude_scale=self.amplitude_scale[env_ids],
             crater_radius_scale=self.crater_radius_scale[env_ids],
             crater_depth_scale=self.crater_depth_scale[env_ids],
+            topology_bucket=self.topology_bucket[env_ids],
         )
 
     def to(self, device: torch.device | str, dtype: torch.dtype | None = None) -> TerrainRuntime:
@@ -47,6 +62,7 @@ class TerrainRuntime:
             amplitude_scale=self.amplitude_scale.to(**kwargs),
             crater_radius_scale=self.crater_radius_scale.to(**kwargs),
             crater_depth_scale=self.crater_depth_scale.to(**kwargs),
+            topology_bucket=self.topology_bucket.to(device=device),
         )
 
     def clone(self) -> TerrainRuntime:
@@ -57,6 +73,7 @@ class TerrainRuntime:
             amplitude_scale=self.amplitude_scale.clone(),
             crater_radius_scale=self.crater_radius_scale.clone(),
             crater_depth_scale=self.crater_depth_scale.clone(),
+            topology_bucket=self.topology_bucket.clone(),
         )
 
 
@@ -93,6 +110,7 @@ def make_terrain_runtime(
         amplitude_scale=ones.clone(),
         crater_radius_scale=ones.clone(),
         crater_depth_scale=ones.clone(),
+        topology_bucket=torch.zeros(num_envs, device=device, dtype=torch.long),
     )
 
 
@@ -122,6 +140,22 @@ def randomize_terrain_runtime(
     count = int(env_ids.numel())
     if count == 0:
         return
+    topology_profile = str(terrain_cfg.topology_profile).lower()
+    if topology_profile == "mixed_bottleneck_mix":
+        runtime.topology_bucket[env_ids] = env_ids.remainder(2)
+    elif topology_profile == "runtime_bucketed":
+        stage = str(terrain_cfg.topology_curriculum_stage).lower()
+        if stage == "open":
+            runtime.topology_bucket[env_ids] = 0
+        elif stage == "mixed_bottleneck":
+            runtime.topology_bucket[env_ids] = 1 + env_ids.remainder(2)
+        else:
+            raise ValueError(
+                "runtime_bucketed terrain requires topology_curriculum_stage "
+                f"open or mixed_bottleneck, got {terrain_cfg.topology_curriculum_stage}."
+            )
+    else:
+        runtime.topology_bucket[env_ids] = 0
     if not terrain_cfg.randomize_per_reset:
         runtime.translation_xy[env_ids] = 0.0
         runtime.yaw[env_ids] = 0.0
@@ -288,7 +322,60 @@ def _heightfield_height(
             + 0.45 * torch.sin(1.7 * k * x + phase) * torch.sin(1.3 * k * y)
         )
 
-    if terrain_cfg.type == "lunar_crater_proxy" or terrain_cfg.crater_count > 0:
+    topology_profile = str(terrain_cfg.topology_profile).lower()
+    if topology_profile not in {
+        "procedural",
+        "open",
+        "mixed",
+        "bottleneck",
+        "mixed_bottleneck_mix",
+        "runtime_bucketed",
+    }:
+        raise ValueError(f"Unsupported terrain topology_profile: {terrain_cfg.topology_profile}")
+    if topology_profile in {"bottleneck", "mixed_bottleneck_mix", "runtime_bucketed"}:
+        wall_half_width = max(float(terrain_cfg.bottleneck_wall_half_width), 1.0e-3)
+        gap_half_width = max(float(terrain_cfg.bottleneck_gap_half_width), 1.0e-3)
+        # A smooth ridge spans the map except for one central passage. Its
+        # slope, not an invisible obstacle mask, makes the wall non-traversable.
+        ridge = torch.exp(-0.5 * (x / wall_half_width).square())
+        passage = 1.0 - torch.exp(-0.5 * (y / gap_half_width).pow(4))
+        bottleneck_weight: torch.Tensor | float = 1.0
+        if topology_profile == "mixed_bottleneck_mix":
+            if runtime is None:
+                raise ValueError(
+                    "mixed_bottleneck_mix requires per-environment TerrainRuntime."
+                )
+            bottleneck_weight = _runtime_scalar(
+                runtime.topology_bucket.to(dtype=xy.dtype), xy
+            )
+        elif topology_profile == "runtime_bucketed":
+            if runtime is None:
+                bottleneck_weight = (
+                    0.0
+                    if str(terrain_cfg.topology_curriculum_stage).lower() == "open"
+                    else 1.0
+                )
+            else:
+                bottleneck_weight = _runtime_scalar(
+                    (runtime.topology_bucket == 2).to(dtype=xy.dtype), xy
+                )
+        height = height + (
+            float(terrain_cfg.bottleneck_wall_height)
+            * bottleneck_weight
+            * ridge
+            * passage
+        )
+
+    crater_profile_enabled = topology_profile != "open"
+    if topology_profile == "runtime_bucketed":
+        crater_profile_enabled = (
+            bool((runtime.topology_bucket > 0).any())
+            if runtime is not None
+            else str(terrain_cfg.topology_curriculum_stage).lower() != "open"
+        )
+    if crater_profile_enabled and (
+        terrain_cfg.type == "lunar_crater_proxy" or terrain_cfg.crater_count > 0
+    ):
         centers, radii = _crater_layout(terrain_cfg, xy.device, xy.dtype, runtime)
         if centers.numel() > 0:
             if runtime is None:
@@ -309,7 +396,13 @@ def _heightfield_height(
             bowl_profile = torch.clamp(1.0 - normalized_distance.square(), min=0.0).square()
             rim_width = 0.22
             rim_profile = torch.exp(-((normalized_distance - 1.0) / rim_width).square())
-            height = height + (-depth * bowl_profile + rim_height * rim_profile).sum(dim=-1)
+            crater_height = (-depth * bowl_profile + rim_height * rim_profile).sum(dim=-1)
+            if topology_profile == "runtime_bucketed":
+                if runtime is not None:
+                    crater_height = crater_height * _runtime_scalar(
+                        (runtime.topology_bucket > 0).to(dtype=xy.dtype), xy
+                    )
+            height = height + crater_height
     return height
 
 
@@ -654,6 +747,100 @@ def local_terrain_grid_world_points(
         + cos_yaw * local_y
     )
     return torch.stack((world_x, world_y), dim=-1)
+
+
+def _body_grid_world_points(
+    positions: torch.Tensor,
+    yaws: torch.Tensor,
+    x_coordinates: tuple[float, ...],
+    y_coordinates: tuple[float, ...],
+) -> torch.Tensor:
+    x = torch.tensor(x_coordinates, device=positions.device, dtype=positions.dtype)
+    y = torch.tensor(y_coordinates, device=positions.device, dtype=positions.dtype)
+    local_x, local_y = torch.meshgrid(x, y, indexing="ij")
+    cos_yaw = torch.cos(yaws)[..., None, None]
+    sin_yaw = torch.sin(yaws)[..., None, None]
+    world_x = positions[..., 0, None, None] + cos_yaw * local_x - sin_yaw * local_y
+    world_y = positions[..., 1, None, None] + sin_yaw * local_x + cos_yaw * local_y
+    return torch.stack((world_x, world_y), dim=-1)
+
+
+def _build_body_terrain_grid(
+    positions: torch.Tensor,
+    yaws: torch.Tensor,
+    x_coordinates: tuple[float, ...],
+    y_coordinates: tuple[float, ...],
+    terrain_cfg: TerrainCfg | None,
+    runtime: TerrainRuntime | None,
+) -> torch.Tensor:
+    shape = (
+        *positions.shape[:-1],
+        len(x_coordinates),
+        len(y_coordinates),
+        len(LOCAL_TERRAIN_GRID_CHANNELS),
+    )
+    if _is_flat(terrain_cfg):
+        return torch.zeros(shape, dtype=positions.dtype, device=positions.device)
+    sample_xy = _body_grid_world_points(
+        positions,
+        yaws,
+        x_coordinates,
+        y_coordinates,
+    )
+    sample_features = _base_features(sample_xy, terrain_cfg, runtime)
+    base_height = _heightfield_height(positions[..., :2], terrain_cfg, runtime)[..., None, None]
+    relative_height = sample_features[..., 0] - base_height
+    risk = (1.0 - sample_features[..., 4]).clamp(0.0, 1.0)
+    return torch.stack((relative_height, risk), dim=-1)
+
+
+def build_multiscale_local_terrain_grids(
+    positions: torch.Tensor,
+    yaws: torch.Tensor,
+    terrain_cfg: TerrainCfg | None = None,
+    runtime: TerrainRuntime | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return the fine, medium and coarse v9 body-frame terrain grids."""
+
+    specifications = (
+        (MULTISCALE_TERRAIN_FINE_X, MULTISCALE_TERRAIN_FINE_Y),
+        (MULTISCALE_TERRAIN_MEDIUM_X, MULTISCALE_TERRAIN_MEDIUM_Y),
+        (MULTISCALE_TERRAIN_COARSE_X, MULTISCALE_TERRAIN_COARSE_Y),
+    )
+    return tuple(
+        _build_body_terrain_grid(
+            positions,
+            yaws,
+            x_coordinates,
+            y_coordinates,
+            terrain_cfg,
+            runtime,
+        )
+        for x_coordinates, y_coordinates in specifications
+    )
+
+
+def build_multiscale_local_terrain_observation(
+    positions: torch.Tensor,
+    yaws: torch.Tensor,
+    terrain_cfg: TerrainCfg | None = None,
+    runtime: TerrainRuntime | None = None,
+) -> torch.Tensor:
+    """Flatten and concatenate the three v9 grids in fine-to-coarse order."""
+
+    grids = build_multiscale_local_terrain_grids(
+        positions,
+        yaws,
+        terrain_cfg,
+        runtime,
+    )
+    observation = torch.cat(tuple(grid.flatten(start_dim=-3) for grid in grids), dim=-1)
+    if observation.shape[-1] != MULTISCALE_TERRAIN_DIM:
+        raise RuntimeError(
+            f"Multi-scale terrain observation has dim {observation.shape[-1]}, "
+            f"expected {MULTISCALE_TERRAIN_DIM}."
+        )
+    return observation
 
 
 def build_local_terrain_grid(

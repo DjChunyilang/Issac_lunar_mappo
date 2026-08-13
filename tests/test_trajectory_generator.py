@@ -11,7 +11,7 @@ def test_trajectory_shape_and_timestamps() -> None:
     positions = torch.zeros(2, 4, 3)
     subgoals = torch.ones(2, 4, 3)
     trajectory = generate_trajectory(positions, subgoals, cfg, dt=0.2)
-    assert trajectory.packed.shape == (2, 4, 6, 6)
+    assert trajectory.packed.shape == (2, 4, 6, 9)
     assert torch.all(trajectory.timestamps[..., 1:] >= trajectory.timestamps[..., :-1])
     assert torch.allclose(trajectory.points[:, :, 0], positions)
     assert torch.allclose(trajectory.points[:, :, -1], subgoals)
@@ -32,7 +32,7 @@ def test_line_and_quintic_generation_share_interface() -> None:
             current_yaws=current_yaws,
         )
 
-        assert trajectory.packed.shape == (2, 4, 8, 6)
+        assert trajectory.packed.shape == (2, 4, 8, 9)
         assert torch.isfinite(trajectory.packed).all()
         assert torch.all(trajectory.timestamps[..., 1:] >= trajectory.timestamps[..., :-1])
         assert torch.allclose(trajectory.points[:, :, 0], positions, atol=1.0e-6)

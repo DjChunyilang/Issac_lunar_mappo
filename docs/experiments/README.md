@@ -9,6 +9,8 @@ collision_rate <= 0.02
 timeout_rate == 0
 ```
 
+`exp156`使用置信区间验收：每层192个episode，timeout的Clopper–Pearson单侧95%上界必须严格低于0.10；不得用点估计或上述默认timeout门限替代。
+
 PhysX / Jackal tracking 结果是 high-fidelity validation，不等于 Isaac Lab 物理训练结果。使用 checkpoint 前优先检查对应 run 的 `metrics/checkpoint_status.json`。
 
 | 实验 | 地形 | 方法 | Seeds | Proxy strict | 当前结论 | 文档 |
@@ -124,5 +126,7 @@ PhysX / Jackal tracking 结果是 high-fidelity validation，不等于 Isaac Lab
 | exp151 | 冻结exp150双checkpoint | 碰撞前局部反事实责任与动作可控性 | 双checkpoint、双种子、512步 | 未通过 | 8/16步可行动率最小仅`0.5100/0.5616`；等量信用支持也仅`0.1777–0.2454`。停止终止信用，转向冻结可控性分解。 | [exp_151_collision_credit_causal_validity.md](exp_151_collision_credit_causal_validity.md) |
 | exp152 | 冻结exp150双checkpoint | 动作—quintic—控制与地形/集合约束分层 | 双checkpoint、双种子、512步 | 确认动作—quintic瓶颈 | 8步无约束可行动率最小`0.6648`，控制传递率仍不低于`0.8069`且几乎无饱和；只允许审计动作范围与quintic几何。 | [exp_152_action_planning_controllability_decomposition.md](exp_152_action_planning_controllability_decomposition.md) |
 | exp153 | 冻结exp150双checkpoint | 局部/全范围动作与quintic/line/endpoint分离 | 双checkpoint、双种子、512步 | 混合瓶颈 | 网格quintic最小`0.7536`、endpoint恒为1，但局部恢复和quintic损失均不足；t2048途中交叉损失升至约35%–37%，只允许双车联合反事实审计。 | [exp_153_action_range_quintic_geometry_audit.md](exp_153_action_range_quintic_geometry_audit.md) |
+| exp155 | Open/Mixed/Bottleneck多尺度地形 | 291维观测 + 40维时空动作 | N0完成后停止；N1/N2未启动 | 排除 | `stopped_design_revision`；旧接口结果只作hold塌缩证据，不进入排名。 | [exp_155_multiscale_network_ablation.md](exp_155_multiscale_network_ablation.md) |
+| exp156 | Open/Mixed/Bottleneck多尺度地形 | 295维观测 + 47维差速原语 + 950维Critic；N0/N1完整训练，N2仅工程smoke | seed23，N0/N1各39.3M与1152配对场景 | 停止，0/6 strict | N0/N1 success为0/0.0017、timeout为0.9271/0.9852；地板效应使架构排名无效。N2完整训练取消，修复CUDA连续性后smoke通过；N1仅作临时CNN基线。 | [exp_156_differential_multiscale_ablation.md](exp_156_differential_multiscale_ablation.md) |
 
 新增实验时，在这里加一行，并在本目录创建独立的 `exp_###_*.md` 文档。日期流水账放入 `docs/archive/`，不要继续堆到当前实验文档里。

@@ -63,6 +63,8 @@ class InitialStateCfg:
     curriculum_warmup_timesteps: int = 0
     curriculum_ramp_timesteps: int = 1
     progress_timestep_override: int = -1
+    randomize_formation_rotation: bool = False
+    randomize_agent_yaws: bool = False
 
 
 @dataclass(slots=True)
@@ -132,6 +134,7 @@ class TrajectoryGeneratorCfg:
     # ``planning_step`` preserves the historical fixed-dt timestamp contract.
     # New physically timed runs explicitly opt into arc-length timing.
     time_parameterization: str = "planning_step"
+    rotation_reference_speed: float = 1.4
 
 
 @dataclass(slots=True)
@@ -140,6 +143,9 @@ class LowLevelControlCfg:
     kinematic_model: str = "unicycle"
     wheelbase_m: float = 0.65
     max_steer_angle_rad: float = 0.610865
+    wheel_radius_m: float = 0.098
+    track_width_m: float = 0.376
+    max_wheel_speed_radps: float = 18.0
     max_linear_speed: float = 1.0
     max_angular_speed: float = 2.5
     k_linear: float = 1.6
@@ -199,6 +205,14 @@ class LowLevelControlCfg:
 @dataclass(slots=True)
 class TerrainCfg:
     type: str = "flat_proxy"
+    # Deterministic evaluation/training profile. ``bottleneck`` adds one
+    # smooth, traversability-limited ridge with a central executable passage;
+    # it changes terrain only and never enters the policy observation as a label.
+    topology_profile: str = "procedural"
+    topology_curriculum_stage: str = "open"
+    bottleneck_wall_height: float = 0.45
+    bottleneck_wall_half_width: float = 0.50
+    bottleneck_gap_half_width: float = 0.50
     amplitude: float = 0.0
     wavelength: float = 4.0
     roughness_scale: float = 1.0
@@ -327,6 +341,7 @@ class SafetyCfg:
     world_xy_limit: float = 12.0
     collision_distance: float = 0.28
     near_distance: float = 0.65
+    collision_termination_enabled: bool = True
 
 
 @dataclass(slots=True)
@@ -341,9 +356,30 @@ class ObservationCfg:
 
     @property
     def effective_neighbor_dim(self) -> int:
+        if self.schema_version == "ego_v10_multiscale_diff_intent":
+            return 17
+        if self.schema_version == "ego_v9_multiscale_intent":
+            return 16
         if self.schema_version == "ego_v8_decentralized_tiered":
             return 12
         return self.neighbor_dim
+
+    @property
+    def effective_ego_dim(self) -> int:
+        if self.schema_version == "ego_v10_multiscale_diff_intent":
+            return 15
+        if self.schema_version == "ego_v9_multiscale_intent":
+            return 14
+        return self.ego_dim
+
+    @property
+    def effective_terrain_dim(self) -> int:
+        if self.schema_version in {
+            "ego_v9_multiscale_intent",
+            "ego_v10_multiscale_diff_intent",
+        }:
+            return 224
+        return self.terrain_dim
 
     @property
     def terminal_gate_dim(self) -> int:
@@ -373,9 +409,9 @@ class ObservationCfg:
     @property
     def actor_obs_dim(self) -> int:
         return (
-            self.ego_dim
+            self.effective_ego_dim
             + self.max_neighbors * self.effective_neighbor_dim
-            + self.terrain_dim
+            + self.effective_terrain_dim
             + self.aggregation_dim
             + self.terminal_gate_dim
             + self.gather_site_goal_dim
@@ -389,6 +425,7 @@ class StateCfg:
     terrain_state_dim: int = 5
     oracle_state_dim: int = 9
     include_terminal_min_pairwise: bool = False
+    include_multiscale_agent_terrain: bool = False
 
 
 @dataclass(slots=True)
@@ -421,13 +458,16 @@ class MultiRoverGatheringEnvCfg:
             or self.observation.schema_version == "ego_v4_terminal_gate"
             else 0
         )
-        return (
+        base_dim = (
             self.task.n_agents * self.state.agent_state_dim
             + self.state.team_state_dim
             + terminal_team_dim
             + self.state.terrain_state_dim
             + self.state.oracle_state_dim
         )
+        if self.state.include_multiscale_agent_terrain:
+            base_dim += self.task.n_agents * 224
+        return base_dim
 
 
 def make_debug_cfg(num_envs: int = 8, device: str = "cpu") -> MultiRoverGatheringEnvCfg:

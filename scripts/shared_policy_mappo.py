@@ -856,7 +856,14 @@ class SharedPolicyMAPPO(MAPPO):
                 "Loss / Collision cost value loss",
                 self.last_collision_cost_value_loss,
             )
-        self.track_data(
-            "Policy / Standard deviation (shared)",
-            self.shared_policy.distribution(role="policy").stddev.mean().item(),
-        )
+        distribution = self.shared_policy.distribution(role="policy")
+        if hasattr(distribution, "stddev"):
+            self.track_data(
+                "Policy / Standard deviation (shared)",
+                distribution.stddev.mean().item(),
+            )
+        else:
+            self.track_data(
+                "Policy / Categorical entropy (shared)",
+                distribution.entropy().mean().item(),
+            )

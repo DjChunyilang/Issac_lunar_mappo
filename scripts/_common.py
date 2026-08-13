@@ -109,6 +109,8 @@ def _apply_observation_values(cfg: MultiRoverGatheringEnvCfg, values: dict) -> N
             "ego_v6_gather_slot_goal",
             "ego_v7_gather_site_and_slot_goal",
             "ego_v8_decentralized_tiered",
+            "ego_v9_multiscale_intent",
+            "ego_v10_multiscale_diff_intent",
         }
         if schema_version not in supported_schemas:
             raise ValueError(
@@ -120,27 +122,36 @@ def _apply_observation_values(cfg: MultiRoverGatheringEnvCfg, values: dict) -> N
 
 def _apply_state_values(cfg: MultiRoverGatheringEnvCfg, values: dict) -> None:
     values = _require_mapping("state", values)
-    supported = {"include_terminal_min_pairwise"}
+    supported = {
+        "include_terminal_min_pairwise",
+        "include_multiscale_agent_terrain",
+    }
     unknown = sorted(key for key in values if key not in supported)
     if unknown:
         unknown_keys = ", ".join(f"state.{key}" for key in unknown)
         raise ValueError(
             f"Unsupported config key(s): {unknown_keys}. This loader only supports "
-            "'state.include_terminal_min_pairwise'; state dimensions are fixed by code."
+            "the fixed state feature flags; state dimensions are derived by code."
         )
     if "include_terminal_min_pairwise" in values:
         cfg.state.include_terminal_min_pairwise = bool(
             values["include_terminal_min_pairwise"]
         )
+    if "include_multiscale_agent_terrain" in values:
+        cfg.state.include_multiscale_agent_terrain = bool(
+            values["include_multiscale_agent_terrain"]
+        )
 
 
 def _apply_planner_values(cfg: MultiRoverGatheringEnvCfg, values: dict) -> None:
     values = _require_mapping("planner", values)
-    supported = {"rho_max", "beta_max", "subgoal_filter"}
+    supported = {"action_type", "action_dim", "rho_max", "beta_max", "subgoal_filter"}
     unknown = sorted(key for key in values if key not in supported)
     if unknown:
         unknown_keys = ", ".join(f"planner.{key}" for key in unknown)
         raise ValueError(f"Unsupported config key(s): {unknown_keys}.")
+    cfg.planner.action_type = str(values.get("action_type", cfg.planner.action_type))
+    cfg.planner.action_dim = int(values.get("action_dim", cfg.planner.action_dim))
     cfg.planner.rho_max = float(values.get("rho_max", cfg.planner.rho_max))
     cfg.planner.beta_max = float(values.get("beta_max", cfg.planner.beta_max))
     filter_values = _require_mapping(
@@ -197,6 +208,10 @@ def _apply_trajectory_generator_values(
         raise ValueError("trajectory_generator.quintic_tangent_scale must be non-negative.")
     if cfg.trajectory_generator.reference_speed <= 0.0:
         raise ValueError("trajectory_generator.reference_speed must be positive.")
+    if cfg.trajectory_generator.rotation_reference_speed <= 0.0:
+        raise ValueError(
+            "trajectory_generator.rotation_reference_speed must be positive."
+        )
     if cfg.trajectory_generator.time_parameterization not in {
         "planning_step",
         "arc_length_reference_speed",
@@ -212,12 +227,27 @@ def _apply_trajectory_generator_values(
 
 
 def _validate_low_level_control(cfg: MultiRoverGatheringEnvCfg) -> None:
-    if cfg.low_level_control.kinematic_model not in {"unicycle", "bicycle"}:
-        raise ValueError("low_level_control.kinematic_model must be one of: unicycle, bicycle.")
+    if cfg.low_level_control.kinematic_model not in {
+        "unicycle",
+        "bicycle",
+        "differential_drive",
+    }:
+        raise ValueError(
+            "low_level_control.kinematic_model must be one of: "
+            "unicycle, bicycle, differential_drive."
+        )
     if cfg.low_level_control.wheelbase_m <= 0.0:
         raise ValueError("low_level_control.wheelbase_m must be positive.")
     if cfg.low_level_control.max_steer_angle_rad <= 0.0:
         raise ValueError("low_level_control.max_steer_angle_rad must be positive.")
+    if cfg.low_level_control.wheel_radius_m <= 0.0:
+        raise ValueError("low_level_control.wheel_radius_m must be positive.")
+    if cfg.low_level_control.track_width_m <= 0.0:
+        raise ValueError("low_level_control.track_width_m must be positive.")
+    if cfg.low_level_control.max_wheel_speed_radps <= 0.0:
+        raise ValueError(
+            "low_level_control.max_wheel_speed_radps must be positive."
+        )
     if cfg.low_level_control.tracking_point_mode not in {
         "fixed_index",
         "planning_time",
@@ -516,6 +546,25 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     if cfg.initial_state.progress_timestep_override < -1:
         raise ValueError("initial_state.progress_timestep_override must be >= -1.")
     _apply_planner_values(cfg, planner)
+    if cfg.planner.action_type not in {
+        "local_subgoal_polar",
+        "spatiotemporal_primitives",
+        "differential_trajectory_primitives",
+    }:
+        raise ValueError(
+            "planner.action_type must be local_subgoal_polar or "
+            "spatiotemporal_primitives or differential_trajectory_primitives."
+        )
+    expected_action_dim = {
+        "local_subgoal_polar": 2,
+        "spatiotemporal_primitives": 40,
+        "differential_trajectory_primitives": 47,
+    }[cfg.planner.action_type]
+    if cfg.planner.action_dim != expected_action_dim:
+        raise ValueError(
+            f"planner.action_dim must be {expected_action_dim} for "
+            f"{cfg.planner.action_type}."
+        )
     _apply_trajectory_generator_values(cfg, trajectory_generator)
     _apply_values(cfg.low_level_control, low_level_control, "low_level_control")
     _validate_low_level_control(cfg)
@@ -592,14 +641,39 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
             "reward.coefficients.centroid_flatness_dmax_multiplier must be greater than 1."
         )
     _apply_observation_values(cfg, observation)
-    if cfg.observation.schema_version == "ego_v8_decentralized_tiered":
+    if cfg.observation.schema_version in {
+        "ego_v8_decentralized_tiered",
+        "ego_v9_multiscale_intent",
+        "ego_v10_multiscale_diff_intent",
+    }:
         if abs(float(cfg.observation.communication_radius) - 12.0) > 1.0e-9:
             raise ValueError(
-                "ego_v8_decentralized_tiered fixes observation.communication_radius at 12.0 m."
+                "Tiered decentralized schemas fix observation.communication_radius at 12.0 m."
             )
         if cfg.observation.max_neighbors != 3:
             raise ValueError(
-                "ego_v8_decentralized_tiered requires observation.max_neighbors=3."
+                "Tiered decentralized schemas require observation.max_neighbors=3."
+            )
+    if (
+        cfg.observation.schema_version == "ego_v9_multiscale_intent"
+        and cfg.planner.action_type != "spatiotemporal_primitives"
+    ):
+        raise ValueError(
+            "ego_v9_multiscale_intent requires planner.action_type="
+            "spatiotemporal_primitives."
+        )
+    if (
+        cfg.observation.schema_version == "ego_v10_multiscale_diff_intent"
+        and cfg.planner.action_type != "differential_trajectory_primitives"
+    ):
+        raise ValueError(
+            "ego_v10_multiscale_diff_intent requires planner.action_type="
+            "differential_trajectory_primitives."
+        )
+    if cfg.observation.schema_version == "ego_v10_multiscale_diff_intent":
+        if cfg.low_level_control.kinematic_model != "differential_drive":
+            raise ValueError(
+                "ego_v10_multiscale_diff_intent requires differential-drive kinematics."
             )
     has_gather_site_goal = cfg.observation.schema_version in {
         "ego_v5_gather_site_goal",
@@ -628,6 +702,13 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
             "observation schema."
         )
     _apply_state_values(cfg, state)
+    if (
+        cfg.observation.schema_version == "ego_v10_multiscale_diff_intent"
+        and not cfg.state.include_multiscale_agent_terrain
+    ):
+        raise ValueError(
+            "ego_v10_multiscale_diff_intent requires the 950-dim multiscale critic state."
+        )
     _apply_values(cfg.safety, safety, "safety")
     _apply_values(cfg.gather_point, gather_point, "gather_point")
     _validate_gather_point(cfg)
@@ -642,7 +723,11 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
                 "success_thresholds.min_pairwise_distance must satisfy "
                 "safety.collision_distance < min_pairwise_distance < success_thresholds.dmax."
             )
-    if cfg.observation.schema_version == "ego_v8_decentralized_tiered":
+    if cfg.observation.schema_version in {
+        "ego_v8_decentralized_tiered",
+        "ego_v9_multiscale_intent",
+        "ego_v10_multiscale_diff_intent",
+    }:
         forbidden = {
             "task.execution_slot_reward_target": cfg.task.execution_slot_reward_target,
             "task.dynamic_terminal_slot_goal_enabled": (
@@ -674,7 +759,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
         enabled = [name for name, value in forbidden.items() if bool(value)]
         if enabled:
             raise ValueError(
-                "ego_v8_decentralized_tiered forbids execution-time overrides: "
+                "Tiered decentralized schemas forbid execution-time overrides: "
                 + ", ".join(enabled)
                 + "."
             )

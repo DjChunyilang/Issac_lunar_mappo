@@ -13,8 +13,12 @@
 7. 使用某个 checkpoint 前，读取 `docs/experiments/` 下对应实验文档，并检查该 run 的 `metrics/checkpoint_status.json`。
 8. 训练、评估、可视化命令分别查看 [runbooks/train_proxy.md](runbooks/train_proxy.md)、[runbooks/train_skrl_mappo.md](runbooks/train_skrl_mappo.md)、[runbooks/evaluate_proxy.md](runbooks/evaluate_proxy.md)、[runbooks/physx_showcase.md](runbooks/physx_showcase.md) 和 [runbooks/visualize_results.md](runbooks/visualize_results.md)。
 9. 输出路径和 manifest 规范查看 [references/output_management.md](references/output_management.md)。
+10. 研究多智能体信用分配时，先读[面向导师的综述](references/marl_credit_assignment_review.md)，公式与工程边界见[技术附录](references/marl_credit_assignment_technical_appendix.md)，逐篇依据见[证据矩阵](references/marl_credit_assignment_evidence_matrix.csv)和[检索日志](references/marl_credit_assignment_search_log.md)。
+11. 研究“共同平地选择—终端稳定”耦合问题时，先读[去中心化共同选址与终端时空协调综述](references/decentralized_site_trajectory_coordination_review.md)，逐篇证据和检索边界分别见[证据矩阵](references/decentralized_site_trajectory_coordination_evidence_matrix.csv)与[检索日志](references/decentralized_site_trajectory_coordination_search_log.md)。该文档是 `exp156` 训练期间的研究提案，不代表当前执行链已经采用 D-STC。
 
 不要根据 GIF、单个 checkpoint 或 TensorBoard 曲线直接判断成功。严格 proxy 结论以 `_suite/metrics/strict_acceptance.json`、独立 `metrics/final_eval_proxy.json` 和 `metrics/checkpoint_status.json` 为准。PhysX / Jackal 结果是 high-fidelity closed-loop evaluation，不等于 Isaac 物理训练结果。
+
+Markdown数学公式统一使用 `$...$` 表示行内公式，使用独占一行的 `$$` 包围块级公式。不要使用兼容性不一致的反斜杠圆括号或反斜杠方括号分隔符；块级公式前后保留空行，公式不放入代码围栏。
 
 ## 当前主文档
 
@@ -27,8 +31,16 @@
 - [architecture/env_completion_plan.md](architecture/env_completion_plan.md)：高保真评估层推进清单。
 - [roadmap.md](roadmap.md)：近期优先级。
 - [experiments/README.md](experiments/README.md)：实验索引和通过/失败表。
+- [experiments/exp_156_differential_multiscale_ablation.md](experiments/exp_156_differential_multiscale_ablation.md)：当前差速原语三结构完整消融记录。
 - [interface_spec.md](interface_spec.md)：actor observation、critic state、action 和当前 observation schema。
 - [references/output_management.md](references/output_management.md)：输出目录规范和命名规则。
+- [references/marl_credit_assignment_review.md](references/marl_credit_assignment_review.md)：信用分配研究结论、唯一候选与有界对照。
+- [references/marl_credit_assignment_technical_appendix.md](references/marl_credit_assignment_technical_appendix.md)：反事实优势公式、CTDE边界、冻结诊断和后续接口。
+- [references/marl_credit_assignment_evidence_matrix.csv](references/marl_credit_assignment_evidence_matrix.csv)：48篇候选文献的质量、适配评分与排除理由。
+- [references/marl_credit_assignment.bib](references/marl_credit_assignment.bib)：核心论文BibTeX文献库。
+- [references/decentralized_site_trajectory_coordination_review.md](references/decentralized_site_trajectory_coordination_review.md)：共同平地选择、终端时空协调和 D-STC 候选路线综述。
+- [references/decentralized_site_trajectory_coordination_evidence_matrix.csv](references/decentralized_site_trajectory_coordination_evidence_matrix.csv)：31篇正式论文的来源、适配结论和限制。
+- [references/decentralized_site_trajectory_coordination_search_log.md](references/decentralized_site_trajectory_coordination_search_log.md)：检索式、质量边界、子研究分工和筛选规则。
 - [runbooks/setup_environment.md](runbooks/setup_environment.md)：Isaac Sim / Isaac Lab / SKRL / 本地任务包安装和验收。
 - [runbooks/train_skrl_mappo.md](runbooks/train_skrl_mappo.md)：SKRL-MAPPO proxy 训练诊断、exp012 / exp013 和 checkpoint 评估入口。
 - [runbooks/](runbooks/)：训练、评估、可视化和 PhysX 展示命令。

@@ -14,6 +14,7 @@ from _skrl_metadata import validate_checkpoint_compatibility
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore
 from train import Actor
 from train_skrl_mappo import (
+    SKRLCategoricalPolicy,
     SKRLPolicy,
     normalize_actor_architecture,
     normalize_critic_architecture,
@@ -63,15 +64,32 @@ def _load_policy_players(checkpoint: dict, cfg, device, raw_cfg: dict | None = N
         shape=(cfg.actor_obs_dim,),
         dtype=float,
     )
-    action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=float)
+    categorical = cfg.planner.action_type in {
+        "spatiotemporal_primitives",
+        "differential_trajectory_primitives",
+    }
+    action_space = (
+        gym.spaces.Discrete(int(cfg.planner.action_dim))
+        if categorical
+        else gym.spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=float)
+    )
     actor_architecture = str(metadata.get("actor_architecture", "mlp_v1"))
     policies = []
     for agent_id in agent_ids:
-        policy = SKRLPolicy(
-            obs_space,
-            action_space,
-            device,
-            architecture=actor_architecture,
+        policy = (
+            SKRLCategoricalPolicy(
+                obs_space,
+                action_space,
+                device,
+                architecture=actor_architecture,
+            )
+            if categorical
+            else SKRLPolicy(
+                obs_space,
+                action_space,
+                device,
+                architecture=actor_architecture,
+            )
         ).to(device)
         policy.load_state_dict(checkpoint[agent_id]["policy"])
         policy.eval()
@@ -80,9 +98,29 @@ def _load_policy_players(checkpoint: dict, cfg, device, raw_cfg: dict | None = N
     def act(actor_obs):
         actions = []
         for index, policy in enumerate(policies):
-            mean, _ = policy.compute({"observations": actor_obs[:, index, :]}, role="policy")
-            actions.append(mean)
+            output, _ = policy.compute(
+                {"observations": actor_obs[:, index, :]}, role="policy"
+            )
+            actions.append(
+                output.argmax(dim=-1) if categorical else output
+            )
         return torch.stack(actions, dim=1)
+
+    if categorical:
+        def logits(actor_obs):
+            values = []
+            for index, policy in enumerate(policies):
+                output, _ = policy.compute(
+                    {"observations": actor_obs[:, index, :]}, role="policy"
+                )
+                values.append(output)
+            return torch.stack(values, dim=1)
+
+        def probabilities(actor_obs):
+            return torch.softmax(logits(actor_obs), dim=-1)
+
+        act.logits = logits
+        act.probabilities = probabilities
 
     return act, "skrl.mappo"
 

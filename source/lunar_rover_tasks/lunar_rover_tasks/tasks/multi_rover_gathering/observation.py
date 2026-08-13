@@ -21,6 +21,7 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import Mult
 from lunar_rover_tasks.tasks.multi_rover_gathering.metrics import TeamMetrics
 from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
     build_local_terrain_grid,
+    build_multiscale_local_terrain_observation,
     flatten_local_terrain_grid,
 )
 
@@ -44,6 +45,48 @@ def build_ego_features(
             angular_velocities.unsqueeze(-1),
             speed_xy,
             abs_angular_velocity,
+        ),
+        dim=-1,
+    )
+
+
+def build_se2_invariant_ego_features(
+    positions: torch.Tensor,
+    yaws: torch.Tensor,
+    velocities_xy: torch.Tensor,
+    angular_velocities: torch.Tensor,
+) -> torch.Tensor:
+    """Ten-dimensional ego state invariant to common planar rigid transforms.
+
+    The historical slots for global x/y and world heading are canonicalized;
+    translational velocity is rotated into the rover body frame. This keeps
+    the stable ten-slot schema without leaking a world-axis gathering shortcut.
+    """
+
+    cos_yaw = torch.cos(yaws)
+    sin_yaw = torch.sin(yaws)
+    forward_velocity = (
+        cos_yaw * velocities_xy[..., 0] + sin_yaw * velocities_xy[..., 1]
+    )
+    lateral_velocity = (
+        -sin_yaw * velocities_xy[..., 0] + cos_yaw * velocities_xy[..., 1]
+    )
+    z = positions[..., 2]
+    speed = torch.linalg.vector_norm(velocities_xy, dim=-1)
+    zeros = torch.zeros_like(z)
+    ones = torch.ones_like(z)
+    return torch.stack(
+        (
+            zeros,
+            zeros,
+            z,
+            ones,
+            zeros,
+            forward_velocity,
+            lateral_velocity,
+            angular_velocities,
+            speed,
+            angular_velocities.abs(),
         ),
         dim=-1,
     )
@@ -166,9 +209,69 @@ def build_actor_observation(
     gather_site_point: torch.Tensor | None = None,
     gather_slot_point: torch.Tensor | None = None,
     communication_snapshot: CommunicationSnapshot | None = None,
+    committed_plan_local_xy: torch.Tensor | None = None,
+    committed_reference_speed: torch.Tensor | None = None,
+    committed_planned_yaw_delta: torch.Tensor | None = None,
+    coordination_token: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    ego = build_ego_features(positions, yaws, velocities_xy, angular_velocities)
-    if cfg.observation.schema_version == "ego_v8_decentralized_tiered":
+    ego = (
+        build_se2_invariant_ego_features(
+            positions,
+            yaws,
+            velocities_xy,
+            angular_velocities,
+        )
+        if cfg.observation.schema_version == "ego_v10_multiscale_diff_intent"
+        else build_ego_features(positions, yaws, velocities_xy, angular_velocities)
+    )
+    tiered_schema = cfg.observation.schema_version in {
+        "ego_v8_decentralized_tiered",
+        "ego_v9_multiscale_intent",
+        "ego_v10_multiscale_diff_intent",
+    }
+    multiscale_intent_schema = cfg.observation.schema_version in {
+        "ego_v9_multiscale_intent",
+        "ego_v10_multiscale_diff_intent",
+    }
+    if multiscale_intent_schema:
+        if (
+            committed_plan_local_xy is None
+            or committed_reference_speed is None
+            or coordination_token is None
+        ):
+            raise ValueError(
+                "ego_v9_multiscale_intent requires the local committed plan, "
+                "reference speed and coordination token."
+            )
+        if (
+            cfg.observation.schema_version == "ego_v10_multiscale_diff_intent"
+            and committed_planned_yaw_delta is None
+        ):
+            raise ValueError(
+                "ego_v10_multiscale_diff_intent requires the committed yaw change."
+            )
+        if committed_plan_local_xy.shape != positions[..., :2].shape:
+            raise ValueError("committed_plan_local_xy must match per-rover xy shape.")
+        if committed_reference_speed.shape != positions.shape[:-1]:
+            raise ValueError("committed_reference_speed must match per-rover shape.")
+        if coordination_token.shape != positions.shape[:-1]:
+            raise ValueError("coordination_token must match per-rover shape.")
+        ego = torch.cat(
+            (
+                ego,
+                committed_plan_local_xy,
+                committed_reference_speed.unsqueeze(-1),
+                *(
+                    (committed_planned_yaw_delta.unsqueeze(-1),)
+                    if cfg.observation.schema_version
+                    == "ego_v10_multiscale_diff_intent"
+                    else ()
+                ),
+                coordination_token.unsqueeze(-1),
+            ),
+            dim=-1,
+        )
+    if tiered_schema:
         if communication_snapshot is None:
             raise ValueError(
                 "ego_v8_decentralized_tiered requires an explicit communication cache snapshot."
@@ -190,16 +293,28 @@ def build_actor_observation(
             communication_radius,
             cfg.observation,
         )
-    if terrain_grid is None:
-        terrain_grid = build_local_terrain_grid(positions, yaws, cfg.terrain)
-    terrain = flatten_local_terrain_grid(terrain_grid)
-    if terrain.shape[-1] != cfg.observation.terrain_dim:
+    if multiscale_intent_schema:
+        terrain = build_multiscale_local_terrain_observation(
+            positions,
+            yaws,
+            cfg.terrain,
+        ) if terrain_grid is None else terrain_grid
+        if terrain.shape[-1] != cfg.observation.effective_terrain_dim:
+            raise ValueError(
+                f"Multi-scale terrain input has dim {terrain.shape[-1]}, "
+                f"expected {cfg.observation.effective_terrain_dim}."
+            )
+    else:
+        if terrain_grid is None:
+            terrain_grid = build_local_terrain_grid(positions, yaws, cfg.terrain)
+        terrain = flatten_local_terrain_grid(terrain_grid)
+    if terrain.shape[-1] != cfg.observation.effective_terrain_dim:
         raise ValueError(
             f"Local terrain grid has dim {terrain.shape[-1]}, "
-            f"expected {cfg.observation.terrain_dim}."
+            f"expected {cfg.observation.effective_terrain_dim}."
         )
     if communication_snapshot is not None and (
-        cfg.observation.schema_version == "ego_v8_decentralized_tiered"
+        tiered_schema
     ):
         aggregation = build_cached_aggregation_features(
             communication_snapshot,

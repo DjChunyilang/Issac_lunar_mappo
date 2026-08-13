@@ -61,6 +61,7 @@ def build_critic_state(
     success_hold_count: torch.Tensor,
     cfg: MultiRoverGatheringEnvCfg,
     terrain_grid: torch.Tensor | None = None,
+    multiscale_agent_terrain: torch.Tensor | None = None,
 ) -> torch.Tensor:
     agent = build_agent_global_state(positions, yaws, velocities_xy, angular_velocities)
     include_terminal_min_pairwise = (
@@ -86,4 +87,23 @@ def build_critic_state(
             f"expected {cfg.state.terrain_state_dim}."
         )
     oracle = build_oracle_features(positions, metrics.centroid, oracle_point)
-    return torch.cat((agent, team, terrain, oracle), dim=-1)
+    parts = [agent, team, terrain, oracle]
+    if cfg.state.include_multiscale_agent_terrain:
+        if multiscale_agent_terrain is None:
+            raise ValueError(
+                "The configured 950-dim critic state requires each rover's "
+                "224-dim multiscale terrain observation."
+            )
+        expected_shape = (*positions.shape[:2], 224)
+        if multiscale_agent_terrain.shape != expected_shape:
+            raise ValueError(
+                "Multiscale critic terrain has shape "
+                f"{tuple(multiscale_agent_terrain.shape)}, expected {expected_shape}."
+            )
+        parts.append(multiscale_agent_terrain.flatten(start_dim=1))
+    state = torch.cat(parts, dim=-1)
+    if state.shape[-1] != cfg.critic_state_dim:
+        raise ValueError(
+            f"Critic state has dim {state.shape[-1]}, expected {cfg.critic_state_dim}."
+        )
+    return state

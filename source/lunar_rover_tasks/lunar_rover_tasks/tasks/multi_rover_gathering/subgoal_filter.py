@@ -708,6 +708,7 @@ def apply_subgoal_filter(
         physical=filtered_physical,
         local_subgoal_xy=filtered_local_xy,
         world_subgoal=filtered_world,
+        reference_speed=decoded.reference_speed,
     )
     return SubgoalFilterResult(
         decoded=filtered,

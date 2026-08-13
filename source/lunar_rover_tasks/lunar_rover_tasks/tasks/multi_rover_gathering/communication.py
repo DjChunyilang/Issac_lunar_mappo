@@ -125,7 +125,9 @@ class TieredCommunicationCache:
     repeated reads cannot refresh a remote message or change its age.
     """
 
-    message_dim = 12
+    base_message_dim = 12
+    intent_message_dim = 16
+    differential_intent_message_dim = 17
 
     def __init__(
         self,
@@ -139,6 +141,8 @@ class TieredCommunicationCache:
         map_max_distance_m: float = 25.0 * math.sqrt(2.0),
         min_sparse_period_s: float = 1.0,
         max_sparse_period_s: float = 4.0,
+        include_plan_intent: bool = False,
+        include_plan_yaw: bool = False,
     ) -> None:
         if full_radius_m <= 0.0:
             raise ValueError("full_radius_m must be positive.")
@@ -155,6 +159,17 @@ class TieredCommunicationCache:
         self.map_max_distance_m = float(map_max_distance_m)
         self.min_sparse_period_s = float(min_sparse_period_s)
         self.max_sparse_period_s = float(max_sparse_period_s)
+        self.include_plan_intent = bool(include_plan_intent)
+        self.include_plan_yaw = bool(include_plan_yaw)
+        if self.include_plan_yaw and not self.include_plan_intent:
+            raise ValueError("include_plan_yaw requires include_plan_intent.")
+        self.message_dim = (
+            self.differential_intent_message_dim
+            if self.include_plan_yaw
+            else self.intent_message_dim
+            if self.include_plan_intent
+            else self.base_message_dim
+        )
         pair_shape = (self.num_envs, self.n_agents, self.n_agents)
         self.features = torch.zeros(
             *pair_shape,
@@ -187,6 +202,10 @@ class TieredCommunicationCache:
         velocities_xy: torch.Tensor,
         yaws: torch.Tensor,
         terrain_summary: torch.Tensor,
+        committed_world_subgoal: torch.Tensor | None = None,
+        committed_reference_speed: torch.Tensor | None = None,
+        coordination_token: torch.Tensor | None = None,
+        committed_planned_yaw_delta: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         receiver_yaw = yaws[:, :, None]
         delta_world = positions[:, None, :, :2] - positions[:, :, None, :2]
@@ -208,18 +227,79 @@ class TieredCommunicationCache:
             device=self.device,
             dtype=self.dtype,
         )
+        parts = [
+            delta_body,
+            velocity_body,
+            torch.cos(yaw_delta).unsqueeze(-1),
+            torch.sin(yaw_delta).unsqueeze(-1),
+            sender_terrain,
+            quality,
+        ]
+        if self.include_plan_intent:
+            if committed_world_subgoal is None:
+                committed_world_subgoal = positions[..., :2]
+            if committed_reference_speed is None:
+                committed_reference_speed = torch.zeros_like(yaws)
+            if coordination_token is None:
+                coordination_token = torch.zeros_like(yaws)
+            if committed_planned_yaw_delta is None:
+                committed_planned_yaw_delta = torch.zeros_like(yaws)
+            sender_plan_world = committed_world_subgoal[:, None, :, :2]
+            receiver_position = positions[:, :, None, :2]
+            sender_plan_body = _world_to_body(
+                sender_plan_world - receiver_position,
+                receiver_yaw,
+            )
+            sender_speed = committed_reference_speed[:, None, :, None].expand(
+                -1,
+                self.n_agents,
+                -1,
+                -1,
+            )
+            sender_token = coordination_token[:, None, :, None].expand_as(sender_speed)
+            parts.extend((sender_plan_body, sender_speed))
+            if self.include_plan_yaw:
+                sender_plan_yaw = committed_planned_yaw_delta[
+                    :, None, :, None
+                ].expand_as(sender_speed)
+                parts.append(sender_plan_yaw)
+            parts.append(sender_token)
         features = torch.cat(
             (
-                delta_body,
-                velocity_body,
-                torch.cos(yaw_delta).unsqueeze(-1),
-                torch.sin(yaw_delta).unsqueeze(-1),
-                sender_terrain,
-                quality,
+                *parts,
             ),
             dim=-1,
         )
         return features, torch.linalg.norm(delta_world, dim=-1)
+
+    def _clear_restricted_payload(
+        self,
+        features: torch.Tensor,
+        restricted: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if restricted is None:
+            features[..., 2:4] = 0.0
+            features[..., 6:11] = 0.0
+            if self.include_plan_intent:
+                features[..., 12 : self.message_dim] = 0.0
+            return features
+        features[..., 2:4] = torch.where(
+            restricted.unsqueeze(-1),
+            torch.zeros_like(features[..., 2:4]),
+            features[..., 2:4],
+        )
+        features[..., 6:11] = torch.where(
+            restricted.unsqueeze(-1),
+            torch.zeros_like(features[..., 6:11]),
+            features[..., 6:11],
+        )
+        if self.include_plan_intent:
+            features[..., 12 : self.message_dim] = torch.where(
+                restricted.unsqueeze(-1),
+                torch.zeros_like(features[..., 12 : self.message_dim]),
+                features[..., 12 : self.message_dim],
+            )
+        return features
 
     def reset(
         self,
@@ -228,6 +308,10 @@ class TieredCommunicationCache:
         velocities_xy: torch.Tensor,
         yaws: torch.Tensor,
         terrain_summary: torch.Tensor,
+        committed_world_subgoal: torch.Tensor | None = None,
+        committed_reference_speed: torch.Tensor | None = None,
+        coordination_token: torch.Tensor | None = None,
+        committed_planned_yaw_delta: torch.Tensor | None = None,
     ) -> None:
         env_ids = env_ids.to(device=self.device, dtype=torch.long)
         current, distance = self._pair_state(
@@ -235,20 +319,31 @@ class TieredCommunicationCache:
             velocities_xy[env_ids],
             yaws[env_ids],
             terrain_summary[env_ids],
+            committed_world_subgoal=(
+                committed_world_subgoal[env_ids]
+                if committed_world_subgoal is not None
+                else None
+            ),
+            committed_reference_speed=(
+                committed_reference_speed[env_ids]
+                if committed_reference_speed is not None
+                else None
+            ),
+            committed_planned_yaw_delta=(
+                committed_planned_yaw_delta[env_ids]
+                if committed_planned_yaw_delta is not None
+                else None
+            ),
+            coordination_token=(
+                coordination_token[env_ids]
+                if coordination_token is not None
+                else None
+            ),
         )
         nonself = (~self._self_mask).expand(env_ids.numel(), -1, -1)
         full = (distance <= self.full_radius_m) & nonself
         sparse = nonself & ~full
-        current[..., 2:4] = torch.where(
-            sparse.unsqueeze(-1),
-            torch.zeros_like(current[..., 2:4]),
-            current[..., 2:4],
-        )
-        current[..., 6:11] = torch.where(
-            sparse.unsqueeze(-1),
-            torch.zeros_like(current[..., 6:11]),
-            current[..., 6:11],
-        )
+        current = self._clear_restricted_payload(current, sparse)
         current[..., 11] = torch.where(
             full,
             torch.ones_like(distance),
@@ -274,6 +369,10 @@ class TieredCommunicationCache:
         velocities_xy: torch.Tensor,
         yaws: torch.Tensor,
         terrain_summary: torch.Tensor,
+        committed_world_subgoal: torch.Tensor | None = None,
+        committed_reference_speed: torch.Tensor | None = None,
+        committed_planned_yaw_delta: torch.Tensor | None = None,
+        coordination_token: torch.Tensor | None = None,
     ) -> None:
         if dt <= 0.0:
             raise ValueError("communication dt must be positive.")
@@ -282,6 +381,10 @@ class TieredCommunicationCache:
             velocities_xy,
             yaws,
             terrain_summary,
+            committed_world_subgoal=committed_world_subgoal,
+            committed_reference_speed=committed_reference_speed,
+            coordination_token=coordination_token,
+            committed_planned_yaw_delta=committed_planned_yaw_delta,
         )
         nonself = (~self._self_mask).expand(self.num_envs, -1, -1)
         now_full = (distance <= self.full_radius_m) & nonself
@@ -306,23 +409,13 @@ class TieredCommunicationCache:
         # Leaving the full range immediately removes forbidden payload fields
         # without transmitting a fresh far-range pose.
         restricted = leaving | staying_sparse
-        self.features[..., 2:4] = torch.where(
-            restricted.unsqueeze(-1),
-            torch.zeros_like(self.features[..., 2:4]),
-            self.features[..., 2:4],
-        )
-        self.features[..., 6:11] = torch.where(
-            restricted.unsqueeze(-1),
-            torch.zeros_like(self.features[..., 6:11]),
-            self.features[..., 6:11],
-        )
+        self.features = self._clear_restricted_payload(self.features, restricted)
         leaving_period = self._period(distance)
         self.update_period = torch.where(leaving, leaving_period, self.update_period)
 
         due = staying_sparse & (self.age >= self.update_period)
         sparse_current = current.clone()
-        sparse_current[..., 2:4] = 0.0
-        sparse_current[..., 6:11] = 0.0
+        sparse_current = self._clear_restricted_payload(sparse_current)
         sparse_current[..., 11] = 0.5
         self.features = torch.where(due.unsqueeze(-1), sparse_current, self.features)
         self.age = torch.where(due, torch.zeros_like(self.age), self.age)
@@ -444,10 +537,14 @@ def build_cached_aggregation_features(
     map_max_distance_m: float,
     max_message_age_s: float = 4.0,
 ) -> torch.Tensor:
+    neighbor_slots = snapshot.masks.shape[-1]
+    if neighbor_slots <= 0 or snapshot.features.shape[-1] % neighbor_slots != 0:
+        raise ValueError("Communication snapshot has incompatible feature/mask shapes.")
+    message_dim = snapshot.features.shape[-1] // neighbor_slots
     messages = snapshot.features.reshape(
         *snapshot.features.shape[:2],
-        snapshot.masks.shape[-1],
-        TieredCommunicationCache.message_dim,
+        neighbor_slots,
+        message_dim,
     )
     mask = snapshot.masks
     count = mask.sum(dim=-1, keepdim=True)
