@@ -32,6 +32,7 @@ Markdown数学公式统一使用 `$...$` 表示行内公式，使用独占一行
 - [roadmap.md](roadmap.md)：近期优先级。
 - [experiments/README.md](experiments/README.md)：实验索引和通过/失败表。
 - [experiments/exp_156_differential_multiscale_ablation.md](experiments/exp_156_differential_multiscale_ablation.md)：当前差速原语三结构完整消融记录。
+- [experiments/exp_157_site_belief_diagnostic.md](experiments/exp_157_site_belief_diagnostic.md)：H0共同站点信息审计与H1 goal-conditioned低层上界实验。
 - [interface_spec.md](interface_spec.md)：actor observation、critic state、action 和当前 observation schema。
 - [references/output_management.md](references/output_management.md)：输出目录规范和命名规则。
 - [references/marl_credit_assignment_review.md](references/marl_credit_assignment_review.md)：信用分配研究结论、唯一候选与有界对照。

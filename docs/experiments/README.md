@@ -128,5 +128,6 @@ PhysX / Jackal tracking 结果是 high-fidelity validation，不等于 Isaac Lab
 | exp153 | 冻结exp150双checkpoint | 局部/全范围动作与quintic/line/endpoint分离 | 双checkpoint、双种子、512步 | 混合瓶颈 | 网格quintic最小`0.7536`、endpoint恒为1，但局部恢复和quintic损失均不足；t2048途中交叉损失升至约35%–37%，只允许双车联合反事实审计。 | [exp_153_action_range_quintic_geometry_audit.md](exp_153_action_range_quintic_geometry_audit.md) |
 | exp155 | Open/Mixed/Bottleneck多尺度地形 | 291维观测 + 40维时空动作 | N0完成后停止；N1/N2未启动 | 排除 | `stopped_design_revision`；旧接口结果只作hold塌缩证据，不进入排名。 | [exp_155_multiscale_network_ablation.md](exp_155_multiscale_network_ablation.md) |
 | exp156 | Open/Mixed/Bottleneck多尺度地形 | 295维观测 + 47维差速原语 + 950维Critic；N0/N1完整训练，N2仅工程smoke | seed23，N0/N1各39.3M与1152配对场景 | 停止，0/6 strict | N0/N1 success为0/0.0017、timeout为0.9271/0.9852；地板效应使架构排名无效。N2完整训练取消，修复CUDA连续性后smoke通过；N1仅作临时CNN基线。 | [exp_156_differential_multiscale_ablation.md](exp_156_differential_multiscale_ablation.md) |
+| exp157 | exp156固定六分层场景 | H0站点信息/原语冻结审计 + H1 407维站点区域条件N1 Pure RL | H0 1152场景；H1 seed23 39.3M | H0完成，H1启动 | H0通信图全连通但初始站点证据可传播率仅40.97%；原语12/12可解。H1只测共同站点已知时的低层上界，不是最终去中心化策略。 | [exp_157_site_belief_diagnostic.md](exp_157_site_belief_diagnostic.md) |
 
 新增实验时，在这里加一行，并在本目录创建独立的 `exp_###_*.md` 文档。日期流水账放入 `docs/archive/`，不要继续堆到当前实验文档里。

@@ -1,0 +1,48 @@
+extends: exp156_differential_multiscale_ablation.yaml
+
+experiment:
+  name: exp157_h1_site_belief_n1
+  seed: 23
+  num_envs: 256
+  rollout_steps: 64
+  eval_num_envs: 192
+  eval_steps: 480
+  checkpoint_interval: 6400
+
+task:
+  explicit_goal_in_execution: false
+  diagnostic_site_belief_enabled: true
+
+observation:
+  communication_radius: 12.0
+  schema_version: ego_v11_multiscale_site_belief
+  site_belief_radius: 0.75
+  site_belief_sigma: 2.0
+
+reward:
+  weights:
+    # H1 deliberately restores site-progress shaping. This is a controlled
+    # low-level reachability upper bound, not the final decentralized policy.
+    oracle: 0.5
+
+algorithm:
+  training_semantics: exp157_h1_goal_conditioned_upper_bound
+  actor_architecture: multiscale_n1_cnn
+  critic_architecture: structured_multiscale_v3
+  bc_updates: 0
+  init_checkpoint: null
+
+full_rl_ablation:
+  candidates:
+    - multiscale_n1_cnn
+  seed: 23
+  policy_iterations_per_stage: 800
+  stages: 3
+  timesteps: 153600
+  environment_interactions_per_candidate: 39321600
+  environment_interactions_total: 39321600
+  equal_budget_required: false
+  paired_scenarios_required: true
+
+oracle_reward_ablation:
+  enabled_after_architecture_selection: false

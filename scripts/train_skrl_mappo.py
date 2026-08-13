@@ -185,6 +185,15 @@ ACTOR_OBSERVATION_SLICES_V10 = {
     "terrain_coarse": (234, 290),
     "aggregation": (290, 295),
 }
+ACTOR_OBSERVATION_SLICES_V11 = {
+    "ego": (0, 15),
+    "neighbors": (15, 66),
+    "terrain": (66, 402),
+    "terrain_fine": (66, 255),
+    "terrain_medium": (255, 318),
+    "terrain_coarse": (318, 402),
+    "aggregation": (402, 407),
+}
 ACTOR_OBSERVATION_SLICES = ACTOR_OBSERVATION_SLICES_V3
 CRITIC_STATE_SLICES_V3 = {
     "agents": (0, 32),
@@ -223,6 +232,8 @@ def _actor_slices_for_dim(num_observations: int) -> dict[str, tuple[int, int]]:
         return ACTOR_OBSERVATION_SLICES_V9
     if int(num_observations) == 295:
         return ACTOR_OBSERVATION_SLICES_V10
+    if int(num_observations) == 407:
+        return ACTOR_OBSERVATION_SLICES_V11
     raise ValueError(f"Unsupported actor observation dim: {num_observations}.")
 
 
@@ -380,10 +391,11 @@ class GraphAttentionNeighborEncoder(nn.Module):
 class MultiScaleTerrainCNN(nn.Module):
     """Shared two-layer encoder used for all three body-frame terrain scales."""
 
-    def __init__(self) -> None:
+    def __init__(self, input_channels: int = 2) -> None:
         super().__init__()
+        self.input_channels = int(input_channels)
         self.network = nn.Sequential(
-            nn.Conv2d(2, 16, kernel_size=3, padding=1),
+            nn.Conv2d(self.input_channels, 16, kernel_size=3, padding=1),
             nn.ELU(),
             nn.Conv2d(16, 32, kernel_size=3, padding=1),
             nn.ELU(),
@@ -402,8 +414,12 @@ def _multiscale_terrain_grids(
         start, end = slices[name]
         values = observations[..., start:end]
         leading = values.shape[:-1]
-        values = values.reshape(-1, x_size, y_size, 2).permute(0, 3, 1, 2)
-        return values.reshape(*leading, 2, x_size, y_size)
+        cell_count = x_size * y_size
+        if (end - start) % cell_count != 0:
+            raise ValueError(f"{name} slice is not divisible by its spatial cell count.")
+        channels = (end - start) // cell_count
+        values = values.reshape(-1, x_size, y_size, channels).permute(0, 3, 1, 2)
+        return values.reshape(*leading, channels, x_size, y_size)
 
     return (
         grid("terrain_fine", 7, 9),
@@ -427,25 +443,28 @@ class SKRLCategoricalPolicy(CategoricalMixin, Model):
         interface = {
             (291, 40): ACTOR_OBSERVATION_SLICES_V9,
             (295, 47): ACTOR_OBSERVATION_SLICES_V10,
+            (407, 47): ACTOR_OBSERVATION_SLICES_V11,
         }
         action_count = int(action_space.n) if hasattr(action_space, "n") else -1
         key = (int(self.num_observations), action_count)
         if key not in interface:
             raise ValueError(
-                f"{self.architecture} requires (291 observations, 40 actions) or "
-                "(295 observations, 47 actions); got "
+                f"{self.architecture} requires (291 observations, 40 actions), "
+                "(295 observations, 47 actions), or (407 observations, 47 actions); got "
                 f"({self.num_observations}, {action_count})."
             )
         self.slices = interface[key]
         self.action_count = action_count
         ego_dim = self.slices["ego"][1] - self.slices["ego"][0]
         neighbor_dim = self.slices["neighbors"][1] - self.slices["neighbors"][0]
+        terrain_dim = self.slices["terrain"][1] - self.slices["terrain"][0]
+        terrain_channels = terrain_dim // 112
         self.ego_encoder = nn.Sequential(nn.Linear(ego_dim, 32), nn.ELU())
         self.neighbor_encoder = nn.Sequential(nn.Linear(neighbor_dim, 48), nn.ELU())
         self.aggregation_encoder = nn.Sequential(nn.Linear(5, 16), nn.ELU())
         if self.architecture == "multiscale_n0_mlp":
             self.terrain_encoder = nn.Sequential(
-                nn.Linear(224, 128),
+                nn.Linear(terrain_dim, 128),
                 nn.ELU(),
                 nn.Linear(128, 64),
                 nn.ELU(),
@@ -458,7 +477,7 @@ class SKRLCategoricalPolicy(CategoricalMixin, Model):
                 nn.Linear(128, self.action_count),
             )
         elif self.architecture == "multiscale_n1_cnn":
-            self.terrain_encoder = MultiScaleTerrainCNN()
+            self.terrain_encoder = MultiScaleTerrainCNN(terrain_channels)
             self.terrain_projection = nn.Sequential(
                 nn.Linear(3 * 32 * 3 * 3, 64),
                 nn.ELU(),
@@ -471,7 +490,7 @@ class SKRLCategoricalPolicy(CategoricalMixin, Model):
                 nn.Linear(128, self.action_count),
             )
         elif self.architecture == "multiscale_n2_path_conditioned":
-            self.terrain_encoder = MultiScaleTerrainCNN()
+            self.terrain_encoder = MultiScaleTerrainCNN(terrain_channels)
             # All scales condition every primitive. The 13 forward routes
             # additionally receive path-aligned features below.
             self.context_projection = nn.Sequential(nn.Linear(288, 64), nn.ELU())
@@ -554,9 +573,10 @@ class SKRLCategoricalPolicy(CategoricalMixin, Model):
 
         fine, medium, coarse = _multiscale_terrain_grids(observations, self.slices)
         leading = observations.shape[:-1]
-        fine_feature = self.terrain_encoder(fine.reshape(-1, 2, 7, 9))
-        medium_feature = self.terrain_encoder(medium.reshape(-1, 2, 3, 7))
-        coarse_feature = self.terrain_encoder(coarse.reshape(-1, 2, 4, 7))
+        channels = self.terrain_encoder.input_channels
+        fine_feature = self.terrain_encoder(fine.reshape(-1, channels, 7, 9))
+        medium_feature = self.terrain_encoder(medium.reshape(-1, channels, 3, 7))
+        coarse_feature = self.terrain_encoder(coarse.reshape(-1, channels, 4, 7))
         if self.architecture == "multiscale_n1_cnn":
             pooled = torch.cat(
                 tuple(
@@ -3981,6 +4001,8 @@ def main() -> None:
     if cfg.observation.schema_version in {
         "ego_v8_decentralized_tiered",
         "ego_v9_multiscale_intent",
+        "ego_v10_multiscale_diff_intent",
+        "ego_v11_multiscale_site_belief",
     }:
         if int(algo.get("bc_updates", algo.get("bc_steps", 0))) != 0:
             raise SystemExit(

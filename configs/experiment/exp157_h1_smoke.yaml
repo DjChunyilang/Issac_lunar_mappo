@@ -1,0 +1,16 @@
+extends: exp157_h1_site_belief_n1.yaml
+
+experiment:
+  name: exp157_h1_smoke
+  num_envs: 8
+  rollout_steps: 8
+  eval_num_envs: 8
+  eval_steps: 16
+  checkpoint_interval: 16
+
+bounded_curriculum:
+  enabled: false
+
+evaluation:
+  proxy_eval:
+    enabled: false

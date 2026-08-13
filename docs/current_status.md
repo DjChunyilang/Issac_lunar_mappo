@@ -4,11 +4,12 @@
 
 ## 当前主线
 
-当前执行基线来自 `exp156`：
+当前低层基线来自 `exp156`，正在通过`exp157`拆分验证共同选址与低层可达性：
 
 ```text
-295维多尺度去中心化观测
-→ N1共享多尺度CNN Categorical Actor（临时基线）
+H0冻结信息/原语审计
+→ H1 407维共同站点区域条件观测
+→ N1共享多尺度CNN Categorical Actor（诊断基线）
 → 47维差速轨迹原语
 → 时标化位姿轨迹
 → 左右轮差速控制
@@ -71,7 +72,7 @@ outputs/runs/exp155_full_rl_ablation/n0_seed23_full_2400iter/
 
 Smoke只证明工程链路和梯度更新有效，不代表策略收敛。
 
-## exp156训练结论与下一步
+## exp156训练结论与exp157诊断
 
 `exp156` 当前没有训练进程。N0和N1均完成2400 iterations、39,321,600环境交互及同一1152场景清单的六分层配对评测：
 
@@ -96,6 +97,10 @@ outputs/runs/exp156_differential_multiscale_ablation/_suite/suite_status.json
 
 当前尚不存在exp156推荐checkpoint、六分层strict pass或正式动画。Oracle奖励消融、seed31/47和新的信用算法均暂停；下一项决策先验证共同选址与低层到达能否被分离，而不是继续扩大编码器比较。
 
-“共同平地选择—终端稳定”耦合问题的候选路线为 `D-STC`（Decentralized Site-and-Trajectory Commitment）：有限本地地形 belief、分布式站点承诺、goal-conditioned Actor 与短时轨迹承诺。`D-STC` 是本项目对多篇研究原则的组合命名，不是已有论文中可直接复现的标准算法，也尚未决定采用。下一步先进行不训练的H0信息/联合原语审计及H1共同站点已知对照，再决定是否实现完整协议。完整依据与证据边界见[共同选址与终端协调综述](references/decentralized_site_trajectory_coordination_review.md)。
+“共同平地选择—终端稳定”耦合问题的候选路线为 `D-STC`（Decentralized Site-and-Trajectory Commitment）：有限本地地形 belief、分布式站点承诺、goal-conditioned Actor 与短时轨迹承诺。`D-STC` 是本项目对多篇研究原则的组合命名，不是已有论文中可直接复现的标准算法，也尚未决定采用。
+
+`exp157` H0已完成1152个固定场景审计。12 m通信图连通率为100%，但“至少一辆车初始观测到共同站点且可传播证据”的总体比例仅40.97%，近距Bottleneck为0；这说明通信连接不等于站点信息已经可用。47维动作审计仍为12/12场景存在联合解，站点势场SE(2)误差为 $4.17\times10^{-7}$。H0尚未实现候选关联和commit，因此不能声称去中心化共同选址已就绪。
+
+H1使用407维空间站点势场、N1 CNN和相同39.3M Pure RL预算，作为“共同可行区域已知时低层能否完成任务”的受控上界。H1不是最终去中心化策略，其结果只用于决定是否值得实现完整D-STC。详见[exp157实验记录](experiments/exp_157_site_belief_diagnostic.md)与[共同选址综述](references/decentralized_site_trajectory_coordination_review.md)。
 
 完整接口、预算和验收方法见[实施计划](implementation_plan.md)。

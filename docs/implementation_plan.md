@@ -279,3 +279,12 @@ outputs/runs/exp156_differential_multiscale_ablation/
 ```bash
 .venv_isaaclab/bin/python3.12 scripts/check_markdown_math_delimiters.py
 ```
+
+## 11. exp157 H0/H1因果拆分
+
+停止继续比较编码器后，先执行两个串行诊断：
+
+1. H0不训练，使用固定1152场景审计局部站点证据、12 m通信图、站点势场SE(2)不变性、终端区域容量和47维联合原语可行性；
+2. H1只使用N1，将一个共享可行站点区域编码为第三个多尺度空间通道，从零进行39.3M Pure RL训练。
+
+H1的407维观测与0.5 Oracle进展权重只构成低层goal-conditioned能力上界。只有H1显著成功、H0同时表明当前信息边界不足时，才允许制定完整D-STC工程计划；H1失败时优先检查低层动作、奖励和终端稳定，不增加候选共识模块。

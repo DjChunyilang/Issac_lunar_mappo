@@ -26,6 +26,8 @@ MULTISCALE_TERRAIN_COARSE_X = (1.6, 2.4, 3.2, 4.0)
 MULTISCALE_TERRAIN_COARSE_Y = (-2.4, -1.6, -0.8, 0.0, 0.8, 1.6, 2.4)
 MULTISCALE_TERRAIN_DIMS = (126, 42, 56)
 MULTISCALE_TERRAIN_DIM = sum(MULTISCALE_TERRAIN_DIMS)
+MULTISCALE_SITE_BELIEF_DIMS = (189, 63, 84)
+MULTISCALE_SITE_BELIEF_DIM = sum(MULTISCALE_SITE_BELIEF_DIMS)
 
 
 @dataclass(slots=True)
@@ -839,6 +841,78 @@ def build_multiscale_local_terrain_observation(
         raise RuntimeError(
             f"Multi-scale terrain observation has dim {observation.shape[-1]}, "
             f"expected {MULTISCALE_TERRAIN_DIM}."
+        )
+    return observation
+
+
+def build_multiscale_site_belief_observation(
+    positions: torch.Tensor,
+    yaws: torch.Tensor,
+    site_point: torch.Tensor,
+    terrain_cfg: TerrainCfg | None = None,
+    runtime: TerrainRuntime | None = None,
+    *,
+    site_radius: float = 0.75,
+    potential_sigma: float = 2.0,
+) -> torch.Tensor:
+    """Append a spatial feasible-region potential to each terrain grid.
+
+    This is the H1 diagnostic interface. ``site_point`` may be shared per
+    environment with shape ``[E, 3]`` or supplied per rover as ``[E, A, 3]``.
+    The channel is one throughout the feasible disk and decays smoothly with
+    distance outside it; unlike a bearing-distance vector it remains aligned
+    with the terrain cells consumed by the CNN.
+    """
+    if potential_sigma <= 0.0:
+        raise ValueError("potential_sigma must be positive.")
+    if site_radius < 0.0:
+        raise ValueError("site_radius must be non-negative.")
+    if site_point.ndim == positions.ndim - 1:
+        target_xy = site_point[..., :2].unsqueeze(-2)
+        target_xy = target_xy.expand(*positions.shape[:-1], 2)
+    elif site_point.shape[:-1] == positions.shape[:-1]:
+        target_xy = site_point[..., :2]
+    else:
+        raise ValueError(
+            "site_point must have shape [E, 3] or match the per-rover position shape."
+        )
+
+    terrain_grids = build_multiscale_local_terrain_grids(
+        positions,
+        yaws,
+        terrain_cfg,
+        runtime,
+    )
+    specifications = (
+        (MULTISCALE_TERRAIN_FINE_X, MULTISCALE_TERRAIN_FINE_Y),
+        (MULTISCALE_TERRAIN_MEDIUM_X, MULTISCALE_TERRAIN_MEDIUM_Y),
+        (MULTISCALE_TERRAIN_COARSE_X, MULTISCALE_TERRAIN_COARSE_Y),
+    )
+    grids: list[torch.Tensor] = []
+    for terrain_grid, (x_coordinates, y_coordinates) in zip(
+        terrain_grids,
+        specifications,
+        strict=True,
+    ):
+        sample_xy = _body_grid_world_points(
+            positions,
+            yaws,
+            x_coordinates,
+            y_coordinates,
+        )
+        distance = torch.linalg.vector_norm(
+            sample_xy - target_xy[..., None, None, :],
+            dim=-1,
+        )
+        outside = (distance - float(site_radius)).clamp_min(0.0)
+        potential = torch.exp(-0.5 * (outside / float(potential_sigma)).square())
+        grids.append(torch.cat((terrain_grid, potential.unsqueeze(-1)), dim=-1))
+
+    observation = torch.cat(tuple(grid.flatten(start_dim=-3) for grid in grids), dim=-1)
+    if observation.shape[-1] != MULTISCALE_SITE_BELIEF_DIM:
+        raise RuntimeError(
+            f"Multi-scale site-belief observation has dim {observation.shape[-1]}, "
+            f"expected {MULTISCALE_SITE_BELIEF_DIM}."
         )
     return observation
 

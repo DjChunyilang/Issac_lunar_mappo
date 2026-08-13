@@ -5,6 +5,9 @@ The default actor schemas exclude all oracle fields.  The opt-in
 receive a rover-frame execution target produced by the terrain-aware
 gather-site planner.  They are broadcast-goal contracts, not hidden critic
 features: they contain neither global coordinates nor any search diagnostics.
+``ego_v11_multiscale_site_belief`` is a separately gated H1 diagnostic upper
+bound: it receives an externally supplied spatial feasible-site potential and
+must not be described as a deployable decentralized observation.
 """
 
 from __future__ import annotations
@@ -221,17 +224,22 @@ def build_actor_observation(
             velocities_xy,
             angular_velocities,
         )
-        if cfg.observation.schema_version == "ego_v10_multiscale_diff_intent"
+        if cfg.observation.schema_version in {
+            "ego_v10_multiscale_diff_intent",
+            "ego_v11_multiscale_site_belief",
+        }
         else build_ego_features(positions, yaws, velocities_xy, angular_velocities)
     )
     tiered_schema = cfg.observation.schema_version in {
         "ego_v8_decentralized_tiered",
         "ego_v9_multiscale_intent",
         "ego_v10_multiscale_diff_intent",
+        "ego_v11_multiscale_site_belief",
     }
     multiscale_intent_schema = cfg.observation.schema_version in {
         "ego_v9_multiscale_intent",
         "ego_v10_multiscale_diff_intent",
+        "ego_v11_multiscale_site_belief",
     }
     if multiscale_intent_schema:
         if (
@@ -244,11 +252,14 @@ def build_actor_observation(
                 "reference speed and coordination token."
             )
         if (
-            cfg.observation.schema_version == "ego_v10_multiscale_diff_intent"
+            cfg.observation.schema_version in {
+                "ego_v10_multiscale_diff_intent",
+                "ego_v11_multiscale_site_belief",
+            }
             and committed_planned_yaw_delta is None
         ):
             raise ValueError(
-                "ego_v10_multiscale_diff_intent requires the committed yaw change."
+                "Differential intent schemas require the committed yaw change."
             )
         if committed_plan_local_xy.shape != positions[..., :2].shape:
             raise ValueError("committed_plan_local_xy must match per-rover xy shape.")
@@ -264,7 +275,10 @@ def build_actor_observation(
                 *(
                     (committed_planned_yaw_delta.unsqueeze(-1),)
                     if cfg.observation.schema_version
-                    == "ego_v10_multiscale_diff_intent"
+                    in {
+                        "ego_v10_multiscale_diff_intent",
+                        "ego_v11_multiscale_site_belief",
+                    }
                     else ()
                 ),
                 coordination_token.unsqueeze(-1),

@@ -89,13 +89,18 @@ def _validate_reward_section(reward: dict) -> None:
 
 def _apply_observation_values(cfg: MultiRoverGatheringEnvCfg, values: dict) -> None:
     values = _require_mapping("observation", values)
-    supported = {"communication_radius", "schema_version"}
+    supported = {
+        "communication_radius",
+        "schema_version",
+        "site_belief_radius",
+        "site_belief_sigma",
+    }
     unknown = sorted(key for key in values if key not in supported)
     if unknown:
         unknown_keys = ", ".join(f"observation.{key}" for key in unknown)
         raise ValueError(
             f"Unsupported config key(s): {unknown_keys}. This loader only supports "
-            "'observation.communication_radius' and 'observation.schema_version'; "
+            "the communication/schema fields and H1 site-belief geometry; "
             "observation dimensions are fixed by code."
         )
     if "communication_radius" in values:
@@ -111,6 +116,7 @@ def _apply_observation_values(cfg: MultiRoverGatheringEnvCfg, values: dict) -> N
             "ego_v8_decentralized_tiered",
             "ego_v9_multiscale_intent",
             "ego_v10_multiscale_diff_intent",
+            "ego_v11_multiscale_site_belief",
         }
         if schema_version not in supported_schemas:
             raise ValueError(
@@ -118,6 +124,10 @@ def _apply_observation_values(cfg: MultiRoverGatheringEnvCfg, values: dict) -> N
                 f"{', '.join(sorted(supported_schemas))}."
             )
         cfg.observation.schema_version = schema_version
+    if "site_belief_radius" in values:
+        cfg.observation.site_belief_radius = float(values["site_belief_radius"])
+    if "site_belief_sigma" in values:
+        cfg.observation.site_belief_sigma = float(values["site_belief_sigma"])
 
 
 def _apply_state_values(cfg: MultiRoverGatheringEnvCfg, values: dict) -> None:
@@ -451,6 +461,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     supported_task_keys = {
         "n_agents",
         "explicit_goal_in_execution",
+        "diagnostic_site_belief_enabled",
         "execution_slot_reward_target",
         "dynamic_terminal_slot_goal_enabled",
         "dynamic_terminal_slot_goal_dmax_multiplier",
@@ -466,6 +477,12 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     cfg.task.n_agents = int(task.get("n_agents", cfg.task.n_agents))
     cfg.task.explicit_goal_in_execution = bool(
         task.get("explicit_goal_in_execution", cfg.task.explicit_goal_in_execution)
+    )
+    cfg.task.diagnostic_site_belief_enabled = bool(
+        task.get(
+            "diagnostic_site_belief_enabled",
+            cfg.task.diagnostic_site_belief_enabled,
+        )
     )
     cfg.task.execution_slot_reward_target = bool(
         task.get(
@@ -645,6 +662,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
         "ego_v8_decentralized_tiered",
         "ego_v9_multiscale_intent",
         "ego_v10_multiscale_diff_intent",
+        "ego_v11_multiscale_site_belief",
     }:
         if abs(float(cfg.observation.communication_radius) - 12.0) > 1.0e-9:
             raise ValueError(
@@ -663,17 +681,23 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
             "spatiotemporal_primitives."
         )
     if (
-        cfg.observation.schema_version == "ego_v10_multiscale_diff_intent"
+        cfg.observation.schema_version in {
+            "ego_v10_multiscale_diff_intent",
+            "ego_v11_multiscale_site_belief",
+        }
         and cfg.planner.action_type != "differential_trajectory_primitives"
     ):
         raise ValueError(
-            "ego_v10_multiscale_diff_intent requires planner.action_type="
+            "Differential multiscale schemas require planner.action_type="
             "differential_trajectory_primitives."
         )
-    if cfg.observation.schema_version == "ego_v10_multiscale_diff_intent":
+    if cfg.observation.schema_version in {
+        "ego_v10_multiscale_diff_intent",
+        "ego_v11_multiscale_site_belief",
+    }:
         if cfg.low_level_control.kinematic_model != "differential_drive":
             raise ValueError(
-                "ego_v10_multiscale_diff_intent requires differential-drive kinematics."
+                "Differential multiscale schemas require differential-drive kinematics."
             )
     has_gather_site_goal = cfg.observation.schema_version in {
         "ego_v5_gather_site_goal",
@@ -685,6 +709,18 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
             "task.explicit_goal_in_execution must be true exactly when "
             "observation.schema_version is an execution gather-site goal schema."
         )
+    has_diagnostic_site_belief = (
+        cfg.observation.schema_version == "ego_v11_multiscale_site_belief"
+    )
+    if has_diagnostic_site_belief != cfg.task.diagnostic_site_belief_enabled:
+        raise ValueError(
+            "task.diagnostic_site_belief_enabled must be true exactly for the "
+            "H1 ego_v11_multiscale_site_belief schema."
+        )
+    if cfg.observation.site_belief_radius < 0.0:
+        raise ValueError("observation.site_belief_radius must be non-negative.")
+    if cfg.observation.site_belief_sigma <= 0.0:
+        raise ValueError("observation.site_belief_sigma must be positive.")
     if cfg.task.execution_slot_reward_target and cfg.observation.schema_version not in {
         "ego_v6_gather_slot_goal",
         "ego_v7_gather_site_and_slot_goal",
@@ -703,11 +739,14 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
         )
     _apply_state_values(cfg, state)
     if (
-        cfg.observation.schema_version == "ego_v10_multiscale_diff_intent"
+        cfg.observation.schema_version in {
+            "ego_v10_multiscale_diff_intent",
+            "ego_v11_multiscale_site_belief",
+        }
         and not cfg.state.include_multiscale_agent_terrain
     ):
         raise ValueError(
-            "ego_v10_multiscale_diff_intent requires the 950-dim multiscale critic state."
+            "Differential multiscale schemas require the 950-dim multiscale critic state."
         )
     _apply_values(cfg.safety, safety, "safety")
     _apply_values(cfg.gather_point, gather_point, "gather_point")
@@ -727,6 +766,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
         "ego_v8_decentralized_tiered",
         "ego_v9_multiscale_intent",
         "ego_v10_multiscale_diff_intent",
+        "ego_v11_multiscale_site_belief",
     }:
         forbidden = {
             "task.execution_slot_reward_target": cfg.task.execution_slot_reward_target,

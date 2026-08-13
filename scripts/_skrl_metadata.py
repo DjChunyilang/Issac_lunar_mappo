@@ -75,6 +75,7 @@ def observation_interface_metadata(cfg: Any) -> dict[str, Any]:
     if str(cfg.observation.schema_version) in {
         "ego_v9_multiscale_intent",
         "ego_v10_multiscale_diff_intent",
+        "ego_v11_multiscale_site_belief",
     }:
         metadata.update(
             {

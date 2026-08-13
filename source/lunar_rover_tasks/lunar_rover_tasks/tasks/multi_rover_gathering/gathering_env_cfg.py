@@ -30,6 +30,11 @@ class TaskCfg:
     n_agents: int = 4
     scene_dim: str = "2.5D/3D"
     explicit_goal_in_execution: bool = False
+    # H1-only diagnostic contract. The actor receives a spatial potential for
+    # one shared feasible site selected at reset. This deliberately measures a
+    # goal-conditioned low-level upper bound and is not a deployable
+    # decentralized site-selection mechanism.
+    diagnostic_site_belief_enabled: bool = False
     # Opt in only when the execution observation exposes a fixed per-rover
     # formation slot.  This lets oracle-progress shaping match the safe
     # formation geometry rather than pulling every rover into the same point.
@@ -353,10 +358,15 @@ class ObservationCfg:
     neighbor_dim: int = 7
     terrain_dim: int = 50
     aggregation_dim: int = 5
+    site_belief_radius: float = 0.75
+    site_belief_sigma: float = 2.0
 
     @property
     def effective_neighbor_dim(self) -> int:
-        if self.schema_version == "ego_v10_multiscale_diff_intent":
+        if self.schema_version in {
+            "ego_v10_multiscale_diff_intent",
+            "ego_v11_multiscale_site_belief",
+        }:
             return 17
         if self.schema_version == "ego_v9_multiscale_intent":
             return 16
@@ -366,7 +376,10 @@ class ObservationCfg:
 
     @property
     def effective_ego_dim(self) -> int:
-        if self.schema_version == "ego_v10_multiscale_diff_intent":
+        if self.schema_version in {
+            "ego_v10_multiscale_diff_intent",
+            "ego_v11_multiscale_site_belief",
+        }:
             return 15
         if self.schema_version == "ego_v9_multiscale_intent":
             return 14
@@ -379,6 +392,8 @@ class ObservationCfg:
             "ego_v10_multiscale_diff_intent",
         }:
             return 224
+        if self.schema_version == "ego_v11_multiscale_site_belief":
+            return 336
         return self.terrain_dim
 
     @property

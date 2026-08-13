@@ -57,6 +57,7 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
     GatherPointFlatness,
     build_local_terrain_grid,
     build_multiscale_local_terrain_observation,
+    build_multiscale_site_belief_observation,
     evaluate_gather_point_flatness,
     is_flat_terrain,
     make_terrain_runtime,
@@ -209,6 +210,7 @@ class MultiRoverGatheringCore:
             "ego_v8_decentralized_tiered",
             "ego_v9_multiscale_intent",
             "ego_v10_multiscale_diff_intent",
+            "ego_v11_multiscale_site_belief",
         }:
             self.communication_cache = TieredCommunicationCache(
                 num_envs=self.num_envs,
@@ -224,11 +226,15 @@ class MultiRoverGatheringCore:
                     in {
                         "ego_v9_multiscale_intent",
                         "ego_v10_multiscale_diff_intent",
+                        "ego_v11_multiscale_site_belief",
                     }
                 ),
                 include_plan_yaw=(
                     self.cfg.observation.schema_version
-                    == "ego_v10_multiscale_diff_intent"
+                    in {
+                        "ego_v10_multiscale_diff_intent",
+                        "ego_v11_multiscale_site_belief",
+                    }
                 ),
             )
         self.trajectory_conflicts = TrajectoryConflictTracker(
@@ -255,6 +261,20 @@ class MultiRoverGatheringCore:
         )
 
     def _actor_terrain_observation(self) -> torch.Tensor:
+        if self.cfg.observation.schema_version == "ego_v11_multiscale_site_belief":
+            if not self.cfg.task.diagnostic_site_belief_enabled:
+                raise RuntimeError(
+                    "ego_v11_multiscale_site_belief is restricted to the H1 diagnostic."
+                )
+            return build_multiscale_site_belief_observation(
+                self.positions,
+                self.yaws,
+                self.oracle_point,
+                self.cfg.terrain,
+                self.terrain_runtime,
+                site_radius=float(self.cfg.observation.site_belief_radius),
+                potential_sigma=float(self.cfg.observation.site_belief_sigma),
+            )
         if self.cfg.observation.schema_version in {
             "ego_v9_multiscale_intent",
             "ego_v10_multiscale_diff_intent",
@@ -729,6 +749,17 @@ class MultiRoverGatheringCore:
         self._refresh_dynamic_terminal_slot_goal(metrics)
         terrain_grid = self._terrain_grid()
         actor_terrain = self._actor_terrain_observation()
+        critic_agent_terrain = (
+            build_multiscale_local_terrain_observation(
+                self.positions,
+                self.yaws,
+                self.cfg.terrain,
+                self.terrain_runtime,
+            )
+            if self.cfg.state.include_multiscale_agent_terrain
+            and actor_terrain.shape[-1] != 224
+            else actor_terrain
+        )
         communication_snapshot = (
             self.communication_cache.snapshot()
             if self.communication_cache is not None
@@ -773,7 +804,7 @@ class MultiRoverGatheringCore:
             self.success_hold_count,
             self.cfg,
             terrain_grid,
-            actor_terrain,
+            critic_agent_terrain,
         )
         return actor_obs, critic_state
 
