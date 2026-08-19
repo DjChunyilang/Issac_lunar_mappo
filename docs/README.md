@@ -15,6 +15,7 @@
 9. 输出路径和 manifest 规范查看 [references/output_management.md](references/output_management.md)。
 10. 研究多智能体信用分配时，先读[面向导师的综述](references/marl_credit_assignment_review.md)，公式与工程边界见[技术附录](references/marl_credit_assignment_technical_appendix.md)，逐篇依据见[证据矩阵](references/marl_credit_assignment_evidence_matrix.csv)和[检索日志](references/marl_credit_assignment_search_log.md)。
 11. 研究“共同平地选择—终端稳定”耦合问题时，先读[去中心化共同选址与终端时空协调综述](references/decentralized_site_trajectory_coordination_review.md)，逐篇证据和检索边界分别见[证据矩阵](references/decentralized_site_trajectory_coordination_evidence_matrix.csv)与[检索日志](references/decentralized_site_trajectory_coordination_search_log.md)。该文档是 `exp156` 训练期间的研究提案，不代表当前执行链已经采用 D-STC。
+12. 面向导师了解2026年8月10日至14日的工作，阅读[本周工作汇报](status/weekly_report_2026-08-10_to_2026-08-14.md)。该文档以问题思路和决策依据为主，实验细节仍以对应实验记录为准。
 
 不要根据 GIF、单个 checkpoint 或 TensorBoard 曲线直接判断成功。严格 proxy 结论以 `_suite/metrics/strict_acceptance.json`、独立 `metrics/final_eval_proxy.json` 和 `metrics/checkpoint_status.json` 为准。PhysX / Jackal 结果是 high-fidelity closed-loop evaluation，不等于 Isaac 物理训练结果。
 
@@ -42,6 +43,7 @@ Markdown数学公式统一使用 `$...$` 表示行内公式，使用独占一行
 - [references/decentralized_site_trajectory_coordination_review.md](references/decentralized_site_trajectory_coordination_review.md)：共同平地选择、终端时空协调和 D-STC 候选路线综述。
 - [references/decentralized_site_trajectory_coordination_evidence_matrix.csv](references/decentralized_site_trajectory_coordination_evidence_matrix.csv)：31篇正式论文的来源、适配结论和限制。
 - [references/decentralized_site_trajectory_coordination_search_log.md](references/decentralized_site_trajectory_coordination_search_log.md)：检索式、质量边界、子研究分工和筛选规则。
+- [status/weekly_report_2026-08-10_to_2026-08-14.md](status/weekly_report_2026-08-10_to_2026-08-14.md)：面向导师的本周工作汇报，概述差速模型修改、训练问题和DAE后续方案。
 - [runbooks/setup_environment.md](runbooks/setup_environment.md)：Isaac Sim / Isaac Lab / SKRL / 本地任务包安装和验收。
 - [runbooks/train_skrl_mappo.md](runbooks/train_skrl_mappo.md)：SKRL-MAPPO proxy 训练诊断、exp012 / exp013 和 checkpoint 评估入口。
 - [runbooks/](runbooks/)：训练、评估、可视化和 PhysX 展示命令。

@@ -17,6 +17,7 @@ ACTIVE_DOCUMENTS = (
     "docs/architecture/overall_plan_v3.md",
     "docs/experiments/exp_155_multiscale_network_ablation.md",
     "docs/experiments/exp_156_differential_multiscale_ablation.md",
+    "docs/status/weekly_report_2026-08-10_to_2026-08-14.md",
 )
 LEGACY = re.compile(r"\\[()\[\]]")
 INLINE_CODE = re.compile(r"`[^`]*`")

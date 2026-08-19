@@ -24,3 +24,10 @@ dist/
 *.tmp
 *.swp
 .DS_Store
+
+# Local literature/idea-search intermediates; curated conclusions belong in docs/.
+ideaspark_run/
+
+# Regenerable document exports and unused report concept drafts.
+docs/status/*.pdf
+docs/status/assets/**/differential_drive_concept.svg
