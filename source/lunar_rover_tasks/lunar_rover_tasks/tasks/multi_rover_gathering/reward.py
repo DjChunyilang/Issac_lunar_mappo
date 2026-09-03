@@ -27,6 +27,7 @@ class RewardTerms:
     consistency: torch.Tensor
     success_hold: torch.Tensor
     terminal: torch.Tensor
+    active_dstc: torch.Tensor
     total: torch.Tensor
 
 
@@ -303,6 +304,7 @@ def compute_reward(
     filter_raw_path_risk_mean: torch.Tensor | None = None,
     filter_deviation: torch.Tensor | None = None,
     centroid_flatness_reward: torch.Tensor | None = None,
+    active_dstc_reward: torch.Tensor | None = None,
 ) -> tuple[RewardTerms, torch.Tensor]:
     weights = cfg.reward_weights
     gather = compute_gather_reward(prev_metrics, metrics, cfg)
@@ -343,6 +345,16 @@ def compute_reward(
     consistency = compute_consistency_reward(physical_action, previous_physical_action, cfg)
     success_hold = compute_success_hold_reward(success_hold_count, cfg)
     terminal = compute_terminal_reward(done, cfg)
+    active_dstc = (
+        active_dstc_reward
+        if active_dstc_reward is not None
+        else torch.zeros_like(gather)
+    )
+    if active_dstc.shape != gather.shape:
+        raise ValueError(
+            f"active_dstc_reward must have shape {tuple(gather.shape)}, "
+            f"got {tuple(active_dstc.shape)}."
+        )
     total = (
         weights.gather * gather
         + weights.oracle * oracle
@@ -354,6 +366,7 @@ def compute_reward(
         + weights.consistency * consistency
         + success_hold
         + weights.terminal * terminal
+        + weights.active_dstc * active_dstc
     )
     return (
         RewardTerms(
@@ -367,6 +380,7 @@ def compute_reward(
             consistency=consistency,
             success_hold=success_hold,
             terminal=terminal,
+            active_dstc=active_dstc,
             total=total,
         ),
         mean_oracle_distance,

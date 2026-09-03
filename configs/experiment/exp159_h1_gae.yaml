@@ -1,0 +1,15 @@
+extends: exp158_h1_gae.yaml
+
+experiment:
+  name: exp159_analytical_prd
+
+task:
+  analytical_prd_enabled: true
+
+algorithm:
+  training_semantics: exp159_h1_gae_seeded_pair
+  advantage_estimator: gae
+  actor_credit_assignment: none
+  actor_credit_scale: 0.0
+  collision_constraint_enabled: false
+

@@ -28,7 +28,7 @@ $$
 \pi_\theta(a_{i,t}\mid o_{i,t}),
 $$
 
-其中共享参数 $\theta$ 不表示共享实时观测。每个 $o_{i,t}$ 只能包含车辆 $i$ 的291维局部观测和合法通信缓存。
+其中共享参数 $\theta$ 不表示共享实时观测。strict阶段的 $o_{i,t}$ 是车辆 $i$ 的295维局部观测和合法通信缓存；H1受控诊断使用407维局部站点势场观测。
 
 集中训练时允许 Critic 使用全局状态 $s_t$，目标仍为：
 
@@ -187,7 +187,7 @@ $$
 $$
 \overline r_{i,t}
 =
-\sum_{a_i'=1}^{40}
+\sum_{a_i'=1}^{47}
 \pi_\theta(a_i'\mid o_{i,t})
 \widehat r_{\psi,i}(s_t,\mathbf a_{-i,t},a_i').
 $$
@@ -219,6 +219,8 @@ $$
 
 这里的 `0.3` 是保守的工程预注册值，不是论文给出的通用最优值。其目的，是在首个反事实奖励模型仍可能存在估计误差时限制多步扣除强度；本轮不扫描 $\beta$，也不使用 $\beta=1$ 的完整差分奖励。
 
+exp158不让随机初始化的reward model立即影响Actor：更新1—128固定 $\beta=0$，更新129—256线性升至0.3，更新257—2400固定0.3。该日程是一次性预注册的拟合期，不构成β扫描。
+
 为便于实现，可将上式拆成“原团队 GAE 减去单车反事实轨迹”：
 
 $$
@@ -237,7 +239,7 @@ $$
 
 其中，$d_t=1$ 表示回合在时刻 $t$ 结束。第一式从当前时刻向后累计“如果只重新采样车辆 $i$ 的动作，预期会得到多少团队奖励”，并以 $\gamma\lambda\beta$ 衰减；第二式从团队 GAE 中扣除该车辆的反事实基线。由于每辆车的 $\overline r_{i,t}$ 不同，四辆车最终获得的 Actor advantage 也不同。
 
-注意：当前奖励依赖动作导致的下一状态、quintic路径和联合几何。不能把已知奖励公式误写成“无需模型即可精确计算所有替代动作奖励”。首轮必须学习训练期 reward model；不得为40个动作分别推进真实 Isaac 环境。
+注意：当前奖励依赖动作导致的下一状态、quintic路径和联合几何。不能把已知奖励公式误写成“无需模型即可精确计算所有替代动作奖励”。exp158学习训练期reward model；47种替代动作的真实环境分支只允许在冻结离线验证中运行，不进入训练环境步。
 
 ### 4.3 PRD
 
@@ -351,7 +353,7 @@ input:
   joint_discrete_actions with agent i masked
   queried_agent_index (training-only)
 output:
-  [batch, 4, 40] counterfactual immediate rewards
+  [batch, 4, 47] counterfactual immediate rewards
 ```
 
 约束：
@@ -369,7 +371,7 @@ output:
 ```text
 joint_actions: [env, 4]
 team_reward: [env, 1]
-actor_action_probabilities: [env, 4, 40]
+actor_action_probabilities: [env, 4, 47]
 ```
 
 集中式状态已存在。存储不得加入执行期通信缓存。旧 standard-MAPPO checkpoint 不加载 reward model；DAE run 必须从随机初始化开始并使用独立 `training_semantics`。
@@ -398,10 +400,10 @@ PPO ratio、clip、熵、Actor结构和 optimizer 设置保持不变，只将复
 1. `beta=0` 时 advantage 与现有 GAE 在数值容差内一致；
 2. 四车动作相同且 reward model 输出相同时，四车 DAE advantage 相同；
 3. 只改变车辆 $i$ 的反事实输出，不影响车辆 $j\ne i$ 的动作概率输入；
-4. 40维概率求和为1，反事实期望与显式循环一致；
+4. 47维概率求和为1，反事实期望与显式循环一致；
 5. episode终止、timeout和reset后 trace 不跨episode传播；
 6. reward model 参数不会被保存到部署 Actor 文件或执行；
-7. 固定291维本地观测和通信缓存后，修改全局状态、Oracle、reward model或未发送状态，Actor logits和最终控制命令完全不变；
+7. 固定295维strict观测或407维H1观测及通信缓存后，修改全局状态、Oracle、reward model或未发送状态，Actor logits和最终控制命令完全不变；
 8. 标准 MAPPO 与 DAE 使用相同 Actor初始化、课程、环境数、rollout和评测集合；
 9. CPU小环境和CUDA 256环境前向、反向无NaN或Inf；
 10. 训练吞吐和峰值显存单独报告，不因计算成本降低正式评测预算。
@@ -412,9 +414,24 @@ PPO ratio、clip、熵、Actor结构和 optimizer 设置保持不变，只将复
 
 ```text
 literature_review_complete
-dae_mappo_priority_candidate
-implementation_not_authorized_before_exp155_completion
-offline_reward_identifiability_gate_required
+dae_mappo_engineering_implemented
+engineering_smoke_passed
+formal_offline_reward_identifiability_gate_failed
+h1_and_strict_training_stopped
 ```
 
-这表示 DAE-MAPPO 是唯一优先候选，不表示其已经被项目采用，也不表示信用分配已被证明是 N0/N1/N2 失败的唯一原因。
+正式审计表明反事实排序能够勉强达到门限，但policy-weighted期望误差为2.006个真实奖励标准差，总奖励动作模型最差MSE改善为-5.45%，不能为DAE提供可靠扣除项。因此DAE-MAPPO工程接口保留，但H1和strict训练均不启动。完整结果见[exp158实验记录](../experiments/exp_158_dae_validation.md)。
+
+## 9. exp159解析式ALO-PRD结果
+
+exp159验证不依赖学习模型的单步基线：
+
+$$
+A_{i,t}^{\mathrm{PRD,raw}}
+=
+A_t^{\mathrm{team,raw}}-b_{i,t}^{\mathrm{LOO}}.
+$$
+
+$b_{i,t}^{\mathrm{LOO}}$只读取其他车辆当前动作和状态，不进行时间递推。正式384状态、72,192动作分支审计得到本车动作不变性误差 $2.98\times10^{-8}$，团队奖励与source重构误差均为0。全数据team/PRD梯度余弦为0.9996/0.9999，说明该基线没有改变主要梯度方向。
+
+然而两个验证seed中，基线绝对值只占raw团队advantage的3.45%/2.22%，bootstrap梯度方差仅降低7.06%/0.42%，未达到10%/15%门限。结论是：当前可严格证明无关的一步奖励范围过小；ALO-PRD无偏但不足以成为训练主线。完整结果见[exp159实验记录](../experiments/exp_159_analytical_prd.md)。

@@ -1,0 +1,18 @@
+extends: exp159_h1_gae.yaml
+
+experiment:
+  name: exp159_gae_smoke
+  num_envs: 8
+  rollout_steps: 8
+  eval_num_envs: 8
+  eval_steps: 16
+  checkpoint_interval: 16
+
+bounded_curriculum:
+  enabled: false
+  stages: []
+
+evaluation:
+  proxy_eval:
+    enabled: false
+

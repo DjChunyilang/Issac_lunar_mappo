@@ -1,0 +1,17 @@
+extends: exp160_dstc_h0_certificate.yaml
+
+experiment:
+  name: exp161_all_routes_feasibility
+  seed: 161
+
+route_feasibility:
+  hpp_prediction_rounds: 4
+  hpp_response_step_m: 0.8
+  hpp_goal_agreement_radius_m: 0.5
+  hpp_required_coverage: 0.9
+  hpp_required_agreement: 0.9
+  map_consensus_max_rounds: 3
+  map_required_coverage: 0.9
+  map_required_conditional_agreement: 1.0
+  optimizer_sweeps: 4
+  optimizer_required_resolution: 0.9

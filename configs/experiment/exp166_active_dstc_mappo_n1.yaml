@@ -1,0 +1,72 @@
+extends: exp164_overnight_h1_repaired_n1.yaml
+
+experiment:
+  name: exp166_active_dstc_mappo
+  seed: 23
+  num_envs: 256
+  rollout_steps: 64
+
+task:
+  explicit_goal_in_execution: false
+  diagnostic_site_belief_enabled: false
+  active_dstc_actor_enabled: true
+
+observation:
+  communication_radius: 12.0
+  schema_version: ego_v11_multiscale_site_belief
+  site_belief_radius: 0.75
+  site_belief_sigma: 2.0
+
+active_dstc:
+  scan_interval_steps: 12
+  belief_ttl_steps: 480
+  max_entries_per_source: 4
+  forwarding_rounds: 3
+  max_candidates_per_rover: 4
+  verification_radius_m: 0.90
+  required_flat_radius_m: 0.75
+  flatness_rings: 4
+  flatness_samples_per_ring: 16
+  nms_distance_m: 0.80
+  id_quantization_m: 0.05
+  pose_uncertainty_m: 0.10
+  distance_score_weight: 0.03
+  support_score_weight: 0.02
+
+reward:
+  weights:
+    oracle: 0.0
+    active_dstc: 1.0
+  coefficients:
+    dstc_belief_progress: 0.5
+    dstc_commit_bonus: 2.0
+    dstc_site_distance_progress: 1.5
+
+algorithm:
+  training_semantics: exp166_active_dstc_full_episode_actor_standard_gae
+  advantage_estimator: gae
+  actor_architecture: multiscale_n1_cnn
+  critic_architecture: structured_multiscale_v3
+  entropy_schedule_timesteps: 307200
+  bc_updates: 0
+  init_checkpoint: null
+
+full_rl_ablation:
+  candidates:
+    - multiscale_n1_cnn
+  seed: 23
+  policy_iterations_per_stage: 1600
+  stages: 3
+  timesteps: 307200
+  environment_interactions_per_candidate: 78643200
+  environment_interactions_total: 78643200
+  equal_budget_required: false
+  paired_scenarios_required: true
+
+benchmark_scope:
+  reinforcement_learning_mainline: true
+  actor_controls_full_episode: true
+  active_dstc_selects_actions: false
+  active_dstc_certificate_in_actor: true
+  r4_enabled: false
+  oracle_used: false

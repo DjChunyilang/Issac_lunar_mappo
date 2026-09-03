@@ -1,0 +1,17 @@
+extends: exp166_active_dstc_mappo_n1.yaml
+
+experiment:
+  name: exp166_active_dstc_mappo_smoke
+  num_envs: 256
+  rollout_steps: 64
+  eval_num_envs: 16
+  eval_steps: 32
+  checkpoint_interval: 0
+
+bounded_curriculum:
+  enabled: false
+  stages: []
+
+evaluation:
+  proxy_eval:
+    enabled: false

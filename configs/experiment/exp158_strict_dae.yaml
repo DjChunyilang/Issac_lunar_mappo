@@ -1,0 +1,14 @@
+extends: exp158_strict_gae.yaml
+
+algorithm:
+  training_semantics: exp158_strict_dae_seeded_pair
+  advantage_estimator: dae
+  dae:
+    beta_target: 0.3
+    warmup_policy_iterations: 128
+    ramp_policy_iterations: 128
+    reward_model_learning_rate: 0.0003
+    reward_model_epochs: 5
+    reward_model_validation_env_modulus: 8
+    reward_model_batch_size: 8192
+    counterfactual_chunk_size: 65536

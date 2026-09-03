@@ -100,6 +100,16 @@ def _merge_render_artifacts_into_manifest(
             "videos_proxy_rollout": _manifest_artifact_path(gif_path),
         }
     )
+    artifact_suffix = gif_path.stem.replace("-", "_")
+    artifacts.update(
+        {
+            f"metrics_{artifact_suffix}": _manifest_artifact_path(metrics_path),
+            f"figures_{artifact_suffix}_terrain": _manifest_artifact_path(
+                terrain_height_path
+            ),
+            f"videos_{artifact_suffix}": _manifest_artifact_path(gif_path),
+        }
+    )
     descriptor, temp_name = tempfile.mkstemp(
         prefix=f".{manifest_path.name}.",
         suffix=".tmp",
@@ -463,6 +473,7 @@ def render_rollout(
     seed: int | None = None,
     output: str | Path | None = None,
     metrics_output: str | Path | None = None,
+    terrain_output: str | Path | None = None,
     run_dir: str | Path | None = None,
     capture_interval: int = 2,
     max_frames: int = 80,
@@ -573,7 +584,9 @@ def render_rollout(
         footprint_radius,
     )
     terrain_height_path = (
-        run_dir_path / "figures" / "terrain_height_map.png"
+        _resolve(terrain_output)
+        if terrain_output is not None
+        else run_dir_path / "figures" / "terrain_height_map.png"
         if run_dir_path is not None
         else gif_path.parent / "terrain_height_map.png"
     )
@@ -692,6 +705,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--output", default=None)
     parser.add_argument("--metrics-output", default=None)
+    parser.add_argument("--terrain-output", default=None)
     parser.add_argument("--run-dir", default=None)
     parser.add_argument("--capture-interval", type=int, default=2)
     parser.add_argument("--max-frames", type=int, default=80)
@@ -704,6 +718,7 @@ def main() -> None:
         seed=args.seed,
         output=args.output,
         metrics_output=args.metrics_output,
+        terrain_output=args.terrain_output,
         run_dir=args.run_dir,
         capture_interval=args.capture_interval,
         max_frames=args.max_frames,

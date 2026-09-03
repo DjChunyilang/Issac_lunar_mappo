@@ -1,21 +1,40 @@
 # 当前状态
 
-更新时间：2026-08-13。
+更新时间：2026-08-26。
 
 ## 当前主线
 
-当前低层基线来自 `exp156`，正在通过`exp157`拆分验证共同选址与低层可达性：
+`exp165`已经完成Active-DSTC与R4的32环境六分层完整闭环pilot。Active-DSTC通信通过，但R4连续闭环失败：
 
 ```text
-H0冻结信息/原语审计
-→ H1 407维共同站点区域条件观测
-→ N1共享多尺度CNN Categorical Actor（诊断基线）
-→ 47维差速轨迹原语
-→ 时标化位姿轨迹
-→ 左右轮差速控制
+DISCOVER/VERIFY：已通过
+→ EXCHANGE/COMMIT：已通过
+→ delta/event通信：已通过
+→ R4 GATHER闭环：未通过
+→ 192场景/层正式验收：未启动
 ```
 
-保持Pure RL、shared-joint MAPPO和CTDE；BC、安全投影、方向性mask、集中式动作修正、在线MAPF、DAE、GRU、GNN和可学习通信均未启用。
+六层certificate为93.75%–100%，delta记录量累计减少84.52%，最终digest/site语义与完整洪泛一致。success仅21.88%–43.75%，timeout为50.00%–78.13%，near_open出现2/32 collision。主要失败是证书形成后的dmax/dispersion与动作切换：R4平均动作切换率57.40%–73.15%。因此不启动1152正式评测，也不把该run称为训练或收敛。
+
+机器可读结果：
+
+```text
+outputs/runs/exp165_active_dstc_closed_loop/pilot_32env_v3/metrics/summary.json
+```
+
+保持执行期严格去中心化。当前不使用BC、奖励模型、集中式目标或Oracle候选。下一步只审计联合原语承诺的跨时稳定性；当前R4不作为推荐控制器。
+
+`exp164`夜间H1长训已经完成并失败。它只隔离验证“共同站点已知时的低层Pure RL”，不代表完整去中心化选址。
+
+exp164使用256环境、4800 iterations、307,200训练步和约78.6M环境交互。最终结果为success 86.98%、collision 12.50%、timeout 0.52%、dmax ratio 0.0961，strict失败。Stage B近距Open曾达到success 98.44%和collision 1.30%，但Stage C远距Mixed/Bottleneck始终保持约12%–27%碰撞，确认协调泛化失败。
+
+运行状态：
+
+```text
+outputs/runs/exp164_overnight_h1_repaired/_suite/suite_status.json
+```
+
+停止续训、seed31/47和安全投影修补。继续delta通信与R4 GATHER；不得把307,200步`best.pt`或179,200步Stage B checkpoint标记为推荐策略。
 
 ## exp155状态
 
@@ -101,6 +120,123 @@ outputs/runs/exp156_differential_multiscale_ablation/_suite/suite_status.json
 
 `exp157` H0已完成1152个固定场景审计。12 m通信图连通率为100%，但“至少一辆车初始观测到共同站点且可传播证据”的总体比例仅40.97%，近距Bottleneck为0；这说明通信连接不等于站点信息已经可用。47维动作审计仍为12/12场景存在联合解，站点势场SE(2)误差为 $4.17\times10^{-7}$。H0尚未实现候选关联和commit，因此不能声称去中心化共同选址已就绪。
 
-H1使用407维空间站点势场、N1 CNN和相同39.3M Pure RL预算，作为“共同可行区域已知时低层能否完成任务”的受控上界。H1不是最终去中心化策略，其结果只用于决定是否值得实现完整D-STC。详见[exp157实验记录](experiments/exp_157_site_belief_diagnostic.md)与[共同选址综述](references/decentralized_site_trajectory_coordination_review.md)。
+H1旧run在134,400/153,600训练步后中断，没有最终配对评测，不能作为MAPPO基线或恢复训练。其最后一次课程诊断success为0、collision约0.112、timeout约0.888；`ppo_timestep_134400.pt` 只作为exp158离线审计的行为策略。
+
+## exp158工程状态
+
+已经实现：
+
+- 950维集中状态、四车联合动作和查询车辆条件的训练期反事实奖励模型；
+- `[T,E,4,47]` 旧策略概率存储与逐车DAE advantage；
+- 更新1—128的β=0拟合期、更新129—256的线性ramp和固定β=0.3阶段；
+- 标准GAE与DAE训练语义、checkpoint字段和部署边界隔离；
+- 六分层冻结状态快照、状态digest恢复、47动作真实反事实枚举；
+- H1/strict配对配置、最终reward-model验证、配对bootstrap和串行门控launcher；
+- exp158专项单元测试、CPU smoke和CUDA 256环境真实MAPPO更新。
+
+正式形状的CUDA smoke使用256环境、rollout 64和一次完整更新，GAE/DAE Actor及Critic初始化hash完全一致；经共享状态latent优化后，DAE峰值CUDA显存约6.51 GB，吞吐为GAE的约90.4%，通过8 GB和60%门限。该结果只证明工程链路，不证明奖励模型可辨识或策略有效。
+
+正式离线门限已完成但未通过，因此没有启动H1训练。主要失败为：冲突参与/非参与边际贡献比1.366低于2.0；共享advantage相关0.2004略高于上限0.20；总奖励动作模型最差MSE改善为-5.45%；policy-weighted期望误差达到2.006个真实奖励标准差。虽然六个地形seed的动作排序Spearman均达到0.30，模型仍无法提供DAE所需的校准期望值。
+
+当前状态为 `offline_gate_failed`。按预注册规则，不扩大reward model、不增加RNN或辅助分量监督、不扫描β，也不启动H1/strict配对训练。机器可读结论见：
+
+```text
+outputs/runs/exp158_dae_validation/offline_credit_audit/metrics/offline_gate.json
+```
+
+详见[exp158实验记录](experiments/exp_158_dae_validation.md)。
+
+## exp159工程状态
+
+已经实现：
+
+- 其他三车动作、地形、near、collision、failure和H1 Oracle进展构成的单步LOO基线；
+- 逐车Oracle距离历史，同时保持原mean Oracle reward完全一致；
+- `analytical_prd_loo` advantage路径，Critic继续拟合原团队return；
+- 训练配置、checkpoint语义、日志、H1/strict双审计和串行launcher；
+- 本车47动作基线不变性、单碰撞对非参与者修正和exp150差异测试；
+- CPU真实更新与CUDA 256环境、rollout 64真实更新。
+
+CUDA正式shape smoke中，GAE/PRD Actor和Critic初始化hash一致；PRD吞吐约为GAE的99.7%，峰值显存约6.49 GB，通过90%和8 GB门限。
+
+A-H1正式冻结审计已完成但未通过，因此A-strict和完整训练均未启动。LOO基线满足团队奖励不变、source精确重构、本车47动作不变性和全数据梯度一致性；但两个验证seed的基线覆盖率只有3.45%/2.22%，梯度方差仅降低7.06%/0.42%，低于10%和15%门限。
+
+当前状态为 `offline_h1_gate_failed`。这说明严格保持奖励不变且只移除一步、可证明无关的奖励项虽然无偏，但过于保守，不能产生足够的方差降低。按预注册规则，不运行A-strict、不降低门限、不加入多步trace或学习相关集合。机器可读结果：
+
+```text
+outputs/runs/exp159_analytical_prd/offline_h1_audit/metrics/offline_gate.json
+```
+
+详见[exp159实验记录](experiments/exp_159_analytical_prd.md)。
+
+## exp160工程与H0状态
+
+已实现训练无关的D-STC静态核心：
+
+- 每车最多4个本地平地区域proposal；
+- $1.25\ \mathrm m$验证圆盘、$0.75\ \mathrm m$成功平整半径和$0.10\ \mathrm m$位姿误差收缩；
+- proposal源车使用与成功gate相同的离散采样二次复核；
+- 不使用候选槽位编号的物理关联与稳定site id；
+- 候选置换和场景SE(2)不变；
+- 单epoch单票、4-of-4全签commit；
+- 丢包、冲突投票和陈旧重放fail-closed；
+- 新epoch必须取得四车release。
+
+1152个固定场景的最终H0结果为：总体可提交证书覆盖40.80%，双车共同支持2.60%，四车共同支持0；470个证书的实际平整度、定位误差包含、候选置换、SE(2)、完整提交和对抗消息门限均为100%。Open覆盖99.48%/100%，但near/far Bottleneck只有0/1.04%。因此：
+
+```text
+h0_certificate_core_passed: true
+online_actor_integration_ready: false
+```
+
+下一步只实现有限容量的跨时段候选belief和12 m连通图上的有界proposal转发，并使用冻结轨迹回放检查覆盖与版本收敛。动态门限通过前不修改Actor观测、不启动H1或strict长训。机器可读结果：
+
+```text
+outputs/runs/exp160_dstc_site_commitment/h0_certificate_audit/metrics/h0_certificate_audit.json
+```
+
+详见[exp160实验记录](experiments/exp_160_dstc_site_commitment.md)。
+
+## exp161四路线比较结论
+
+同一冻结套件已经尝试四条路线：
+
+| 路线 | 结果 | 完整任务判定 |
+| --- | --- | --- |
+| R1站点证书 | 0伪证书，覆盖40.80% | 未通过 |
+| R2 HPP式目标belief | 乐观覆盖12.07%，一致率0 | 未通过 |
+| R3分布式地图共识 | 有证据时100%一致，平均1.17轮 | 覆盖不足，未通过 |
+| R4去中心化原语优化 | 12/12安全解除死锁 | 只通过低层组件 |
+
+R2已经使用全队实时位姿作为超出strict接口的乐观上界，仍无法让私有候选形成共同目标，因此不实现学习式队友预测。R3证明通信一致性不是当前瓶颈；R4证明47维动作具备解除末段死锁的表达能力，但它不能发现平地。
+
+机器可读结论为：
+
+```text
+complete_route_passes: []
+all_coupled_task_routes_failed: true
+successful_components: [R1, R3, R4]
+```
+
+下一步只验证Active-DSTC的`DISCOVER → VERIFY`：有限topometric候选belief、任务特定frontier分工和通信重连。Mixed/Bottleneck在96 s内证书覆盖达到分层门限前，不训练高层utility或低层Actor。详见[exp161实验记录](experiments/exp_161_all_routes_feasibility.md)和[下一方向证据简报](references/active_dstc_next_direction.md)。
+
+## exp162/163 Active-DSTC状态
+
+exp162实现了有限候选belief、版本/TTL、候选幂等合并、最多3轮洪泛、2.4 s候选扫描和确定性分区frontier探索。原100坑Bottleneck的32环境诊断结果为near/far证书0/6.25%，而Open/Mixed为100%。全地图审计确认原Bottleneck的可行平地集中在地图边界；问题是基准内部可行域，而不是共识或候选记忆。
+
+exp163保留Bottleneck墙和中央通道，只将陨石坑数从100调整为30。1152场景正式H0.5结果：
+
+| 分层 | 证书 | collision | timeout |
+| --- | ---: | ---: | ---: |
+| near Open | 100% | 0 | 0 |
+| near Mixed | 99.48% | 0 | 0.52% |
+| near Bottleneck | 97.40% | 0.52% | 2.08% |
+| far Open | 100% | 0 | 0 |
+| far Mixed | 97.92% | 0 | 2.08% |
+| far Bottleneck | 100% | 0 | 0 |
+
+全部伪证书为0，H0.5所有预注册门限通过。但当前证书形成后车辆hold，尚未完成最终集合。通信还采用完整缓存洪泛，发送记录约为真实变化记录的10倍左右。
+
+下一步固定为：版本化delta/event转发，然后把R4作为独立GATHER控制器接在commit之后。先做32环境六分层完整闭环；未通过时不运行1152正式评测。详见[exp162](experiments/exp_162_active_dstc_h05.md)与[exp163](experiments/exp_163_feasible_bottleneck_active_dstc.md)。
 
 完整接口、预算和验收方法见[实施计划](implementation_plan.md)。

@@ -439,6 +439,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     low_level_control = _require_mapping("low_level_control", data.get("low_level_control", {}))
     terrain = _require_mapping("terrain", data.get("terrain", {}))
     gather_point = _require_mapping("gather_point", data.get("gather_point", {}))
+    active_dstc = _require_mapping("active_dstc", data.get("active_dstc", {}))
     reward = _require_mapping("reward", data.get("reward", {}))
     observation = _require_mapping("observation", data.get("observation", {}))
     state = _require_mapping("state", data.get("state", {}))
@@ -462,6 +463,8 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
         "n_agents",
         "explicit_goal_in_execution",
         "diagnostic_site_belief_enabled",
+        "active_dstc_actor_enabled",
+        "analytical_prd_enabled",
         "execution_slot_reward_target",
         "dynamic_terminal_slot_goal_enabled",
         "dynamic_terminal_slot_goal_dmax_multiplier",
@@ -483,6 +486,15 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
             "diagnostic_site_belief_enabled",
             cfg.task.diagnostic_site_belief_enabled,
         )
+    )
+    cfg.task.active_dstc_actor_enabled = bool(
+        task.get(
+            "active_dstc_actor_enabled",
+            cfg.task.active_dstc_actor_enabled,
+        )
+    )
+    cfg.task.analytical_prd_enabled = bool(
+        task.get("analytical_prd_enabled", cfg.task.analytical_prd_enabled)
     )
     cfg.task.execution_slot_reward_target = bool(
         task.get(
@@ -709,13 +721,17 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
             "task.explicit_goal_in_execution must be true exactly when "
             "observation.schema_version is an execution gather-site goal schema."
         )
-    has_diagnostic_site_belief = (
+    has_site_belief_schema = (
         cfg.observation.schema_version == "ego_v11_multiscale_site_belief"
     )
-    if has_diagnostic_site_belief != cfg.task.diagnostic_site_belief_enabled:
+    site_belief_mode_count = int(cfg.task.diagnostic_site_belief_enabled) + int(
+        cfg.task.active_dstc_actor_enabled
+    )
+    if has_site_belief_schema != (site_belief_mode_count == 1):
         raise ValueError(
-            "task.diagnostic_site_belief_enabled must be true exactly for the "
-            "H1 ego_v11_multiscale_site_belief schema."
+            "ego_v11_multiscale_site_belief requires exactly one of "
+            "task.diagnostic_site_belief_enabled or "
+            "task.active_dstc_actor_enabled."
         )
     if cfg.observation.site_belief_radius < 0.0:
         raise ValueError("observation.site_belief_radius must be non-negative.")
@@ -750,6 +766,24 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
         )
     _apply_values(cfg.safety, safety, "safety")
     _apply_values(cfg.gather_point, gather_point, "gather_point")
+    if cfg.task.active_dstc_actor_enabled:
+        _apply_values(cfg.active_dstc, active_dstc, "active_dstc")
+        if cfg.reward_weights.oracle != 0.0:
+            raise ValueError(
+                "Active-DSTC Actor training requires reward.weights.oracle=0."
+            )
+        if cfg.active_dstc.scan_interval_steps <= 0:
+            raise ValueError("active_dstc.scan_interval_steps must be positive.")
+        if cfg.active_dstc.forwarding_rounds <= 0:
+            raise ValueError("active_dstc.forwarding_rounds must be positive.")
+        if (
+            cfg.active_dstc.verification_radius_m
+            <= cfg.active_dstc.required_flat_radius_m
+        ):
+            raise ValueError(
+                "active_dstc.verification_radius_m must exceed "
+                "required_flat_radius_m."
+            )
     _validate_gather_point(cfg)
     _apply_values(cfg.success_thresholds, success_thresholds, "success_thresholds")
     if cfg.success_thresholds.min_pairwise_distance > 0.0:

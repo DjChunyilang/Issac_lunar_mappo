@@ -1,0 +1,13 @@
+extends: exp162_active_dstc_h05.yaml
+
+experiment:
+  name: exp163_feasible_bottleneck_active_dstc
+  seed: 163
+
+benchmark_repair:
+  # Preserve the bottleneck ridge/gap geometry but avoid simultaneously using
+  # 100 craters, which leaves almost all valid 0.75 m sites at the map edge.
+  bottleneck_crater_count: 30
+
+active_dstc:
+  collision_avoidance_distance_m: 0.90

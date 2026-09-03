@@ -23,6 +23,12 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.action_interpreter import (
     apply_terminal_slot_capture,
     decode_action,
 )
+from lunar_rover_tasks.tasks.multi_rover_gathering.analytical_prd import (
+    compute_analytical_prd_baseline,
+)
+from lunar_rover_tasks.tasks.multi_rover_gathering.active_dstc_runtime import (
+    ActiveDSTCRuntime,
+)
 from lunar_rover_tasks.tasks.multi_rover_gathering.communication import (
     CommunicationSnapshot,
     TieredCommunicationCache,
@@ -37,6 +43,7 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.mapf_diagnostics import (
 from lunar_rover_tasks.tasks.multi_rover_gathering.observation import build_actor_observation
 from lunar_rover_tasks.tasks.multi_rover_gathering.oracle import (
     OptimalGatherPointResult,
+    compute_oracle_distances,
     compute_mean_oracle_distance,
     search_optimal_gather_point,
 )
@@ -178,6 +185,9 @@ class MultiRoverGatheringCore:
         self.oracle_search_max_slope = torch.zeros(self.num_envs, device=self.device)
         self.prev_metrics = compute_team_metrics(self.positions, self.velocities_xy)
         self.prev_mean_oracle_distance = torch.zeros(self.num_envs, device=self.device)
+        self.prev_oracle_distance_per_agent = torch.zeros(
+            self.num_envs, self.n_agents, device=self.device
+        )
         self.prev_centroid_flatness_cost = torch.zeros(
             self.num_envs,
             device=self.device,
@@ -237,6 +247,17 @@ class MultiRoverGatheringCore:
                     }
                 ),
             )
+        self.active_dstc_runtime = (
+            ActiveDSTCRuntime(
+                num_envs=self.num_envs,
+                n_agents=self.n_agents,
+                device=self.device,
+                cfg=self.cfg.active_dstc,
+                gather_cfg=self.cfg.gather_point,
+            )
+            if self.cfg.task.active_dstc_actor_enabled
+            else None
+        )
         self.trajectory_conflicts = TrajectoryConflictTracker(
             self.num_envs,
             self.n_agents,
@@ -262,10 +283,21 @@ class MultiRoverGatheringCore:
 
     def _actor_terrain_observation(self) -> torch.Tensor:
         if self.cfg.observation.schema_version == "ego_v11_multiscale_site_belief":
-            if not self.cfg.task.diagnostic_site_belief_enabled:
-                raise RuntimeError(
-                    "ego_v11_multiscale_site_belief is restricted to the H1 diagnostic."
+            if self.cfg.task.active_dstc_actor_enabled:
+                if self.active_dstc_runtime is None:
+                    raise RuntimeError("Active-DSTC Actor runtime is not initialized.")
+                return build_multiscale_site_belief_observation(
+                    self.positions,
+                    self.yaws,
+                    self.active_dstc_runtime.target_points,
+                    self.cfg.terrain,
+                    self.terrain_runtime,
+                    site_radius=float(self.cfg.observation.site_belief_radius),
+                    potential_sigma=float(self.cfg.observation.site_belief_sigma),
+                    site_valid=self.active_dstc_runtime.target_valid,
                 )
+            if not self.cfg.task.diagnostic_site_belief_enabled:
+                raise RuntimeError("Site-belief schema has no configured source.")
             return build_multiscale_site_belief_observation(
                 self.positions,
                 self.yaws,
@@ -374,6 +406,10 @@ class MultiRoverGatheringCore:
         self.oracle_search_max_slope[env_ids] = result.flatness.max_slope
         self._refresh_execution_slot_points(env_ids)
         self.prev_mean_oracle_distance[env_ids] = compute_mean_oracle_distance(
+            self.positions[env_ids],
+            self._oracle_reward_target()[env_ids],
+        )
+        self.prev_oracle_distance_per_agent[env_ids] = compute_oracle_distances(
             self.positions[env_ids],
             self._oracle_reward_target()[env_ids],
         )
@@ -725,7 +761,27 @@ class MultiRoverGatheringCore:
         self.success_hold_count[env_ids] = 0
         self.trajectory_conflicts.reset(env_ids)
         self._reset_communication(env_ids)
-        self.refresh_oracle_point(env_ids)
+        if self.active_dstc_runtime is not None:
+            self.active_dstc_runtime.reset(
+                env_ids,
+                self.positions,
+                self.yaws,
+                self.cfg.terrain,
+                self.terrain_runtime,
+            )
+            self.oracle_point[env_ids] = 0.0
+            self.oracle_search_objective[env_ids] = 0.0
+            self.oracle_search_feasible[env_ids] = False
+            self.oracle_search_mean_distance[env_ids] = 0.0
+            self.oracle_search_max_distance[env_ids] = 0.0
+            self.oracle_search_path_risk[env_ids] = 0.0
+            self.oracle_search_path_height_change[env_ids] = 0.0
+            self.oracle_search_height_range[env_ids] = 0.0
+            self.oracle_search_max_slope[env_ids] = 0.0
+            self.prev_mean_oracle_distance[env_ids] = 0.0
+            self.prev_oracle_distance_per_agent[env_ids] = 0.0
+        else:
+            self.refresh_oracle_point(env_ids)
         reset_metrics = compute_team_metrics(
             self.positions[env_ids],
             self.velocities_xy[env_ids],
@@ -794,13 +850,18 @@ class MultiRoverGatheringCore:
             committed_planned_yaw_delta=self.committed_planned_yaw_delta,
             coordination_token=self.coordination_token,
         )
+        critic_site_point = (
+            self.active_dstc_runtime.critic_site_points(self.positions)
+            if self.active_dstc_runtime is not None
+            else self.oracle_point
+        )
         critic_state = build_critic_state(
             self.positions,
             self.yaws,
             self.velocities_xy,
             self.angular_velocities,
             metrics,
-            self.oracle_point,
+            critic_site_point,
             self.success_hold_count,
             self.cfg,
             terrain_grid,
@@ -831,7 +892,23 @@ class MultiRoverGatheringCore:
             raise ValueError(f"Expected action shape {expected_shape}, got {tuple(action.shape)}")
 
         self.prev_metrics = compute_team_metrics(self.positions, self.velocities_xy)
+        previous_dstc_potential = (
+            self.active_dstc_runtime.potential.clone()
+            if self.active_dstc_runtime is not None
+            else torch.zeros(self.num_envs, device=self.device)
+        )
+        previous_dstc_committed = (
+            self.active_dstc_runtime.committed.clone()
+            if self.active_dstc_runtime is not None
+            else torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        )
+        previous_dstc_site_distance = (
+            self.active_dstc_runtime.mean_committed_distance(self.positions)
+            if self.active_dstc_runtime is not None
+            else torch.zeros(self.num_envs, device=self.device)
+        )
         previous_mean_oracle = self.prev_mean_oracle_distance.clone()
+        previous_oracle_per_agent = self.prev_oracle_distance_per_agent.clone()
         raw_decoded = decode_action(action, self.positions, self.yaws, self.cfg.planner)
         filter_cfg = self.cfg.planner.subgoal_filter
         filter_progress = (
@@ -1060,6 +1137,14 @@ class MultiRoverGatheringCore:
         self._advance_communication()
         self.global_step_count += 1
         self.step_count += 1
+        if self.active_dstc_runtime is not None:
+            self.active_dstc_runtime.update(
+                self.positions,
+                self.yaws,
+                self.cfg.terrain,
+                self.terrain_runtime,
+                step_counts=self.step_count,
+            )
 
         metrics = compute_team_metrics(self.positions, self.velocities_xy)
         gather_point_flatness = self.evaluate_current_gather_point_flatness(metrics)
@@ -1101,6 +1186,28 @@ class MultiRoverGatheringCore:
             self.cfg.success_thresholds,
             flatness_ok=flatness_ok,
         )
+        active_dstc_reward = torch.zeros(self.num_envs, device=self.device)
+        if self.active_dstc_runtime is not None:
+            coefficients = self.cfg.reward_coefficients
+            belief_progress = (
+                self.active_dstc_runtime.potential - previous_dstc_potential
+            )
+            new_commit = (
+                self.active_dstc_runtime.committed & ~previous_dstc_committed
+            ).float()
+            current_site_distance = (
+                self.active_dstc_runtime.mean_committed_distance(self.positions)
+            )
+            site_progress = torch.where(
+                previous_dstc_committed,
+                previous_dstc_site_distance - current_site_distance,
+                torch.zeros_like(current_site_distance),
+            )
+            active_dstc_reward = (
+                float(coefficients.dstc_belief_progress) * belief_progress
+                + float(coefficients.dstc_commit_bonus) * new_commit
+                + float(coefficients.dstc_site_distance_progress) * site_progress
+            )
         terms, mean_oracle = compute_reward(
             self.positions,
             self._oracle_reward_target(),
@@ -1142,8 +1249,62 @@ class MultiRoverGatheringCore:
                 else None
             ),
             centroid_flatness_reward=centroid_flatness_reward,
+            active_dstc_reward=active_dstc_reward,
         )
+        analytical_prd = None
+        if self.cfg.task.analytical_prd_enabled:
+            analytical_prd = compute_analytical_prd_baseline(
+                positions=self.positions,
+                oracle_target=self._oracle_reward_target(),
+                previous_oracle_distances=previous_oracle_per_agent,
+                physical_action=decoded.physical,
+                previous_physical_action=self.previous_physical_action,
+                done=done,
+                terrain_features=self.last_terrain_features,
+                reward_terms=terms,
+                cfg=self.cfg,
+                oracle_feasible=self.oracle_search_feasible,
+                subgoal_terrain_features=subgoal_terrain_features,
+                terrain_speed_scale=self.last_terrain_speed_scale,
+                height_delta=self.last_height_delta,
+                path_terrain_risk_mean=(
+                    path_terrain["risk_mean"] if path_terrain is not None else None
+                ),
+                path_terrain_risk_max=(
+                    path_terrain["risk_max"] if path_terrain is not None else None
+                ),
+                path_terrain_reference_risk_mean=(
+                    path_terrain.get("reference_risk_mean")
+                    if path_terrain is not None
+                    else None
+                ),
+                path_height_change_mean=(
+                    path_terrain["height_change_mean"]
+                    if path_terrain is not None
+                    else None
+                ),
+                filter_raw_path_risk_mean=(
+                    filter_result.info["raw_path_terrain_risk_mean"]
+                    if isinstance(
+                        filter_result.info.get("raw_path_terrain_risk_mean"),
+                        torch.Tensor,
+                    )
+                    else None
+                ),
+                filter_deviation=(
+                    filter_result.info["suggested_subgoal_deviation"]
+                    if isinstance(
+                        filter_result.info.get("suggested_subgoal_deviation"),
+                        torch.Tensor,
+                    )
+                    else None
+                ),
+            )
         self.prev_mean_oracle_distance = mean_oracle
+        self.prev_oracle_distance_per_agent = compute_oracle_distances(
+            self.positions,
+            self._oracle_reward_target(),
+        )
         self.prev_centroid_flatness_cost = centroid_flatness_cost
         # Keep next-step control state independent from this step's diagnostic
         # snapshot. ``reset()`` updates selected entries in place after a done;
@@ -1215,11 +1376,49 @@ class MultiRoverGatheringCore:
             "progress": centroid_flatness_progress.clone(),
             "activation": centroid_flatness_activation.clone(),
         }
+        analytical_prd_snapshot = (
+            {
+                "reward_sources": {
+                    "node": analytical_prd.node.clone(),
+                    "team_residual": analytical_prd.team_residual.clone(),
+                },
+                "local_other": analytical_prd.local_other.clone(),
+                "near_other": analytical_prd.near_other.clone(),
+                "collision_other": analytical_prd.collision_other.clone(),
+                "failure_other": analytical_prd.failure_other.clone(),
+                "loo_baseline": analytical_prd.total.clone(),
+                "source_reconstruction_error": (
+                    analytical_prd.source_reconstruction_error.clone()
+                ),
+                "own_action_invariance_error": (
+                    analytical_prd.own_action_invariance_error.clone()
+                ),
+                "actual_collision_participants": (
+                    analytical_prd.actual_collision_participants.clone()
+                ),
+                "team_reward_preservation_error": torch.zeros_like(terms.total),
+            }
+            if analytical_prd is not None
+            else None
+        )
         # Centralized diagnostic snapshot taken before auto-reset. It is exposed
         # only through ``info`` and is never part of the Actor observation or the
         # execution chain. Offline audits need it to compute terminal-transition
         # progress without accidentally reading the next episode's reset state.
         positions_snapshot = self.positions.clone()
+        active_dstc_snapshot = (
+            {
+                **self.active_dstc_runtime.diagnostics(),
+                "target_points": self.active_dstc_runtime.target_points.clone(),
+                "target_valid": self.active_dstc_runtime.target_valid.clone(),
+                "committed_centers": (
+                    self.active_dstc_runtime.committed_centers.clone()
+                ),
+                "reward": active_dstc_reward.clone(),
+            }
+            if self.active_dstc_runtime is not None
+            else None
+        )
 
         if done.done.any():
             env_ids = torch.nonzero(done.done, as_tuple=False).flatten()
@@ -1265,6 +1464,7 @@ class MultiRoverGatheringCore:
                 "terrain_runtime": terrain_runtime,
                 "gather_point_flatness": gather_point_flatness_snapshot,
                 "centroid_flatness_reward": centroid_flatness_reward_snapshot,
+                "analytical_prd": analytical_prd_snapshot,
                 "communication": (
                     {
                         key: value.clone()
@@ -1273,6 +1473,7 @@ class MultiRoverGatheringCore:
                     if self.last_communication_snapshot is not None
                     else None
                 ),
+                "active_dstc": active_dstc_snapshot,
                 "oracle_point": oracle_point,
                 "oracle_search": oracle_search_snapshot,
             },

@@ -2215,3 +2215,63 @@ systemctl --user status exp049-structured-bicycle-quintic-map25-terminal-spacing
 ## Git 规则
 
 不要提交 `outputs/` 下的 checkpoint、JSONL、诊断 JSON 或日志。需要保留结论时，更新对应实验文档和 `docs/current_status.md`。
+
+## exp158 DAE两级验证
+
+先运行正式离线门限：
+
+```bash
+.venv_isaaclab/bin/python scripts/run_exp158_dae_validation.py \
+  --phase offline \
+  --device cuda:0
+```
+
+launcher会先复核专项测试、CPU/CUDA smoke、初始化hash、8 GB显存和60%吞吐门限，再执行冻结审计。只有以下文件的 `passed=true` 才允许训练：
+
+```text
+outputs/runs/exp158_dae_validation/offline_credit_audit/metrics/offline_gate.json
+```
+
+H1 seed23完整配对：
+
+```bash
+.venv_isaaclab/bin/python scripts/run_exp158_dae_validation.py \
+  --phase h1 \
+  --seed 23 \
+  --device cuda:0
+```
+
+后续seed必须分别显式启动，launcher不会自动重试失败run：
+
+```bash
+.venv_isaaclab/bin/python scripts/run_exp158_dae_validation.py --phase h1 --seed 31 --device cuda:0
+.venv_isaaclab/bin/python scripts/run_exp158_dae_validation.py --phase h1 --seed 47 --device cuda:0
+```
+
+strict阶段要求H1三seed汇总通过；命令相同，只将 `--phase` 改为 `strict`。任何已有run目录都会触发拒绝覆盖，必须先检查该run状态，不得删除产物后静默重试。
+
+## exp159解析式ALO-PRD
+
+先运行双离线门控；A-H1失败时launcher不会运行A-strict：
+
+```bash
+.venv_isaaclab/bin/python scripts/run_exp159_prd_validation.py \
+  --phase offline \
+  --device cuda:0
+```
+
+正式门限事实源：
+
+```text
+outputs/runs/exp159_analytical_prd/offline_h1_audit/metrics/offline_gate.json
+outputs/runs/exp159_analytical_prd/offline_strict_audit/metrics/offline_gate.json
+```
+
+A-H1通过后才允许：
+
+```bash
+.venv_isaaclab/bin/python scripts/run_exp159_prd_validation.py \
+  --phase h1 --seed 23 --device cuda:0
+```
+
+seed31、47及strict阶段必须分别显式启动。ALO-PRD不允许与DAE、历史Actor credit或collision constraint同时启用，现有run目录也不会被覆盖或自动重试。

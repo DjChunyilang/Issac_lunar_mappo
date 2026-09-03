@@ -1,0 +1,13 @@
+extends: exp157_h1_site_belief_n1.yaml
+
+experiment:
+  name: exp158_dae_validation
+
+algorithm:
+  training_semantics: exp158_h1_gae_seeded_pair
+  advantage_estimator: gae
+  actor_architecture: multiscale_n1_cnn
+  critic_architecture: structured_multiscale_v3
+  bc_updates: 0
+  init_checkpoint: null
+

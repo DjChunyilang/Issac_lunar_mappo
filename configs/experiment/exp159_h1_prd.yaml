@@ -1,0 +1,10 @@
+extends: exp159_h1_gae.yaml
+
+algorithm:
+  training_semantics: exp159_h1_analytical_prd_loo_seeded_pair
+  advantage_estimator: analytical_prd_loo
+  prd:
+    baseline_scale: 1.0
+    temporal_trace: false
+    preserve_team_reward: true
+

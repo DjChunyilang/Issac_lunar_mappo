@@ -1,0 +1,26 @@
+extends: exp156_differential_multiscale_ablation.yaml
+
+experiment:
+  name: exp160_dstc_h0_certificate
+  seed: 160
+  num_envs: 192
+
+# H0 is a frozen, training-free audit. This section is read only by
+# scripts/audit_exp160_site_commitment.py and is deliberately not part of the
+# Actor/environment configuration yet.
+site_commitment:
+  epoch: 0
+  max_candidates_per_rover: 4
+  verification_radius_m: 1.25
+  required_flat_radius_m: 0.75
+  pose_uncertainty_m: 0.10
+  flatness_rings: 4
+  flatness_samples_per_ring: 16
+  nms_distance_m: 0.80
+  id_quantization_m: 0.05
+  minimum_support_for_commit: 1
+  distance_score_weight: 0.03
+  support_score_weight: 0.02
+  terminal_clearance_m: 0.04
+  se2_rotation_rad: 0.731
+  se2_translation_xy: [1.7, -2.3]
