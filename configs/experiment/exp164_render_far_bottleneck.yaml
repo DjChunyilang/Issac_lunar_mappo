@@ -1,0 +1,7 @@
+extends: exp164_render_far_mixed.yaml
+
+experiment:
+  name: exp164_render_far_bottleneck
+
+terrain:
+  topology_profile: bottleneck

@@ -1,6 +1,6 @@
 # exp157：共同站点可辨识性与低层可达性诊断
 
-更新时间：2026-08-13。
+更新时间：2026-08-19。
 
 ## 1. 目的与证据边界
 
@@ -90,3 +90,15 @@ scripts/run_exp157_h0_h1.py
 outputs/runs/exp157_site_belief_diagnostic/h0_frozen_audit/
 outputs/runs/exp157_h1_site_belief_n1/h1_n1_seed23_full_2400iter/
 ```
+
+## 6. H1运行状态
+
+H1在134,400/153,600训练步后中断，当前没有训练进程，也没有生成最终1152场景配对评测。最后一次课程诊断仍为success 0、collision约0.112、timeout约0.888。该run状态为：
+
+```text
+lifecycle_status: incomplete_interrupted
+eligible_for_baseline: false
+resume_allowed: false
+```
+
+其 `ppo_timestep_134400.pt` 只允许作为exp158冻结奖励可辨识性审计的行为策略。exp158的H1-GAE与H1-DAE必须从相同随机初始化重新完整训练，不能把本run续训结果作为配对基线。

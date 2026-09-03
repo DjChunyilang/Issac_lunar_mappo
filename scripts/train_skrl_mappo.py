@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import math
 import shutil
@@ -40,6 +41,7 @@ from skrl.models.torch import CategoricalMixin, DeterministicMixin, GaussianMixi
 from skrl.multi_agents.torch.mappo import MAPPO
 from skrl.trainers.torch import SequentialTrainer
 
+from dae_credit import CounterfactualRewardModel
 from shared_policy_mappo import SharedPolicyMAPPO
 
 
@@ -975,6 +977,14 @@ def terrain_input_weight_delta_l2(
 
 def module_parameter_snapshot(module: nn.Module) -> list[torch.Tensor]:
     return [parameter.detach().clone() for parameter in module.parameters()]
+
+
+def module_state_sha256(module: nn.Module) -> str:
+    digest = hashlib.sha256()
+    for name, value in sorted(module.state_dict().items()):
+        digest.update(name.encode("utf-8"))
+        digest.update(value.detach().cpu().contiguous().numpy().tobytes())
+    return digest.hexdigest()
 
 
 def module_parameter_delta_l2(
@@ -2419,6 +2429,7 @@ REWARD_COMPONENTS = (
     "consistency",
     "success_hold",
     "terminal",
+    "active_dstc",
 )
 
 
@@ -2786,6 +2797,28 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
                 )
             telemetry_state["path_terrain"] = path_metrics
             _accumulate_numeric_metrics(telemetry_state, "path_terrain", path_metrics)
+        active_dstc = info.get("active_dstc")
+        if active_dstc is not None:
+            dstc_metrics = {
+                "active_dstc_target_valid_fraction": _mean_float(
+                    active_dstc["target_valid_fraction"]
+                ),
+                "active_dstc_known_source_fraction": _mean_float(
+                    active_dstc["known_source_fraction"]
+                ),
+                "active_dstc_commit_rate": _mean_float(
+                    active_dstc["committed"].float()
+                ),
+                "active_dstc_potential": _mean_float(active_dstc["potential"]),
+                "active_dstc_delta_record_reduction": _mean_float(
+                    active_dstc["delta_record_reduction"]
+                ),
+                "active_dstc_reward": _mean_float(active_dstc["reward"]),
+            }
+            telemetry_state["active_dstc"] = dstc_metrics
+            _accumulate_numeric_metrics(
+                telemetry_state, "active_dstc", dstc_metrics
+            )
         actor_credit = info.get("actor_credit")
         if actor_credit is not None:
             centered = actor_credit["centered"].detach().float()
@@ -2841,6 +2874,63 @@ def install_nan_checks(env: MultiRoverGatheringSKRLEnv, telemetry_state: dict) -
                 "actor_credit",
                 actor_credit_metrics,
             )
+        analytical_prd = info.get("analytical_prd")
+        if analytical_prd is not None:
+            baseline = analytical_prd["loo_baseline"].detach().float()
+            participants = analytical_prd[
+                "actual_collision_participants"
+            ].detach().bool()
+            prd_metrics = {
+                "prd_baseline_abs_mean": float(baseline.abs().mean().cpu()),
+                "prd_baseline_std": float(baseline.std().cpu()),
+                "prd_baseline_nonzero_rate": float(
+                    (baseline.abs() > 1.0e-8).float().mean().cpu()
+                ),
+                "prd_source_reconstruction_error": float(
+                    analytical_prd["source_reconstruction_error"]
+                    .detach()
+                    .float()
+                    .amax()
+                    .cpu()
+                ),
+                "prd_own_action_invariance_max": float(
+                    analytical_prd["own_action_invariance_error"]
+                    .detach()
+                    .float()
+                    .amax()
+                    .cpu()
+                ),
+                "prd_team_reward_preservation_error": float(
+                    analytical_prd["team_reward_preservation_error"]
+                    .detach()
+                    .float()
+                    .amax()
+                    .cpu()
+                ),
+                "prd_collision_participant_rate": float(
+                    participants.float().mean().cpu()
+                ),
+                "prd_collision_baseline_participant_abs_mean": float(
+                    analytical_prd["collision_other"]
+                    .detach()
+                    .float()
+                    .abs()[participants]
+                    .mean()
+                    .nan_to_num()
+                    .cpu()
+                ),
+                "prd_collision_baseline_nonparticipant_abs_mean": float(
+                    analytical_prd["collision_other"]
+                    .detach()
+                    .float()
+                    .abs()[~participants]
+                    .mean()
+                    .nan_to_num()
+                    .cpu()
+                ),
+            }
+            telemetry_state["prd"] = prd_metrics
+            _accumulate_numeric_metrics(telemetry_state, "prd", prd_metrics)
         centroid_flatness = info.get("centroid_flatness_reward")
         if centroid_flatness is not None:
             centroid_flatness_values = (
@@ -3401,6 +3491,64 @@ def install_actor_credit_rewards(
     env.step = credited_step
 
 
+def dae_training_diagnostics(agent: object) -> dict[str, Any]:
+    estimator = str(getattr(agent, "advantage_estimator", "gae"))
+    if estimator == "analytical_prd_loo":
+        return {
+            "advantage_estimator": estimator,
+            "prd_baseline_abs_mean": float(
+                getattr(agent, "last_prd_baseline_abs_mean", 0.0)
+            ),
+            "prd_baseline_std": float(
+                getattr(agent, "last_prd_baseline_std", 0.0)
+            ),
+            "prd_baseline_nonzero_rate": float(
+                getattr(agent, "last_prd_baseline_nonzero_rate", 0.0)
+            ),
+            "prd_baseline_to_team_advantage_ratio": float(
+                getattr(agent, "last_prd_baseline_to_team_advantage_ratio", 0.0)
+            ),
+            "prd_advantage_agent_std": float(
+                getattr(agent, "last_prd_advantage_agent_std", 0.0)
+            ),
+            "prd_vs_team_advantage_spearman": float(
+                getattr(agent, "last_prd_vs_team_advantage_spearman", 0.0)
+            ),
+        }
+    if estimator != "dae":
+        return {"advantage_estimator": "gae"}
+    reward_model = getattr(agent, "dae_reward_model", None)
+    return {
+        "advantage_estimator": "dae",
+        "dae_beta": float(getattr(agent, "last_dae_beta", 0.0)),
+        "reward_model_train_mse": float(
+            getattr(agent, "last_dae_reward_model_train_mse", 0.0)
+        ),
+        "reward_model_validation_mse": float(
+            getattr(agent, "last_dae_reward_model_validation_mse", 0.0)
+        ),
+        "reward_model_validation_r2": float(
+            getattr(agent, "last_dae_reward_model_validation_r2", 0.0)
+        ),
+        "reward_model_gradient_norm": float(
+            getattr(agent, "last_dae_reward_model_gradient_norm", 0.0)
+        ),
+        "counterfactual_reward_std": float(
+            getattr(agent, "last_dae_counterfactual_reward_std", 0.0)
+        ),
+        "dae_advantage_agent_std": float(
+            getattr(agent, "last_dae_advantage_agent_std", 0.0)
+        ),
+        "dae_vs_team_advantage_spearman": float(
+            getattr(agent, "last_dae_vs_team_advantage_spearman", 0.0)
+        ),
+        "reward_model_parameters_finite": bool(
+            reward_model is not None
+            and all(torch.isfinite(parameter).all() for parameter in reward_model.parameters())
+        ),
+    }
+
+
 def build_training_telemetry(
     env: MultiRoverGatheringSKRLEnv,
     *,
@@ -3508,6 +3656,8 @@ def build_training_telemetry(
     path_metrics.update(telemetry_state.get("path_terrain_window", {}))
     actor_credit_metrics = dict(telemetry_state.get("actor_credit", {}))
     actor_credit_metrics.update(telemetry_state.get("actor_credit_window", {}))
+    prd_metrics = dict(telemetry_state.get("prd", {}))
+    prd_metrics.update(telemetry_state.get("prd_window", {}))
     centroid_flatness_metrics = dict(
         telemetry_state.get("centroid_flatness", {})
     )
@@ -3542,6 +3692,7 @@ def build_training_telemetry(
     telemetry.update(action_metrics)
     telemetry.update(path_metrics)
     telemetry.update(actor_credit_metrics)
+    telemetry.update(prd_metrics)
     telemetry.update(centroid_flatness_metrics)
     telemetry.update(filter_metrics)
     telemetry.update(control_safety_metrics)
@@ -3732,6 +3883,10 @@ def skrl_mappo_checkpoint_payload(
     checkpoint_path: str | None = None,
     collision_cost_value: Model | None = None,
     lagrangian_multiplier: float | None = None,
+    dae_reward_model: CounterfactualRewardModel | None = None,
+    dae_reward_model_optimizer: torch.optim.Optimizer | None = None,
+    dae_update_count: int | None = None,
+    dae_beta: float | None = None,
     extra_metadata: dict | None = None,
 ) -> dict:
     payload = {
@@ -3749,6 +3904,18 @@ def skrl_mappo_checkpoint_payload(
         payload["collision_constraint"] = {
             "cost_value": collision_cost_value.state_dict(),
             "lagrangian_multiplier": float(lagrangian_multiplier),
+        }
+    if dae_reward_model is not None:
+        if dae_reward_model_optimizer is None or dae_update_count is None or dae_beta is None:
+            raise ValueError(
+                "DAE training checkpoints require reward optimizer, update count and beta."
+            )
+        payload["dae_training"] = {
+            "deployable": False,
+            "reward_model": dae_reward_model.state_dict(),
+            "reward_model_optimizer": dae_reward_model_optimizer.state_dict(),
+            "update_count": int(dae_update_count),
+            "beta": float(dae_beta),
         }
     experiment = raw_cfg.get("experiment", {}) if isinstance(raw_cfg.get("experiment", {}), dict) else {}
     algorithm = raw_cfg.get("algorithm", {}) if isinstance(raw_cfg.get("algorithm", {}), dict) else {}
@@ -3826,6 +3993,8 @@ def skrl_mappo_checkpoint_payload(
         "device": device,
         "checkpoint_path": checkpoint_path,
         "collision_constraint_enabled": collision_cost_value is not None,
+        "advantage_estimator": str(algorithm.get("advantage_estimator", "gae")),
+        "dae_training_state_present": dae_reward_model is not None,
         "terrain_randomize_per_reset": bool(
             terrain.get("randomize_per_reset", False)
         ),
@@ -3858,6 +4027,7 @@ def initialize_skrl_mappo_models_from_checkpoint(
     *,
     actor_architecture: str,
     critic_architecture: str,
+    advantage_estimator: str | None = None,
     device: torch.device,
 ) -> dict[str, Any]:
     """Load compatible policy/value weights while intentionally resetting optimizers.
@@ -3880,6 +4050,13 @@ def initialize_skrl_mappo_models_from_checkpoint(
         expected_actor_architecture=actor_architecture,
         expected_critic_architecture=critic_architecture,
     )
+    if advantage_estimator is not None:
+        actual_estimator = str(metadata.get("advantage_estimator", "gae"))
+        if actual_estimator != str(advantage_estimator):
+            raise ValueError(
+                "Checkpoint advantage estimator is incompatible: "
+                f"{actual_estimator!r} (expected {advantage_estimator!r})."
+            )
     missing_agents = [agent_id for agent_id in possible_agents if agent_id not in checkpoint]
     if missing_agents:
         raise KeyError(
@@ -3948,6 +4125,7 @@ def main() -> None:
             "balanced_progress_long",
             "progress_preserving_long",
             "success_progress_long",
+            "final",
         ),
         default="strict",
     )
@@ -4126,6 +4304,7 @@ def main() -> None:
             cfg,
             actor_architecture=actor_architecture,
             critic_architecture=critic_architecture,
+            advantage_estimator=str(algo.get("advantage_estimator", "gae")),
             device=env.device,
         )
     bc_updates = int(algo.get("bc_updates", algo.get("bc_steps", 0)))
@@ -4223,6 +4402,67 @@ def main() -> None:
     agent_class = SharedPolicyMAPPO if update_mode == "shared_joint" else MAPPO
     if update_mode == "shared_joint" and not (shared_actor and shared_value):
         raise ValueError("algorithm.update_mode=shared_joint requires shared_actor/shared_value.")
+    advantage_estimator = str(algo.get("advantage_estimator", "gae")).strip().lower()
+    if advantage_estimator not in {"gae", "dae", "analytical_prd_loo"}:
+        raise ValueError(
+            "algorithm.advantage_estimator must be gae, dae or analytical_prd_loo."
+        )
+    if advantage_estimator == "dae":
+        if update_mode != "shared_joint":
+            raise ValueError("DAE requires algorithm.update_mode=shared_joint.")
+        if cfg.critic_state_dim != 950 or int(cfg.planner.action_dim) != 47:
+            raise ValueError("exp158 DAE requires the 950-state / 47-action interface.")
+        if cfg.planner.action_type != "differential_trajectory_primitives":
+            raise ValueError("exp158 DAE requires differential trajectory primitives.")
+        if str(algo.get("actor_credit_assignment", "none")) != "none":
+            raise ValueError("DAE cannot be combined with historical Actor credit.")
+        if parse_bool_config(algo.get("collision_constraint_enabled"), default=False):
+            raise ValueError("DAE cannot be combined with the collision constraint component.")
+        dae_cfg = algo.get("dae", {})
+        if not isinstance(dae_cfg, dict):
+            raise ValueError("algorithm.dae must be a mapping.")
+        dae_seed = int(dae_cfg.get("random_seed", training_seed + 158_000))
+        cuda_devices = (
+            [env.device.index if env.device.index is not None else torch.cuda.current_device()]
+            if env.device.type == "cuda"
+            else []
+        )
+        # Constructing the training-only model must not consume the Actor/Critic
+        # RNG stream. This preserves identical initialization hashes for GAE/DAE.
+        with torch.random.fork_rng(devices=cuda_devices):
+            torch.manual_seed(dae_seed)
+            dae_reward_model = CounterfactualRewardModel(
+                action_count=int(cfg.planner.action_dim),
+                n_agents=len(possible_agents),
+            ).to(env.device)
+    else:
+        dae_cfg = {}
+        dae_seed = int(training_seed + 158_000)
+        dae_reward_model = None
+    if advantage_estimator == "analytical_prd_loo":
+        if update_mode != "shared_joint":
+            raise ValueError("ALO-PRD requires algorithm.update_mode=shared_joint.")
+        if cfg.critic_state_dim != 950 or int(cfg.planner.action_dim) != 47:
+            raise ValueError("exp159 ALO-PRD requires the 950-state / 47-action interface.")
+        if not cfg.task.analytical_prd_enabled:
+            raise ValueError("ALO-PRD requires task.analytical_prd_enabled=true.")
+        if cfg.planner.subgoal_filter.enabled:
+            raise ValueError("exp159 forbids the subgoal filter.")
+        if str(algo.get("actor_credit_assignment", "none")) != "none":
+            raise ValueError("ALO-PRD cannot be combined with historical Actor credit.")
+        if parse_bool_config(algo.get("collision_constraint_enabled"), default=False):
+            raise ValueError("ALO-PRD cannot be combined with collision constraints.")
+        prd_cfg = algo.get("prd", {})
+        if not isinstance(prd_cfg, dict):
+            raise ValueError("algorithm.prd must be a mapping.")
+        if float(prd_cfg.get("baseline_scale", 1.0)) != 1.0:
+            raise ValueError("exp159 fixes PRD baseline_scale at 1.0.")
+        if parse_bool_config(prd_cfg.get("temporal_trace"), default=False):
+            raise ValueError("exp159 forbids a temporal PRD trace.")
+        if not parse_bool_config(prd_cfg.get("preserve_team_reward"), default=True):
+            raise ValueError("exp159 requires exact team reward preservation.")
+    else:
+        prd_cfg = {}
     agent_kwargs = dict(
         possible_agents=possible_agents,
         models=models,
@@ -4239,6 +4479,42 @@ def main() -> None:
         ),
     )
     if agent_class is SharedPolicyMAPPO:
+        agent_kwargs["advantage_estimator"] = advantage_estimator
+        if advantage_estimator == "dae":
+            agent_kwargs.update(
+                dae_reward_model=dae_reward_model,
+                dae_beta_target=float(dae_cfg.get("beta_target", 0.3)),
+                dae_warmup_policy_iterations=int(
+                    dae_cfg.get("warmup_policy_iterations", 128)
+                ),
+                dae_ramp_policy_iterations=int(
+                    dae_cfg.get("ramp_policy_iterations", 128)
+                ),
+                dae_reward_model_learning_rate=float(
+                    dae_cfg.get("reward_model_learning_rate", 3.0e-4)
+                ),
+                dae_reward_model_epochs=int(dae_cfg.get("reward_model_epochs", 5)),
+                dae_reward_model_validation_env_modulus=int(
+                    dae_cfg.get("reward_model_validation_env_modulus", 8)
+                ),
+                dae_counterfactual_chunk_size=int(
+                    dae_cfg.get("counterfactual_chunk_size", 65_536)
+                ),
+                dae_reward_model_batch_size=int(
+                    dae_cfg.get("reward_model_batch_size", 8192)
+                ),
+                dae_random_seed=dae_seed,
+            )
+        if advantage_estimator == "analytical_prd_loo":
+            agent_kwargs.update(
+                prd_baseline_scale=float(prd_cfg.get("baseline_scale", 1.0)),
+                prd_temporal_trace=parse_bool_config(
+                    prd_cfg.get("temporal_trace"), default=False
+                ),
+                prd_preserve_team_reward=parse_bool_config(
+                    prd_cfg.get("preserve_team_reward"), default=True
+                ),
+            )
         agent_kwargs["entropy_loss_scale_end"] = float(
             algo.get(
                 "entropy_loss_scale_end",
@@ -4324,6 +4600,8 @@ def main() -> None:
         if collision_constraint_enabled:
             raise ValueError("Collision constraint requires update_mode=shared_joint.")
     agent = agent_class(**agent_kwargs)
+    initial_policy_sha256 = module_state_sha256(policy)
+    initial_critic_sha256 = module_state_sha256(models[possible_agents[0]]["value"])
     initial_policy_parameters = [
         parameter.detach().clone()
         for parameter in policy.parameters()
@@ -4365,6 +4643,12 @@ def main() -> None:
                 checkpoint_path=str(bc_checkpoint),
                 collision_cost_value=getattr(agent, "collision_cost_value", None),
                 lagrangian_multiplier=getattr(agent, "lagrangian_multiplier", None),
+                dae_reward_model=getattr(agent, "dae_reward_model", None),
+                dae_reward_model_optimizer=getattr(
+                    agent, "dae_reward_model_optimizer", None
+                ),
+                dae_update_count=getattr(agent, "joint_update_count", None),
+                dae_beta=getattr(agent, "last_dae_beta", None),
                 extra_metadata={
                     "phase": "bc",
                     "update_mode": update_mode,
@@ -4376,6 +4660,13 @@ def main() -> None:
                     "bc_updates": bc_updates,
                     "entropy_schedule_timesteps": algo.get(
                         "entropy_schedule_timesteps"
+                    ),
+                    "advantage_estimator": advantage_estimator,
+                    "dae": dae_cfg if advantage_estimator == "dae" else None,
+                    "prd": (
+                        prd_cfg
+                        if advantage_estimator == "analytical_prd_loo"
+                        else None
                     ),
                     **init_checkpoint_metadata,
                     **checkpoint_teacher_metadata(
@@ -4535,6 +4826,7 @@ def main() -> None:
         _snapshot_numeric_metrics(telemetry_state, "reward", "reward_window")
         _snapshot_numeric_metrics(telemetry_state, "path_terrain", "path_terrain_window")
         _snapshot_numeric_metrics(telemetry_state, "actor_credit", "actor_credit_window")
+        _snapshot_numeric_metrics(telemetry_state, "prd", "prd_window")
         _snapshot_numeric_metrics(
             telemetry_state,
             "centroid_flatness",
@@ -4580,6 +4872,7 @@ def main() -> None:
                 run_id=run_id,
                 phase="train",
                 random_baseline=random_baseline,
+                training_diagnostics=dae_training_diagnostics(agent),
             ),
             filename=metrics_filename,
         )
@@ -4699,6 +4992,12 @@ def main() -> None:
                 checkpoint_path=str(candidate_path),
                 collision_cost_value=getattr(agent, "collision_cost_value", None),
                 lagrangian_multiplier=getattr(agent, "lagrangian_multiplier", None),
+                dae_reward_model=getattr(agent, "dae_reward_model", None),
+                dae_reward_model_optimizer=getattr(
+                    agent, "dae_reward_model_optimizer", None
+                ),
+                dae_update_count=getattr(agent, "joint_update_count", None),
+                dae_beta=getattr(agent, "last_dae_beta", None),
                 extra_metadata={
                     "phase": "ppo",
                     "update_mode": update_mode,
@@ -4719,6 +5018,13 @@ def main() -> None:
                     "bc_learning_rate": bc_learning_rate,
                     "entropy_schedule_timesteps": algo.get(
                         "entropy_schedule_timesteps"
+                    ),
+                    "advantage_estimator": advantage_estimator,
+                    "dae": dae_cfg if advantage_estimator == "dae" else None,
+                    "prd": (
+                        prd_cfg
+                        if advantage_estimator == "analytical_prd_loo"
+                        else None
                     ),
                     **init_checkpoint_metadata,
                     **checkpoint_teacher_metadata(
@@ -4973,6 +5279,8 @@ def main() -> None:
         bc_parameter_delta_sq = bc_parameter_delta_sq + (after_bc - initial).square().sum()
     training_diagnostics = {
         "policy_parameter_delta_l2": float(torch.sqrt(parameter_delta_sq).cpu()),
+        "initial_policy_sha256": initial_policy_sha256,
+        "initial_critic_sha256": initial_critic_sha256,
         "terrain_input_weight_delta_l2": float(
             terrain_input_weight_delta_l2(policy, initial_terrain_weight)
         ),
@@ -5068,11 +5376,13 @@ def main() -> None:
         "last_actor_gradient_norm_cap_scale_mean": float(
             getattr(agent, "last_actor_gradient_norm_cap_scale_mean", 1.0)
         ),
+        **dae_training_diagnostics(agent),
     }
     _snapshot_numeric_metrics(telemetry_state, "action", "action_window")
     _snapshot_numeric_metrics(telemetry_state, "reward", "reward_window")
     _snapshot_numeric_metrics(telemetry_state, "path_terrain", "path_terrain_window")
     _snapshot_numeric_metrics(telemetry_state, "actor_credit", "actor_credit_window")
+    _snapshot_numeric_metrics(telemetry_state, "prd", "prd_window")
     _snapshot_numeric_metrics(
         telemetry_state,
         "centroid_flatness",
@@ -5118,7 +5428,12 @@ def main() -> None:
     if output_layout == "run":
         from evaluate_proxy_policy import evaluate_checkpoint
 
-        for candidate_path in candidate_paths:
+        evaluation_candidates = (
+            [candidate_paths[-1]]
+            if args.selection_gate == "final"
+            else candidate_paths
+        )
+        for candidate_path in evaluation_candidates:
             candidate_eval_path = telemetry_dir / f"candidate_{candidate_path.stem}_eval.json"
             evaluation = evaluate_checkpoint(
                 config=config_path,
@@ -5165,9 +5480,13 @@ def main() -> None:
             if args.selection_gate == "success_progress_long"
             else checkpoint_rank
         )
-        best_evaluation = min(
-            candidate_evaluations,
-            key=lambda item: ranker(item, selection_thresholds),
+        best_evaluation = (
+            candidate_evaluations[-1]
+            if args.selection_gate == "final"
+            else min(
+                candidate_evaluations,
+                key=lambda item: ranker(item, selection_thresholds),
+            )
         )
         best_candidate = Path(best_evaluation["checkpoint"])
         shutil.copy2(best_candidate, checkpoint_path)
@@ -5243,6 +5562,7 @@ def main() -> None:
         "actor_architecture": actor_architecture,
         "critic_architecture": critic_architecture,
         "update_mode": update_mode,
+        "advantage_estimator": advantage_estimator,
         "communication_radius": cfg.observation.communication_radius,
         "environment_geometry": environment_geometry_metadata(cfg),
         "initial_state": initial_state_metadata(cfg),
@@ -5330,6 +5650,7 @@ def main() -> None:
                 "observation_schema_version": cfg.observation.schema_version,
                 "actor_obs_dim": cfg.actor_obs_dim,
                 "critic_state_dim": cfg.critic_state_dim,
+                "advantage_estimator": advantage_estimator,
                 "strict_passed": strict["passed"],
             },
             "artifacts": {

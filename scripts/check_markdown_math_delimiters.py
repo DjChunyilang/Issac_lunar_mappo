@@ -17,7 +17,13 @@ ACTIVE_DOCUMENTS = (
     "docs/architecture/overall_plan_v3.md",
     "docs/experiments/exp_155_multiscale_network_ablation.md",
     "docs/experiments/exp_156_differential_multiscale_ablation.md",
+    "docs/experiments/exp_157_site_belief_diagnostic.md",
+    "docs/experiments/exp_158_dae_validation.md",
+    "docs/experiments/exp_159_analytical_prd.md",
+    "docs/references/marl_credit_assignment_technical_appendix.md",
     "docs/status/weekly_report_2026-08-10_to_2026-08-14.md",
+    "docs/status/weekly_report_2026-08-17_to_2026-08-21.md",
+    "docs/status/ppt_plan_weekly_2026-08-17_to_2026-08-21.md",
 )
 LEGACY = re.compile(r"\\[()\[\]]")
 INLINE_CODE = re.compile(r"`[^`]*`")

@@ -1,0 +1,29 @@
+extends: exp158_h1_dae.yaml
+
+experiment:
+  name: exp158_dae_smoke
+  num_envs: 8
+  rollout_steps: 8
+  eval_num_envs: 8
+  eval_steps: 16
+  checkpoint_interval: 16
+
+bounded_curriculum:
+  enabled: false
+  stages: []
+
+evaluation:
+  proxy_eval:
+    enabled: false
+
+algorithm:
+  dae:
+    beta_target: 0.3
+    warmup_policy_iterations: 0
+    ramp_policy_iterations: 0
+    reward_model_learning_rate: 0.0003
+    reward_model_epochs: 5
+    reward_model_validation_env_modulus: 8
+    reward_model_batch_size: 8192
+    counterfactual_chunk_size: 65536
+    random_seed: 158023

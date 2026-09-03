@@ -1,0 +1,25 @@
+extends: exp164_overnight_h1_repaired_n1.yaml
+
+experiment:
+  name: exp164_render_far_mixed
+
+safety:
+  collision_termination_enabled: true
+
+initial_state:
+  curriculum_enabled: false
+  spawn_radius_min: 4.5
+  spawn_radius_max: 6.5
+  center_xy_range: 2.0
+  jitter_std: 0.40
+
+terrain:
+  topology_profile: mixed
+  topology_curriculum_stage: mixed_bottleneck
+  crater_count: 30
+  crater_seed: 4
+  crater_depth_to_diameter: 0.15
+
+bounded_curriculum:
+  enabled: false
+  stages: []

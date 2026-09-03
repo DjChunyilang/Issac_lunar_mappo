@@ -1,0 +1,28 @@
+extends: exp161_all_routes_feasibility.yaml
+
+experiment:
+  name: exp162_active_dstc_h05
+  seed: 162
+
+site_commitment:
+  # The certificate center is now fixed to an exactly revalidated source
+  # proposal. Only navigation-frame pose uncertainty needs margin; the old
+  # 1.25 m radius reserved an unused 0.5 m center-shift region.
+  verification_radius_m: 0.90
+
+active_dstc:
+  episode_steps: 480
+  scan_interval_steps: 12
+  belief_ttl_steps: 480
+  max_entries_per_source: 4
+  forwarding_rounds: 3
+  exploration_cycle_steps: 24
+  exploration_spin_steps: 4
+  frontier_segment_steps: 120
+  frontier_radius_m: 9.5
+  frontier_yaw_tolerance_rad: 0.25
+  collision_avoidance_distance_m: 0.70
+  boundary_margin_m: 1.5
+  required_certificate_rate: 0.90
+  maximum_collision_rate: 0.02
+  maximum_timeout_rate: 0.10

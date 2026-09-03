@@ -35,6 +35,13 @@ class TaskCfg:
     # goal-conditioned low-level upper bound and is not a deployable
     # decentralized site-selection mechanism.
     diagnostic_site_belief_enabled: bool = False
+    # RL-mainline execution contract. Active-DSTC updates only decentralized
+    # candidate belief and all-rover site certificates; the shared Actor still
+    # chooses every physical action before and after commit.
+    active_dstc_actor_enabled: bool = False
+    # Training-only exp159 diagnostics. This exposes analytical leave-one-out
+    # baselines through info without changing observations, rewards or control.
+    analytical_prd_enabled: bool = False
     # Opt in only when the execution observation exposes a fixed per-rover
     # formation slot.  This lets oracle-progress shaping match the safe
     # formation geometry rather than pulling every rover into the same point.
@@ -283,6 +290,24 @@ class GatherPointCfg:
 
 
 @dataclass(slots=True)
+class ActiveDSTCCfg:
+    scan_interval_steps: int = 12
+    belief_ttl_steps: int = 480
+    max_entries_per_source: int = 4
+    forwarding_rounds: int = 3
+    max_candidates_per_rover: int = 4
+    verification_radius_m: float = 0.90
+    required_flat_radius_m: float = 0.75
+    flatness_rings: int = 4
+    flatness_samples_per_ring: int = 16
+    nms_distance_m: float = 0.80
+    id_quantization_m: float = 0.05
+    pose_uncertainty_m: float = 0.10
+    distance_score_weight: float = 0.03
+    support_score_weight: float = 0.02
+
+
+@dataclass(slots=True)
 class RewardWeightsCfg:
     gather: float = 1.0
     oracle: float = 0.5
@@ -293,6 +318,7 @@ class RewardWeightsCfg:
     motion: float = 0.05
     consistency: float = 0.02
     terminal: float = 1.0
+    active_dstc: float = 0.0
 
 
 @dataclass(slots=True)
@@ -330,6 +356,9 @@ class RewardCoefficientsCfg:
     success_bonus: float = 10.0
     failure_penalty: float = 10.0
     timeout_penalty: float = 0.0
+    dstc_belief_progress: float = 0.0
+    dstc_commit_bonus: float = 0.0
+    dstc_site_distance_progress: float = 0.0
 
 
 @dataclass(slots=True)
@@ -453,6 +482,7 @@ class MultiRoverGatheringEnvCfg:
     low_level_control: LowLevelControlCfg = field(default_factory=LowLevelControlCfg)
     terrain: TerrainCfg = field(default_factory=TerrainCfg)
     gather_point: GatherPointCfg = field(default_factory=GatherPointCfg)
+    active_dstc: ActiveDSTCCfg = field(default_factory=ActiveDSTCCfg)
     reward_weights: RewardWeightsCfg = field(default_factory=RewardWeightsCfg)
     reward_coefficients: RewardCoefficientsCfg = field(default_factory=RewardCoefficientsCfg)
     success_thresholds: SuccessThresholdsCfg = field(default_factory=SuccessThresholdsCfg)

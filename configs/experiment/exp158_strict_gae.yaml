@@ -1,0 +1,13 @@
+extends: exp156_differential_multiscale_ablation.yaml
+
+experiment:
+  name: exp158_dae_validation
+
+algorithm:
+  training_semantics: exp158_strict_gae_seeded_pair
+  advantage_estimator: gae
+  actor_architecture: multiscale_n1_cnn
+  critic_architecture: structured_multiscale_v3
+  bc_updates: 0
+  init_checkpoint: null
+

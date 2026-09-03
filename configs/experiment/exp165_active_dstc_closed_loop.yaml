@@ -1,0 +1,24 @@
+extends: exp163_feasible_bottleneck_active_dstc.yaml
+
+experiment:
+  name: exp165_active_dstc_closed_loop
+  seed: 165
+  num_envs: 32
+
+closed_loop:
+  # R4 choices are broadcast as short commitments and held for two planning
+  # steps. Every rover updates simultaneously from the previous commitments.
+  primitive_commitment_steps: 2
+  primitive_negotiation_rounds: 1
+  required_certificate_rate: 0.90
+  required_success_rate: 0.8125
+  maximum_collision_rate: 0.0
+  maximum_timeout_rate: 0.10
+  maximum_dmax_ratio: 0.25
+  minimum_delta_record_reduction: 0.70
+
+benchmark_scope:
+  active_dstc_certificate_in_execution: true
+  r4_replaces_actor: true
+  learned_actor_enabled: false
+  oracle_used: false

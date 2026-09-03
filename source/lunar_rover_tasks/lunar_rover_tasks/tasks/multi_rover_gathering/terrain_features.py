@@ -854,6 +854,7 @@ def build_multiscale_site_belief_observation(
     *,
     site_radius: float = 0.75,
     potential_sigma: float = 2.0,
+    site_valid: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Append a spatial feasible-region potential to each terrain grid.
 
@@ -876,6 +877,17 @@ def build_multiscale_site_belief_observation(
         raise ValueError(
             "site_point must have shape [E, 3] or match the per-rover position shape."
         )
+    if site_valid is None:
+        site_valid = torch.ones(
+            positions.shape[:2], dtype=torch.bool, device=positions.device
+        )
+    elif site_valid.shape != positions.shape[:2]:
+        raise ValueError(
+            f"site_valid must have shape {tuple(positions.shape[:2])}, "
+            f"got {tuple(site_valid.shape)}."
+        )
+    else:
+        site_valid = site_valid.to(device=positions.device, dtype=torch.bool)
 
     terrain_grids = build_multiscale_local_terrain_grids(
         positions,
@@ -906,6 +918,7 @@ def build_multiscale_site_belief_observation(
         )
         outside = (distance - float(site_radius)).clamp_min(0.0)
         potential = torch.exp(-0.5 * (outside / float(potential_sigma)).square())
+        potential = potential * site_valid[..., None, None].to(potential.dtype)
         grids.append(torch.cat((terrain_grid, potential.unsqueeze(-1)), dim=-1))
 
     observation = torch.cat(tuple(grid.flatten(start_dim=-3) for grid in grids), dim=-1)

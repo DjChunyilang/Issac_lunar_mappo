@@ -15,6 +15,7 @@ PhysX / Jackal tracking 结果是 high-fidelity validation，不等于 Isaac Lab
 
 | 实验 | 地形 | 方法 | Seeds | Proxy strict | 当前结论 | 文档 |
 | --- | --- | --- | --- | --- | --- | --- |
+| exp165 | 修复后的六分层proxy | Active-DSTC delta/event证书 + R4去中心化47原语闭环 | 32 episodes/层 | pilot未通过 | 通信语义与压缩通过；success 21.88%–43.75%、timeout 50%–78.13%，R4跨时振荡，不启动正式1152评测。 | [exp_165_active_dstc_closed_loop.md](exp_165_active_dstc_closed_loop.md) |
 | exp006 | 平地 proxy | BC + PPO，PPO 阶段选 checkpoint | 23, 31, 47 | 通过 | 平地 proxy baseline；不是 pure RL 从零收敛。 | [exp_006_ppo_selected.md](exp_006_ppo_selected.md) |
 | exp007 | lunar crater proxy + 历史 PhysX sanity | 弱 warm-start + PPO | selected run | selected checkpoint 通过 | 历史高保真 sanity；当前活跃 PhysX 验证已切换为 Jackal tracking。 | [exp_007_phase_c.md](exp_007_phase_c.md) |
 | exp008 | 弱 lunar crater 3D proxy | 弱 warm-start + PPO | 23, 31, 47 | 通过 | 当前最完整 terrain-aware proxy baseline。 | [exp_008_terrain3d.md](exp_008_terrain3d.md) |
@@ -128,6 +129,13 @@ PhysX / Jackal tracking 结果是 high-fidelity validation，不等于 Isaac Lab
 | exp153 | 冻结exp150双checkpoint | 局部/全范围动作与quintic/line/endpoint分离 | 双checkpoint、双种子、512步 | 混合瓶颈 | 网格quintic最小`0.7536`、endpoint恒为1，但局部恢复和quintic损失均不足；t2048途中交叉损失升至约35%–37%，只允许双车联合反事实审计。 | [exp_153_action_range_quintic_geometry_audit.md](exp_153_action_range_quintic_geometry_audit.md) |
 | exp155 | Open/Mixed/Bottleneck多尺度地形 | 291维观测 + 40维时空动作 | N0完成后停止；N1/N2未启动 | 排除 | `stopped_design_revision`；旧接口结果只作hold塌缩证据，不进入排名。 | [exp_155_multiscale_network_ablation.md](exp_155_multiscale_network_ablation.md) |
 | exp156 | Open/Mixed/Bottleneck多尺度地形 | 295维观测 + 47维差速原语 + 950维Critic；N0/N1完整训练，N2仅工程smoke | seed23，N0/N1各39.3M与1152配对场景 | 停止，0/6 strict | N0/N1 success为0/0.0017、timeout为0.9271/0.9852；地板效应使架构排名无效。N2完整训练取消，修复CUDA连续性后smoke通过；N1仅作临时CNN基线。 | [exp_156_differential_multiscale_ablation.md](exp_156_differential_multiscale_ablation.md) |
-| exp157 | exp156固定六分层场景 | H0站点信息/原语冻结审计 + H1 407维站点区域条件N1 Pure RL | H0 1152场景；H1 seed23 39.3M | H0完成，H1启动 | H0通信图全连通但初始站点证据可传播率仅40.97%；原语12/12可解。H1只测共同站点已知时的低层上界，不是最终去中心化策略。 | [exp_157_site_belief_diagnostic.md](exp_157_site_belief_diagnostic.md) |
+| exp157 | exp156固定六分层场景 | H0站点信息/原语冻结审计 + H1 407维站点区域条件N1 Pure RL | H0 1152场景；H1停于134,400/153,600步 | H0完成，H1中断 | H0通信图全连通但初始站点证据可传播率仅40.97%；H1无最终配对评测，仅保留为exp158离线行为数据源。 | [exp_157_site_belief_diagnostic.md](exp_157_site_belief_diagnostic.md) |
+| exp158 | exp156固定六分层场景 | 训练期DAE反事实奖励模型；冻结因果与奖励可辨识性审计 | 61,440训练样本、双验证seed、72,192反事实标签 | 离线门限未通过 | 256环境×rollout 64工程smoke通过；但总奖励MSE改善最差-5.45%、policy-weighted期望误差2.006个标准差，因此不启动H1/strict训练。 | [exp_158_dae_validation.md](exp_158_dae_validation.md) |
+| exp159 | exp156固定六分层场景 | 团队奖励不变的单步解析Leave-One-Out PRD基线 | 双验证seed、384冻结状态、72,192动作分支 | A-H1未通过 | 无偏性和梯度方向通过，但基线覆盖率仅3.45%/2.22%，方差降低仅7.06%/0.42%；不运行A-strict或完整训练。 | [exp_159_analytical_prd.md](exp_159_analytical_prd.md) |
+| exp160 | exp156固定六分层场景 | D-STC局部平地proposal、保守物理关联与四车全签commit的训练前H0 | 1152冻结场景 | H0核心通过，非strict | 470个证书的平整度、SE(2)、定位误差和split-brain门限全过；总体瞬时候选覆盖仅40.80%，Bottleneck为0%/1.04%，因此先做跨时段belief，不接Actor训练。 | [exp_160_dstc_site_commitment.md](exp_160_dstc_site_commitment.md) |
+| exp161 | exp156六分层 + 12个死锁场景 | R1证书、R2 HPP、R3地图共识、R4原语优化冻结比较 | 1152 + 12独立场景 | 无完整路线通过 | R2覆盖12.07%且一致率0；R3有证据时100%一致但覆盖40.80%；R4死锁12/12可解但不负责选址。下一步转向Active-DSTC主动证据获取。 | [exp_161_all_routes_feasibility.md](exp_161_all_routes_feasibility.md) |
+| exp162 | 原exp156六分层 | Active-DSTC有限belief、frontier探索和候选洪泛 | 32环境/层诊断 | 未通过 | Open/Mixed证书100%，但原100坑Bottleneck为0%/6.25%；确认内部可行域被清空并形成边界捷径，停止原基准正式评测。 | [exp_162_active_dstc_h05.md](exp_162_active_dstc_h05.md) |
+| exp163 | 修复后的可行Bottleneck六分层 | Active-DSTC DISCOVER/VERIFY/EXCHANGE/COMMIT | 192环境/层，共1152 | H0.5全部通过，非最终strict | 六层证书97.40%–100%、伪证书0、最高collision 0.52%、最高timeout 2.08%；下一步接入delta通信和R4 GATHER。 | [exp_163_feasible_bottleneck_active_dstc.md](exp_163_feasible_bottleneck_active_dstc.md) |
+| exp164 | 修复Bottleneck H1诊断 | 407维站点条件N1 + 标准GAE Pure RL夜间长训 | seed23，4800 iterations，78.6M交互 | 未通过 | final success 86.98%、collision 12.50%、timeout 0.52%、dmax ratio 0.096；Stage B曾达98.44%/1.30%，但Stage C协调泛化失败，停止续训。 | [exp_164_overnight_h1_repaired.md](exp_164_overnight_h1_repaired.md) |
 
 新增实验时，在这里加一行，并在本目录创建独立的 `exp_###_*.md` 文档。日期流水账放入 `docs/archive/`，不要继续堆到当前实验文档里。

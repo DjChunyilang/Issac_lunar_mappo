@@ -16,6 +16,14 @@
 10. 研究多智能体信用分配时，先读[面向导师的综述](references/marl_credit_assignment_review.md)，公式与工程边界见[技术附录](references/marl_credit_assignment_technical_appendix.md)，逐篇依据见[证据矩阵](references/marl_credit_assignment_evidence_matrix.csv)和[检索日志](references/marl_credit_assignment_search_log.md)。
 11. 研究“共同平地选择—终端稳定”耦合问题时，先读[去中心化共同选址与终端时空协调综述](references/decentralized_site_trajectory_coordination_review.md)，逐篇证据和检索边界分别见[证据矩阵](references/decentralized_site_trajectory_coordination_evidence_matrix.csv)与[检索日志](references/decentralized_site_trajectory_coordination_search_log.md)。该文档是 `exp156` 训练期间的研究提案，不代表当前执行链已经采用 D-STC。
 12. 面向导师了解2026年8月10日至14日的工作，阅读[本周工作汇报](status/weekly_report_2026-08-10_to_2026-08-14.md)。该文档以问题思路和决策依据为主，实验细节仍以对应实验记录为准。
+13. 验证DAE时读取[exp158实验记录](experiments/exp_158_dae_validation.md)；离线门限、H1配对和strict配对是三个独立结论层级，不得用smoke或单个reward-model指标替代。
+14. 验证解析式PRD时读取[exp159实验记录](experiments/exp_159_analytical_prd.md)；该方法保持团队奖励不变，只允许单步action-independent基线，不得误写成多头Critic或奖励重构。
+15. 推进D-STC路线一时读取[exp160实验记录](experiments/exp_160_dstc_site_commitment.md)；当前只完成训练前静态站点证书核心，尚未接入Actor或在线环境。
+16. 比较共同选址四条路线时读取[exp161实验记录](experiments/exp_161_all_routes_feasibility.md)；下一方向的论文依据和冻结门限见[Active-DSTC证据简报](references/active_dstc_next_direction.md)。
+17. Active-DSTC推进先读[exp162失败诊断](experiments/exp_162_active_dstc_h05.md)，再读[exp163可行Bottleneck正式H0.5](experiments/exp_163_feasible_bottleneck_active_dstc.md)；exp163只通过到COMMIT，不代表最终集合成功。
+18. 查看当前夜间训练读[exp164实验记录](experiments/exp_164_overnight_h1_repaired.md)和对应`suite_status.json`；该run是H1低层上界，不是Active-DSTC最终策略。
+19. 面向导师了解2026年8月17日至21日的工作，阅读[本周工作汇报](status/weekly_report_2026-08-17_to_2026-08-21.md)；该文档概述信用分配验证、共同平地发现与确认、受控长训结论及下一步协调改进方向。
+20. 根据该周报制作导师汇报PPT时，读取[PPT逐页文字与引用配图](status/ppt_plan_weekly_2026-08-17_to_2026-08-21.md)；其中给出13页叙事结构，并直接预览论文原图、NASA官方图和项目结果图。需要离线传递时下载[Markdown与引用配图素材包](status/ppt_reference_figures_2026-08-21_markdown_package.zip)。
 
 不要根据 GIF、单个 checkpoint 或 TensorBoard 曲线直接判断成功。严格 proxy 结论以 `_suite/metrics/strict_acceptance.json`、独立 `metrics/final_eval_proxy.json` 和 `metrics/checkpoint_status.json` 为准。PhysX / Jackal 结果是 high-fidelity closed-loop evaluation，不等于 Isaac 物理训练结果。
 
@@ -34,6 +42,14 @@ Markdown数学公式统一使用 `$...$` 表示行内公式，使用独占一行
 - [experiments/README.md](experiments/README.md)：实验索引和通过/失败表。
 - [experiments/exp_156_differential_multiscale_ablation.md](experiments/exp_156_differential_multiscale_ablation.md)：当前差速原语三结构完整消融记录。
 - [experiments/exp_157_site_belief_diagnostic.md](experiments/exp_157_site_belief_diagnostic.md)：H0共同站点信息审计与H1 goal-conditioned低层上界实验。
+- [experiments/exp_158_dae_validation.md](experiments/exp_158_dae_validation.md)：DAE反事实奖励离线门限、H1受控配对和295维strict两级验证。
+- [experiments/exp_159_analytical_prd.md](experiments/exp_159_analytical_prd.md)：解析式LOO基线、无偏性/梯度方差门限和两级配对验证。
+- [experiments/exp_160_dstc_site_commitment.md](experiments/exp_160_dstc_site_commitment.md)：路线一的局部候选、保守物理关联、全签commit及1152场景H0结果。
+- [experiments/exp_161_all_routes_feasibility.md](experiments/exp_161_all_routes_feasibility.md)：R1—R4配对冻结可行性、组件成功与完整路线失败原因。
+- [references/active_dstc_next_direction.md](references/active_dstc_next_direction.md)：主动平地证据获取、探索分工和稀缺通信重连的下一研究方向。
+- [experiments/exp_162_active_dstc_h05.md](experiments/exp_162_active_dstc_h05.md)：原Bottleneck内部可行域失败、探索/感知排查和停止原因。
+- [experiments/exp_163_feasible_bottleneck_active_dstc.md](experiments/exp_163_feasible_bottleneck_active_dstc.md)：修复可行域后的1152场景主动证据与站点commit结果。
+- [experiments/exp_164_overnight_h1_repaired.md](experiments/exp_164_overnight_h1_repaired.md)：当前407维站点条件N1标准GAE夜间长训配置、状态与明日判读规则。
 - [interface_spec.md](interface_spec.md)：actor observation、critic state、action 和当前 observation schema。
 - [references/output_management.md](references/output_management.md)：输出目录规范和命名规则。
 - [references/marl_credit_assignment_review.md](references/marl_credit_assignment_review.md)：信用分配研究结论、唯一候选与有界对照。
@@ -44,6 +60,8 @@ Markdown数学公式统一使用 `$...$` 表示行内公式，使用独占一行
 - [references/decentralized_site_trajectory_coordination_evidence_matrix.csv](references/decentralized_site_trajectory_coordination_evidence_matrix.csv)：31篇正式论文的来源、适配结论和限制。
 - [references/decentralized_site_trajectory_coordination_search_log.md](references/decentralized_site_trajectory_coordination_search_log.md)：检索式、质量边界、子研究分工和筛选规则。
 - [status/weekly_report_2026-08-10_to_2026-08-14.md](status/weekly_report_2026-08-10_to_2026-08-14.md)：面向导师的本周工作汇报，概述差速模型修改、训练问题和DAE后续方案。
+- [status/weekly_report_2026-08-17_to_2026-08-21.md](status/weekly_report_2026-08-17_to_2026-08-21.md)：面向导师的本周工作汇报，概述信用分配验证、共同平地发现与确认、受控长训结果和下一步协同改进方向。
+- [status/ppt_plan_weekly_2026-08-17_to_2026-08-21.md](status/ppt_plan_weekly_2026-08-17_to_2026-08-21.md)：面向导师的13页PPT逐页文字及论文、NASA和项目原始配图。
 - [runbooks/setup_environment.md](runbooks/setup_environment.md)：Isaac Sim / Isaac Lab / SKRL / 本地任务包安装和验收。
 - [runbooks/train_skrl_mappo.md](runbooks/train_skrl_mappo.md)：SKRL-MAPPO proxy 训练诊断、exp012 / exp013 和 checkpoint 评估入口。
 - [runbooks/](runbooks/)：训练、评估、可视化和 PhysX 展示命令。

@@ -1,6 +1,37 @@
-# 差速轨迹原语、可观测性修正与可信收敛评测实施计划
+# D-STC严格去中心化共同站点证书实施计划
 
-本文是当前执行计划。`exp156` 的N0/N1完整训练均出现成功率地板，N2完整训练已取消；后续暂用N1 CNN作为诊断接口，但没有架构通过strict验收。
+本文是当前唯一执行计划。`exp158`的学习式DAE和`exp159`的解析式ALO-PRD均在训练前离线门限停止；当前不继续信用算法或无限短训，转而推进D-STC路线一：本地平地区域proposal、严格去中心化共同站点commit、站点条件Actor和短时轨迹承诺。
+
+## 0. 当前阶段与停止边界
+
+exp160静态H0、exp161四路线比较、exp162主动探索失败诊断、exp163修复基准后的H0.5以及exp165完整闭环pilot均已完成。exp165证明delta/event通信可保持完整洪泛的digest/site语义并减少84.52%记录，但R4闭环success仅21.88%–43.75%，未通过：
+
+```text
+DISCOVER/VERIFY：已通过
+→ EXCHANGE/COMMIT：已通过
+→ delta/event通信：已通过
+→ R4 GATHER闭环：未通过
+→ 每层192场景：停止
+```
+
+原exp156 Bottleneck同时使用通道墙和100个陨石坑，内部可行平地几乎被清空，Oracle高度集中于地图边界。exp163保留通道墙，仅将Bottleneck陨石坑数调整为30；这是当前正式Active-DSTC评测基准。不得把exp163与原exp156 Bottleneck指标直接作同地图配对比较。
+
+exp165已经完成下列准入条件的实际检查：
+
+1. delta消息不能改变最终proposal-set digest和site id；
+2. 陈旧、重复、乱序delta必须幂等；
+3. 平均传输记录量相对完整缓存洪泛至少下降70%；
+4. R4只能读取本车状态、commit证书和12 m内邻车已承诺原语；
+5. R4替换Pure RL Actor，不允许Actor后动作覆盖；
+6. 32环境六分层完整闭环同时满足证书、实际质心平整度、dmax、dispersion、低速hold和安全门限；
+7. 32环境通过后才运行每层192场景；
+8. 本轮不训练高层utility、Actor、GNN、GRU或通信编码器。
+
+其中1–3通过，4–5完成工程接入，条件6失败，因此条件7明确停止。下一阶段不得继续扩大当前R4评测或扫描代价权重；只允许使用冻结exp165轨迹诊断原语承诺振荡，并预注册一个跨时稳定性机制。固定本车观测和消息日志后，修改Oracle及全局地形真值不得改变候选、commit、原语或轮速命令。exp165不得标记为项目最终success或strict pass。
+
+exp164已经额外完成407维H1标准MAPPO的78.6M交互长训。最终success 86.98%、collision 12.50%，未通过；Stage B近距Open曾达到success 98.44%、collision 1.30%，但Stage C碰撞保持约12%–27%。该结果关闭“继续延长Pure RL低层预算”的分支，进一步支持使用显式邻车承诺原语的R4 GATHER。
+
+以下章节保留exp156执行接口和exp157—159诊断边界，作为D-STC低层基线与历史停止依据。
 
 ## 1. 目标与边界
 
@@ -22,9 +53,9 @@
 - 安全投影、方向性mask和子目标过滤；
 - 集合槽位修正、集中式动作覆盖和在线MAPF；
 - Oracle集合点、全局质心、全局dmax和未通信邻车状态进入执行链；
-- 同时增加DAE、GRU、GNN或可学习通信。
+- 在DAE之外同时增加GRU、GNN、注意力或可学习通信。
 
-标准MAPPO仍是唯一训练算法。只有本轮完整实验失败，且冻结因果审计确认空间信用分配是主要瓶颈时，才另立DAE计划。
+标准shared-joint MAPPO仍是唯一基线。DAE只改变训练期advantage；离线前置门限失败时不得启动完整训练或切换其他信用算法。
 
 ## 2. 公共接口
 
@@ -288,3 +319,112 @@ outputs/runs/exp156_differential_multiscale_ablation/
 2. H1只使用N1，将一个共享可行站点区域编码为第三个多尺度空间通道，从零进行39.3M Pure RL训练。
 
 H1的407维观测与0.5 Oracle进展权重只构成低层goal-conditioned能力上界。只有H1显著成功、H0同时表明当前信息边界不足时，才允许制定完整D-STC工程计划；H1失败时优先检查低层动作、奖励和终端稳定，不增加候选共识模块。
+
+## 12. exp158 DAE-MAPPO两级验证
+
+### 12.1 当前阶段
+
+`exp157-H1`旧run标记为 `incomplete_interrupted`，只允许其134,400步checkpoint为离线审计提供行为分布。exp158当前顺序固定为：
+
+```text
+工程测试与GAE等价性
+→ 冻结因果及反事实奖励可辨识性审计
+→ H1-GAE/H1-DAE seed23完整配对
+→ H1 seed31/47
+→ Strict-GAE/Strict-DAE seed23完整配对
+→ Strict seed31/47
+```
+
+任一门限失败即停止后续阶段。正式离线审计现已完成并失败，因此当前执行在第一道门限终止，H1和strict训练未启动。
+
+### 12.2 DAE定义
+
+对车辆 $i$：
+
+$$
+\overline r_{i,t}
+=
+\sum_{a_i'=1}^{47}
+\pi_{\theta_{\mathrm{old}}}(a_i'\mid o_{i,t})
+\widehat r_\psi(s_t,\mathbf a_{-i,t},a_i'),
+$$
+
+$$
+C_{i,t}
+=
+\overline r_{i,t}
++\gamma\lambda\beta(1-d_t^{\mathrm{episode}})C_{i,t+1},
+$$
+
+$$
+A_{i,t}^{\mathrm{DAE,raw}}
+=
+A_t^{\mathrm{GAE,raw}}-\beta C_{i,t}.
+$$
+
+其中 $gamma=0.99$、$lambda=0.95$。`terminated`与`truncated`均切断反事实trace。Critic继续拟合原团队return，环境奖励不改变。
+
+β日程不扫描：前128次更新为0，随后128次线性升至0.3，余下训练固定0.3。奖励模型只预测团队总即时奖励，不增加分量辅助损失。
+
+### 12.3 离线门限
+
+正式审计使用128环境×480步事实训练集、两个独立64环境×480步验证集，以及六分层共384个冻结状态的72,192个真实单步反事实标签。替代动作标签只用于验证，不能训练奖励模型。
+
+必须同时通过时间信用、单车边际贡献、observation aliasing、总奖励MSE改善、关键结果动作辨识、反事实输出非塌缩、动作排序和policy-weighted期望误差门限。
+
+正式结果中，时间信用、aliasing、输出非塌缩和动作排序通过；冲突参与者边际比、共享advantage相关、总奖励MSE改善及policy-weighted期望误差失败。尤其期望误差为2.006个真实奖励标准差，远高于0.25门限。因此 `decision=stop_before_dae_training`。完整数值见[exp158实验记录](experiments/exp_158_dae_validation.md)。
+
+### 12.4 配对预算
+
+H1与strict均使用N1、256环境、rollout 64、三个固定800-iteration阶段。每个run为153,600训练步和39,321,600环境交互。seed23两臂完整结束并通过相对及绝对门限后，才运行seed31和47；不得短训淘汰、延长或选择中间checkpoint。
+
+最大两级预算为471,859,200环境交互。所有run串行执行。
+
+### 12.5 执行边界
+
+奖励模型读取950维集中状态和联合动作，只在PPO更新中使用。训练checkpoint将其保存在 `dae_training` 非部署字段；Actor observation、通信、轨迹和轮速命令均不增加集中信息。固定Actor后修改奖励模型、Oracle或未发送状态，执行输出必须不变。
+
+## 13. exp159解析式ALO-PRD
+
+### 13.1 启用原因
+
+exp158正式审计中，DAE动作排序勉强通过，但policy-weighted期望误差达到2.006个真实奖励标准差。exp159不扩大reward model，而是使用只依赖其他车辆动作的解析基线：
+
+$$
+A_{i,t}^{\mathrm{PRD,raw}}
+=
+A_t^{\mathrm{team,raw}}-b_{i,t}^{\mathrm{LOO}}.
+$$
+
+基线只减去当前步噪声，不进行多步trace；Critic return和团队奖励保持不变。
+
+### 13.2 固定语义
+
+LOO基线包含其他三车的动作成本、可加地形成本、路径最大风险、H1 Oracle进展、排除本车后计算的near penalty，以及其他三车内部碰撞、越界和对应failure penalty。
+
+dmax、dispersion、实际质心平整度、success、hold和timeout始终保留在共享团队GAE。baseline scale固定为1，不允许扫描。
+
+与exp150不同，exp159不构造车辆间零和残差。碰撞参与车保留原团队惩罚，非参与车只移除与自身当前动作无关的碰撞噪声，参与车不会被二次惩罚。
+
+### 13.3 串行门控
+
+执行顺序固定为：
+
+```text
+专项测试与rollout64 smoke
+→ A-H1冻结无偏性/方差审计
+→ A-strict冻结审计（仅A-H1通过后）
+→ H1 seed23完整GAE/PRD配对
+→ H1 seed31/47
+→ strict seed23及seed31/47
+```
+
+A-H1必须同时通过奖励不变、source重构、本车47动作不变性、全数据梯度一致性和两个验证seed至少15%的梯度方差降低。任一失败即停止后续阶段。
+
+正式A-H1结果中，奖励不变、source重构、本车动作不变性和梯度一致性均通过；但baseline/raw advantage覆盖率为3.45%/2.22%，梯度方差降低为7.06%/0.42%，未达到10%/15%门限。因此exp159在A-H1终止，A-strict和所有完整训练不启动。
+
+### 13.4 训练与验收
+
+每个正式run继续使用256环境、rollout 64、三个固定800-iteration阶段和39,321,600环境交互。seed23不使用短训淘汰；最终只比较153,600步checkpoint和固定1152场景。
+
+完整配置、门限、产物及结果见[exp159实验记录](experiments/exp_159_analytical_prd.md)。
