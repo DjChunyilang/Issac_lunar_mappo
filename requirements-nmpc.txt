@@ -1,0 +1,4 @@
+# Optional add-on to the existing proxy environment. Does not install torch/Isaac.
+casadi==3.7.2
+cmake>=3.24
+ninja>=1.11

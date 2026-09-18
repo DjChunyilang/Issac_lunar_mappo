@@ -1,6 +1,6 @@
 # 项目文档入口
 
-阅读或修改本项目时，从这里开始。
+阅读或修改本项目时，从这里开始。`outputs/`是生成目录，默认不要提交。
 
 ## 智能体阅读顺序
 
@@ -31,6 +31,7 @@ Markdown数学公式统一使用 `$...$` 表示行内公式，使用独占一行
 
 ## 当前主文档
 
+- [exp167连续局部目标＋NMPC](experiments/exp_167_local_goal_nmpc.md)和[运行手册](runbooks/local_goal_nmpc.md)：当前独立CPU闭环、限额pilot、依赖安装与恢复入口；不代表正式收敛。
 - [current_status.md](current_status.md)：当前项目状态和下一步工作。
 - [docs/implementation_plan.md](implementation_plan.md)：当前 V3 实施路线、里程碑、checkpoint 状态机和验收标准。
 - [architecture/overall_plan_v3.md](architecture/overall_plan_v3.md)：当前“proxy 训练 + Isaac/PhysX 闭环评估”主规划。
@@ -78,4 +79,4 @@ CI 明确使用 Python 3.12，并固定 CPU 依赖组合。`tests/test_skrl_impo
 
 ## 历史文档
 
-长篇进度日志位于 [archive/](archive/)。本轮面向导师交流的累计总结见 [2026-07-02 至 2026-07-29 阶段工作总结](archive/progress_summary_2026-07-02_to_2026-07-29.md)，正文以研究问题、技术方法、代表性结果和后续方案为主，完整实验数据通过实验文档追溯。旧 V1 / V2 / V3 原始长文压缩包已移出仓库，存放在仓库父目录 `../original_design_docs_v1_v2_v3_2026-06-16.zip`，只用于追溯过程，不作为当前 checkpoint、实验结论或下一步计划的唯一来源。
+长篇进度日志位于 [archive/](archive/)。exp155–165阶段状态见[8月进度归档](archive/progress_summary_2026-08-10_to_2026-08-26.md)，当前决策以 `current_status.md` 和 `roadmap.md` 为准。本轮面向导师交流的累计总结见 [2026-07-02 至 2026-07-29 阶段工作总结](archive/progress_summary_2026-07-02_to_2026-07-29.md)，正文以研究问题、技术方法、代表性结果和后续方案为主，完整实验数据通过实验文档追溯。旧 V1 / V2 / V3 原始长文压缩包已移出仓库，存放在仓库父目录 `../original_design_docs_v1_v2_v3_2026-06-16.zip`，只用于追溯过程，不作为当前 checkpoint、实验结论或下一步计划的唯一来源。

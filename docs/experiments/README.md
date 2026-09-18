@@ -137,5 +137,6 @@ PhysX / Jackal tracking 结果是 high-fidelity validation，不等于 Isaac Lab
 | exp162 | 原exp156六分层 | Active-DSTC有限belief、frontier探索和候选洪泛 | 32环境/层诊断 | 未通过 | Open/Mixed证书100%，但原100坑Bottleneck为0%/6.25%；确认内部可行域被清空并形成边界捷径，停止原基准正式评测。 | [exp_162_active_dstc_h05.md](exp_162_active_dstc_h05.md) |
 | exp163 | 修复后的可行Bottleneck六分层 | Active-DSTC DISCOVER/VERIFY/EXCHANGE/COMMIT | 192环境/层，共1152 | H0.5全部通过，非最终strict | 六层证书97.40%–100%、伪证书0、最高collision 0.52%、最高timeout 2.08%；下一步接入delta通信和R4 GATHER。 | [exp_163_feasible_bottleneck_active_dstc.md](exp_163_feasible_bottleneck_active_dstc.md) |
 | exp164 | 修复Bottleneck H1诊断 | 407维站点条件N1 + 标准GAE Pure RL夜间长训 | seed23，4800 iterations，78.6M交互 | 未通过 | final success 86.98%、collision 12.50%、timeout 0.52%、dmax ratio 0.096；Stage B曾达98.44%/1.30%，但Stage C协调泛化失败，停止续训。 | [exp_164_overnight_h1_repaired.md](exp_164_overnight_h1_repaired.md) |
+| exp167 | near/far × Open/Mixed/修复Bottleneck | 连续局部目标＋acados NMPC＋N1 GRU MAPPO | seed23，累计99,999底层训练交互 | pilot未通过，暂停训练 | 原pilot前后0/96成功；规划修正后固定长目标16/16到达、近距停车正常，非完整任务收敛。 | [exp_167_local_goal_nmpc.md](exp_167_local_goal_nmpc.md)、[固定目标诊断](exp_167_fixed_goal_diagnosis.md)、[规划修正](exp_167_planner_correction.md) |
 
 新增实验时，在这里加一行，并在本目录创建独立的 `exp_###_*.md` 文档。日期流水账放入 `docs/archive/`，不要继续堆到当前实验文档里。

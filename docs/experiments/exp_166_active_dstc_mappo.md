@@ -1,5 +1,7 @@
 # exp166 Active-DSTC条件MAPPO主线
 
+> 2026-09-14换机补记：用户反馈exp166及后续消融中Active-DSTC未发挥作用，当前暂停该方向。原始运行产物尚未恢复，下文RUNNING及“已启动”为旧记录，不表示本机正在运行，也不作为重新训练指令。
+
 ## Material Passport
 
 - Origin Skill：`academic-research-suite`

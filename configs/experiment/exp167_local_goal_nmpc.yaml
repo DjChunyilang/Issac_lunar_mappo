@@ -1,0 +1,103 @@
+extends: exp156_differential_multiscale_ablation.yaml
+
+experiment:
+  name: exp167_local_goal_nmpc
+  seed: 23
+  num_envs: 4
+  device: cpu
+  rollout_steps: 32
+  output_layout: run
+simulation:
+  episode_length_s: 96.0
+  physics_dt: 0.05
+  control_decimation: 4
+safety:
+  collision_termination_enabled: true
+initial_state:
+  curriculum_enabled: false
+  spawn_radius_min: 2.4
+  spawn_radius_max: 3.4
+  center_xy_range: 1.0
+  jitter_std: 0.25
+terrain:
+  topology_profile: open
+  topology_curriculum_stage: open
+  crater_count: 0
+  randomize_per_reset: false
+  min_speed_scale: 0.25
+bounded_curriculum:
+  enabled: false
+reward:
+  weights:
+    gather: 1.0
+    oracle: 0.0
+    energy: 0.003
+    safety: 1.0
+    terrain: 0.1
+    flatness: 1.0
+    motion: 0.0
+    consistency: 0.0
+    terminal: 1.0
+    active_dstc: 0.0
+  coefficients:
+    dmax_progress: 9.5
+    dispersion_progress: 6.0
+    dmax_level: 0.13
+    dispersion_level: 0.04
+    oracle_mean_distance_progress: 0.0
+    path_length: 0.02
+    turn_cost: 0.007
+    slope_cost: 0.15
+    terrain_cost: 0.15
+    subgoal_terrain_cost: 0.0
+    terrain_speed_loss_cost: 0.14
+    terrain_height_change_cost: 0.09
+    path_terrain_mean_cost: 0.0
+    path_terrain_max_cost: 0.0
+    path_height_change_cost: 0.0
+    filter_raw_path_risk_cost: 0.0
+    filter_deviation_cost: 0.0
+    near_distance: 2.4
+    inter_agent_collision: 100.0
+    subgoal_turn: 0.0
+    subgoal_stagnation: 0.0
+    action_consistency: 0.0
+    success_hold_step: 12.0
+    success_bonus: 130.0
+    failure_penalty: 55.0
+    timeout_penalty: 80.0
+    centroid_flatness_progress: 2.0
+    centroid_flatness_excess: 0.02
+    centroid_flatness_dmax_multiplier: 2.0
+    path_terrain_relative_cost: 0.0
+    terminal_pairwise_gap: 0.0
+    terminal_pairwise_dmax_multiplier: 1.0
+    terminal_pairwise_dispersion_multiplier: 1.0
+    dstc_belief_progress: 0.0
+    dstc_commit_bonus: 0.0
+    dstc_site_distance_progress: 0.0
+local_goal:
+  version: local_goal_nmpc_v1
+  planner_revision: prefix_consistency_v2
+  decision_steps: 5
+  horizon_steps: 15
+  planning_dt: 0.2
+  displacement_limit: 1.6
+  speed_limit: 1.15
+  hidden_size: 128
+  sequence_length: 16
+  planner_threads: 4
+  solver_threads: 1
+  interaction_budget: 100000
+  wall_seconds: 7200
+  eval_episodes_per_cell: 16
+  bottleneck_crater_count: 30
+algorithm:
+  actor_architecture: multiscale_n1_cnn_gru
+  critic_architecture: local_goal_centralized_mse
+  learning_rate: 0.0001
+  ppo_epochs: 5
+  clip_epsilon: 0.15
+  gamma: 0.99
+  gae_lambda: 0.95
+  entropy_loss_scale: 0.0009

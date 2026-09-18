@@ -1,0 +1,11 @@
+# CPU/GPU-independent dependencies matching the repository's unit contract.
+# Install torch==2.10.0 from the desired official PyTorch index first.
+pytest==9.0.3
+skrl==2.1.0
+gymnasium==1.2.1
+numpy==2.3.1
+pyyaml==6.0.3
+matplotlib==3.10.8
+imageio==2.37.2
+tensorboard>=2.20,<3
+scipy>=1.15,<2

@@ -1,5 +1,38 @@
 # 环境搭建与工程闭环验收
 
+## RTX 2060本机：仅安装代理训练环境
+
+2026-09-14起，本机优先恢复proxy训练。`.venv_isaaclab`仍沿用历史路径名，但本机不安装Isaac Sim/Isaac Lab；下面的完整栈安装与PhysX命令不属于本机已验证能力。
+
+```bash
+bash scripts/install_proxy_stack.sh
+source .venv_isaaclab/bin/activate
+python -m pip check
+```
+
+安装脚本默认使用`python3.12`创建环境，可通过`PROXY_BASE_PYTHON=/usr/bin/python3`指定系统Python 3.12。默认安装PyTorch 2.10.0 CPU版；如有满足要求的显卡和下载条件，可通过`PROXY_TORCH_INDEX=https://download.pytorch.org/whl/cu128`切换CUDA wheel。其他训练依赖见根目录`requirements-proxy.txt`。
+
+若Ubuntu缺少`ensurepip`，可先用系统Python创建不含pip的环境，再用已有Anaconda pip引导安装；不需要修改已有Conda环境：
+
+```bash
+/usr/bin/python3 -m venv --without-pip .venv_isaaclab
+/home/yu/anaconda3/bin/python -m pip --python .venv_isaaclab/bin/python install pip setuptools wheel
+bash scripts/install_proxy_stack.sh
+```
+
+不含Active-DSTC的N1训练链路检查：
+
+```bash
+OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 .venv_isaaclab/bin/python scripts/train_skrl_mappo.py \
+  --config configs/experiment/exp156_smoke.yaml \
+  --actor-architecture multiscale_n1_cnn \
+  --device cpu --num-envs 32 --rollout-steps 64 --timesteps 128 \
+  --output-layout run --run-name local_n1_cuda_32env_128step \
+  --selection-gate final
+```
+
+该命令只检查真实MAPPO更新、checkpoint和评测输出，不要求短训策略收敛。每次运行使用新的`run-name`。正式实验应单独确定训练预算和课程；降低环境数后，相同timesteps不再代表相同环境交互预算。
+
 本 runbook 用于验证 Isaac Sim / Isaac Lab / SKRL / 本地任务包的最小工程闭环。近期目标是确认安装、导入、proxy validation、SKRL MAPPO smoke 和 PhysX sanity 路径可重复，不以 reward 收敛作为成功标准。
 
 ## 前置条件
