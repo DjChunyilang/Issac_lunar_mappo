@@ -1,5 +1,7 @@
 # 连续局部目标＋NMPC 首轮运行
 
+2026-09-24更新：本文主体描述历史合成CPU路线。真实地图的三通道观测、独立策略/地形设备与无学习检查见[NASA地图运行手册](nasa_training_maps.md)；原六分层评估不能用于新地图。
+
 这是独立的 `exp167` proxy 路线，不要求安装 CUDA、Isaac Sim 或 Isaac Lab，不使用旧 checkpoint。旧 `train_skrl_mappo.py` 和原语环境保持可用。
 
 当前网络训练暂停。2026-09-18规划修正使用 `planner_revision: prefix_consistency_v2`，详见[修正记录](../experiments/exp_167_planner_correction.md)。下列训练命令仅作入口说明，不代表本轮恢复训练；旧pilot的配置/实现hash不匹配新版，不能直接混合续训。

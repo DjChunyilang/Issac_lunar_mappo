@@ -1,5 +1,7 @@
 # 实验索引
 
+地图路线已于2026-09-25确定为[真实DEM与NASA增强](../architecture/lunar_map_mainline.md)。下表的地图工程通过与训练任务的strict通过分别解释；学习继续暂停。
+
 除非实验文档另有说明，proxy strict gate 为：
 
 ```text
@@ -15,6 +17,8 @@ PhysX / Jackal tracking 结果是 high-fidelity validation，不等于 Isaac Lab
 
 | 实验 | 地形 | 方法 | Seeds | Proxy strict | 当前结论 | 文档 |
 | --- | --- | --- | --- | --- | --- | --- |
+| lunar_terrain_validation / nasa_sfd_v2 | NPB真实轨道DEM＋NASA坑石假设 | 7张地图、分层表示、GPU无学习检查 | 23/24/25（同区域） | 不适用 | 36项地形测试、四组32环境×32步通过；地图后续主线，训练暂停。 | [NASA SFD验收](nasa_sfd_v2_2026-09-24.md) |
+| lunar_terrain_validation | LUPEX六区1米SfS产品 | 数据审计、4来源关联组、12嵌套划分、版本化查询 | 非训练 | 不适用 | 数据接口与27项地形合同通过；车辆安全/任务尚未定义，训练暂停。 | [真实地形审计](lunar_terrain_data_audit_2026-09-22.md) |
 | exp165 | 修复后的六分层proxy | Active-DSTC delta/event证书 + R4去中心化47原语闭环 | 32 episodes/层 | pilot未通过 | 通信语义与压缩通过；success 21.88%–43.75%、timeout 50%–78.13%，R4跨时振荡，不启动正式1152评测。 | [exp_165_active_dstc_closed_loop.md](exp_165_active_dstc_closed_loop.md) |
 | exp006 | 平地 proxy | BC + PPO，PPO 阶段选 checkpoint | 23, 31, 47 | 通过 | 平地 proxy baseline；不是 pure RL 从零收敛。 | [exp_006_ppo_selected.md](exp_006_ppo_selected.md) |
 | exp007 | lunar crater proxy + 历史 PhysX sanity | 弱 warm-start + PPO | selected run | selected checkpoint 通过 | 历史高保真 sanity；当前活跃 PhysX 验证已切换为 Jackal tracking。 | [exp_007_phase_c.md](exp_007_phase_c.md) |

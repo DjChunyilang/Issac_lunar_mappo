@@ -5,6 +5,7 @@
 ## 智能体阅读顺序
 
 1. 先读 [current_status.md](current_status.md)，了解当前主线、推荐 checkpoint、评估状态和结果边界。
+   - 地图工作首先读[地图主线](architecture/lunar_map_mainline.md)：真实轨道 DEM → 插值表示 → NASA 模型坑石增强。当前结果见[验收记录](experiments/nasa_sfd_v2_2026-09-24.md)，操作见[运行手册](runbooks/nasa_sfd_v2.md)。这是2026-09-25确认的地图路线，训练继续暂停。
 2. 理解当前执行路线读 [docs/implementation_plan.md](implementation_plan.md)，理解整体分层路线读 [architecture/overall_plan_v3.md](architecture/overall_plan_v3.md)。
 3. 理解长期技术路径读根目录 `多月球车自组织集合局部参考轨迹规划技术文档.md`，理解短版技术摘要和接口读 [docs/technical_design.md](technical_design.md) 与 [interface_spec.md](interface_spec.md)。
 4. 理解工程骨架读 [docs/scaffold.md](scaffold.md)。
@@ -31,6 +32,12 @@ Markdown数学公式统一使用 `$...$` 表示行内公式，使用独占一行
 
 ## 当前主文档
 
+- [地图主线：真实 DEM 与 NASA 模型增强](architecture/lunar_map_mainline.md)：地图部分当前统一入口，包含数据规模、处理链、已完成能力、后续地理扩展及旧路线处置。
+- [NASA SFD验收记录](experiments/nasa_sfd_v2_2026-09-24.md)与[复现手册](runbooks/nasa_sfd_v2.md)：7张地图、36项地形测试、GPU短程执行及可视化；模型增强未作NPB区域标定，学习暂停。
+- [真实地形比较协议](experiments/lunar_terrain_comparison_protocol.md)：地理隔离、配对增强和后续训练比较条件；尚未开始训练。
+- [NASA早期接入记录](experiments/nasa_terrain_implementation_2026-09-24.md)、[阶段规划](architecture/nasa_terrain_training_implementation_plan.md)、[可行性调查](references/nasa_terrain_feasibility_2026-09-23.md)与[方法文献核查](references/lunar_terrain_methods_review_2026-09-23.md)：实施和选型依据，旧驱动阻塞是历史状态。
+- [LUPEX数据审计](experiments/lunar_terrain_data_audit_2026-09-22.md)、[原生查询接口说明](architecture/real_lunar_terrain_v1.md)与[审计工具手册](runbooks/lunar_terrain.md)：补充数据与跨源评估候选，保留六区四组成果；不是另一个默认地图主线。
+- [月面地形数据与仿真文献调研](references/lunar_terrain_data_review_2026-09-19.md)和[逐项证据表](references/lunar_terrain_evidence_2026-09-19.csv)：9月19日研究依据；固定25米场地及0.75米判据仅为历史参照，最新数据能力与约束以上述审计和适配说明为准。
 - [exp167连续局部目标＋NMPC](experiments/exp_167_local_goal_nmpc.md)和[运行手册](runbooks/local_goal_nmpc.md)：当前独立CPU闭环、限额pilot、依赖安装与恢复入口；不代表正式收敛。
 - [current_status.md](current_status.md)：当前项目状态和下一步工作。
 - [docs/implementation_plan.md](implementation_plan.md)：当前 V3 实施路线、里程碑、checkpoint 状态机和验收标准。
