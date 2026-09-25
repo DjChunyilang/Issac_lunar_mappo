@@ -6,7 +6,10 @@ from dataclasses import dataclass
 
 import torch
 
-from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import ObservationCfg, TerrainCfg
+from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import (
+    ObservationCfg,
+    TerrainCfg,
+)
 
 
 TERRAIN_FEATURE_NAMES = ("height", "slope_x", "slope_y", "roughness", "traversability")
@@ -41,6 +44,8 @@ class TerrainRuntime:
     crater_radius_scale: torch.Tensor
     crater_depth_scale: torch.Tensor
     topology_bucket: torch.Tensor
+    scene_bank: object | None = None
+    scene_indices: torch.Tensor | None = None
 
     def subset(self, env_ids: torch.Tensor) -> TerrainRuntime:
         return TerrainRuntime(
@@ -51,6 +56,8 @@ class TerrainRuntime:
             crater_radius_scale=self.crater_radius_scale[env_ids],
             crater_depth_scale=self.crater_depth_scale[env_ids],
             topology_bucket=self.topology_bucket[env_ids],
+            scene_bank=self.scene_bank,
+            scene_indices=None if self.scene_indices is None else self.scene_indices[env_ids],
         )
 
     def to(self, device: torch.device | str, dtype: torch.dtype | None = None) -> TerrainRuntime:
@@ -65,6 +72,10 @@ class TerrainRuntime:
             crater_radius_scale=self.crater_radius_scale.to(**kwargs),
             crater_depth_scale=self.crater_depth_scale.to(**kwargs),
             topology_bucket=self.topology_bucket.to(device=device),
+            scene_bank=self.scene_bank,
+            scene_indices=None
+            if self.scene_indices is None
+            else self.scene_indices.to(device=device),
         )
 
     def clone(self) -> TerrainRuntime:
@@ -76,6 +87,8 @@ class TerrainRuntime:
             crater_radius_scale=self.crater_radius_scale.clone(),
             crater_depth_scale=self.crater_depth_scale.clone(),
             topology_bucket=self.topology_bucket.clone(),
+            scene_bank=self.scene_bank,
+            scene_indices=None if self.scene_indices is None else self.scene_indices.clone(),
         )
 
 
@@ -124,7 +137,9 @@ def _uniform_(
     generator: torch.Generator,
 ) -> None:
     if high < low:
-        raise ValueError(f"Terrain randomization range must satisfy min <= max, got {low} > {high}.")
+        raise ValueError(
+            f"Terrain randomization range must satisfy min <= max, got {low} > {high}."
+        )
     if high == low:
         target.fill_(low)
     else:
@@ -141,6 +156,14 @@ def randomize_terrain_runtime(
     env_ids = env_ids.to(device=runtime.yaw.device, dtype=torch.long)
     count = int(env_ids.numel())
     if count == 0:
+        return
+    if terrain_cfg.type == "lunar_scene_pack":
+        if runtime.scene_bank is None:
+            raise ValueError("Raster scenes need an initialized scene bank")
+        runtime.scene_indices[env_ids] = torch.randint(
+            len(runtime.scene_bank.scenes), (count,), generator=generator, device=runtime.yaw.device
+        )
+        runtime.scene_bank.prefetch(runtime.scene_indices)
         return
     topology_profile = str(terrain_cfg.topology_profile).lower()
     if topology_profile == "mixed_bottleneck_mix":
@@ -167,7 +190,9 @@ def randomize_terrain_runtime(
         runtime.crater_depth_scale[env_ids] = 1.0
         return
 
-    translation = torch.empty(count, 2, device=runtime.translation_xy.device, dtype=runtime.translation_xy.dtype)
+    translation = torch.empty(
+        count, 2, device=runtime.translation_xy.device, dtype=runtime.translation_xy.dtype
+    )
     _uniform_(
         translation,
         -float(terrain_cfg.random_translation_m),
@@ -209,6 +234,8 @@ def randomize_terrain_runtime(
 
 
 def is_flat_terrain(terrain_cfg: TerrainCfg | None) -> bool:
+    if terrain_cfg is not None and terrain_cfg.type == "lunar_scene_pack":
+        return False
     if terrain_cfg is not None and terrain_cfg.type in {"lupex_dtm", "raster_dtm"}:
         raise ValueError(
             "Real DTM requires terrain_data.runtime and lunar_dtm_metrics_v1; "
@@ -240,7 +267,9 @@ def _crater_layout(
     if count == 1:
         if runtime is None:
             centers = torch.zeros(1, 2, device=device, dtype=dtype)
-            radii = torch.full((1,), float(terrain_cfg.crater_max_radius), device=device, dtype=dtype)
+            radii = torch.full(
+                (1,), float(terrain_cfg.crater_max_radius), device=device, dtype=dtype
+            )
         else:
             centers = torch.zeros(runtime.yaw.shape[0], 1, 2, device=device, dtype=dtype)
             radii = (
@@ -262,19 +291,22 @@ def _crater_layout(
         theta = index * 2.39996322973 + seed_phase
         centers = torch.stack((radial * torch.cos(theta), radial * torch.sin(theta)), dim=-1)
         radius_mix = 0.5 + 0.5 * torch.sin(index * 12.9898 + seed_phase)
-        radii = float(terrain_cfg.crater_min_radius) + (
-            float(terrain_cfg.crater_max_radius) - float(terrain_cfg.crater_min_radius)
-        ) * radius_mix
+        radii = (
+            float(terrain_cfg.crater_min_radius)
+            + (float(terrain_cfg.crater_max_radius) - float(terrain_cfg.crater_min_radius))
+            * radius_mix
+        )
         return centers, radii.clamp_min(1.0e-3)
 
     phase = runtime.phase[:, None]
     theta = index[None, :] * 2.39996322973 + seed_phase + phase
-    centers = torch.stack((radial[None, :] * torch.cos(theta), radial[None, :] * torch.sin(theta)), dim=-1)
+    centers = torch.stack(
+        (radial[None, :] * torch.cos(theta), radial[None, :] * torch.sin(theta)), dim=-1
+    )
     radius_mix = 0.5 + 0.5 * torch.sin(index[None, :] * 12.9898 + seed_phase + phase)
     radii = (
         float(terrain_cfg.crater_min_radius)
-        + (float(terrain_cfg.crater_max_radius) - float(terrain_cfg.crater_min_radius))
-        * radius_mix
+        + (float(terrain_cfg.crater_max_radius) - float(terrain_cfg.crater_min_radius)) * radius_mix
     ) * runtime.crater_radius_scale[:, None]
     return centers, radii.clamp_min(1.0e-3)
 
@@ -309,6 +341,8 @@ def _heightfield_height(
     terrain_cfg: TerrainCfg | None,
     runtime: TerrainRuntime | None = None,
 ) -> torch.Tensor:
+    if terrain_cfg is not None and terrain_cfg.type == "lunar_scene_pack":
+        return _raster_query(xy, runtime).features[..., 0].nan_to_num()
     if _is_flat(terrain_cfg):
         return torch.zeros(*xy.shape[:-1], dtype=xy.dtype, device=xy.device)
 
@@ -349,28 +383,19 @@ def _heightfield_height(
         bottleneck_weight: torch.Tensor | float = 1.0
         if topology_profile == "mixed_bottleneck_mix":
             if runtime is None:
-                raise ValueError(
-                    "mixed_bottleneck_mix requires per-environment TerrainRuntime."
-                )
-            bottleneck_weight = _runtime_scalar(
-                runtime.topology_bucket.to(dtype=xy.dtype), xy
-            )
+                raise ValueError("mixed_bottleneck_mix requires per-environment TerrainRuntime.")
+            bottleneck_weight = _runtime_scalar(runtime.topology_bucket.to(dtype=xy.dtype), xy)
         elif topology_profile == "runtime_bucketed":
             if runtime is None:
                 bottleneck_weight = (
-                    0.0
-                    if str(terrain_cfg.topology_curriculum_stage).lower() == "open"
-                    else 1.0
+                    0.0 if str(terrain_cfg.topology_curriculum_stage).lower() == "open" else 1.0
                 )
             else:
                 bottleneck_weight = _runtime_scalar(
                     (runtime.topology_bucket == 2).to(dtype=xy.dtype), xy
                 )
         height = height + (
-            float(terrain_cfg.bottleneck_wall_height)
-            * bottleneck_weight
-            * ridge
-            * passage
+            float(terrain_cfg.bottleneck_wall_height) * bottleneck_weight * ridge * passage
         )
 
     crater_profile_enabled = topology_profile != "open"
@@ -418,6 +443,16 @@ def _base_features(
     terrain_cfg: TerrainCfg | None,
     runtime: TerrainRuntime | None = None,
 ) -> torch.Tensor:
+    if terrain_cfg is not None and terrain_cfg.type == "lunar_scene_pack":
+        query = _raster_query(xy, runtime)
+        features = query.features.nan_to_num()
+        slope = torch.linalg.vector_norm(features[..., 1:3], dim=-1)
+        score = torch.exp(
+            -slope / terrain_cfg.raster_risk_slope_scale
+            - features[..., 3] / terrain_cfg.raster_risk_rms_scale_m
+        )
+        score = torch.where(query.metrics_valid, score, 0.0)
+        return torch.cat((features, score[..., None]), dim=-1)
     if _is_flat(terrain_cfg):
         return torch.zeros(*xy.shape[:-1], 5, dtype=xy.dtype, device=xy.device)
 
@@ -442,12 +477,20 @@ def _base_features(
     return torch.stack((height, slope_x, slope_y, roughness, traversability), dim=-1)
 
 
+def _raster_query(xy, runtime):
+    if runtime is None or runtime.scene_bank is None or runtime.scene_indices is None:
+        raise ValueError("Real scene query requires its versioned runtime")
+    return runtime.scene_bank.query(xy, runtime.scene_indices)
+
+
 def _fit_dim(features: torch.Tensor, dim: int) -> torch.Tensor:
     if features.shape[-1] == dim:
         return features
     if features.shape[-1] > dim:
         return features[..., :dim]
-    pad = torch.zeros(*features.shape[:-1], dim - features.shape[-1], dtype=features.dtype, device=features.device)
+    pad = torch.zeros(
+        *features.shape[:-1], dim - features.shape[-1], dtype=features.dtype, device=features.device
+    )
     return torch.cat((features, pad), dim=-1)
 
 
@@ -484,9 +527,8 @@ def gather_point_flatness_offsets(
     if samples_per_ring < 4:
         raise ValueError("Gather-point flatness samples_per_ring must be at least 4.")
 
-    angles = (
-        torch.arange(samples_per_ring, device=device, dtype=dtype)
-        * (2.0 * torch.pi / float(samples_per_ring))
+    angles = torch.arange(samples_per_ring, device=device, dtype=dtype) * (
+        2.0 * torch.pi / float(samples_per_ring)
     )
     unit_ring = torch.stack((torch.cos(angles), torch.sin(angles)), dim=-1)
     ring_radii = torch.linspace(
@@ -556,9 +598,15 @@ def evaluate_gather_point_flatness(
     height_range = height.amax(dim=-1) - height.amin(dim=-1)
     patch_max_slope = slope.amax(dim=-1)
     mean_patch_slope = slope.mean(dim=-1)
-    is_flat = (height_range <= float(max_height_range)) & (
-        patch_max_slope <= float(max_slope)
-    )
+    is_flat = (height_range <= float(max_height_range)) & (patch_max_slope <= float(max_slope))
+    if terrain_cfg.type == "lunar_scene_pack":
+        supported = _raster_query(sample_xy, runtime).metrics_valid.all(dim=-1)
+        is_flat &= supported
+        # Finite failure costs for learning, accompanied by explicit support in
+        # the actor; these sentinels are never reported as terrain measurements.
+        height_range = torch.where(supported, height_range, float(max_height_range) + 1.0)
+        patch_max_slope = torch.where(supported, patch_max_slope, float(max_slope) + 1.0)
+        mean_patch_slope = torch.where(supported, mean_patch_slope, float(max_slope) + 1.0)
     return GatherPointFlatness(
         height_range=height_range,
         max_slope=patch_max_slope,
@@ -597,9 +645,8 @@ def search_local_flatness_center(
     if search_radius == 0.0:
         candidates = centers_xy[:, None, :]
     else:
-        angles = (
-            torch.arange(samples, device=centers_xy.device, dtype=centers_xy.dtype)
-            * (2.0 * torch.pi / float(samples))
+        angles = torch.arange(samples, device=centers_xy.device, dtype=centers_xy.dtype) * (
+            2.0 * torch.pi / float(samples)
         )
         ring = float(search_radius) * torch.stack((torch.cos(angles), torch.sin(angles)), dim=-1)
         candidates = torch.cat((centers_xy[:, None, :], centers_xy[:, None, :] + ring[None]), dim=1)
@@ -665,9 +712,9 @@ def sample_path_terrain_risk(
     )
     start_xy = start_positions[..., :2]
     target_xy = target_positions[..., :2]
-    sample_xy = start_xy[..., None, :] + (
-        target_xy - start_xy
-    )[..., None, :] * fractions.view(*([1] * (start_xy.ndim - 1)), num_samples, 1)
+    sample_xy = start_xy[..., None, :] + (target_xy - start_xy)[..., None, :] * fractions.view(
+        *([1] * (start_xy.ndim - 1)), num_samples, 1
+    )
     features = query_terrain_features(sample_xy, terrain_cfg, runtime)
     risk = (1.0 - features[..., 4]).clamp(0.0, 1.0)
     start_height = query_height(start_xy, terrain_cfg, runtime)
@@ -691,9 +738,7 @@ def sample_trajectory_terrain_risk(
     trajectory geometry with a straight segment to the endpoint.
     """
     if trajectory_points.ndim != 4 or trajectory_points.shape[-1] != 3:
-        raise ValueError(
-            "trajectory_points must have shape [num_envs, num_agents, samples, 3]."
-        )
+        raise ValueError("trajectory_points must have shape [num_envs, num_agents, samples, 3].")
     if trajectory_points.shape[-2] < 1:
         raise ValueError("trajectory_points must contain at least one sample.")
     shape = trajectory_points.shape[:2]
@@ -743,16 +788,8 @@ def local_terrain_grid_world_points(
     local_y = offsets[..., 1]
     cos_yaw = torch.cos(yaws)[..., None, None]
     sin_yaw = torch.sin(yaws)[..., None, None]
-    world_x = (
-        positions[..., 0, None, None]
-        + cos_yaw * local_x
-        - sin_yaw * local_y
-    )
-    world_y = (
-        positions[..., 1, None, None]
-        + sin_yaw * local_x
-        + cos_yaw * local_y
-    )
+    world_x = positions[..., 0, None, None] + cos_yaw * local_x - sin_yaw * local_y
+    world_y = positions[..., 1, None, None] + sin_yaw * local_x + cos_yaw * local_y
     return torch.stack((world_x, world_y), dim=-1)
 
 
@@ -798,6 +835,10 @@ def _build_body_terrain_grid(
     base_height = _heightfield_height(positions[..., :2], terrain_cfg, runtime)[..., None, None]
     relative_height = sample_features[..., 0] - base_height
     risk = (1.0 - sample_features[..., 4]).clamp(0.0, 1.0)
+    if terrain_cfg.type == "lunar_scene_pack":
+        supported = _raster_query(sample_xy, runtime).metrics_valid
+        relative_height = torch.where(supported, relative_height, 0.0)
+        return torch.stack((relative_height, risk, supported.to(relative_height.dtype)), dim=-1)
     return torch.stack((relative_height, risk), dim=-1)
 
 
@@ -842,7 +883,12 @@ def build_multiscale_local_terrain_observation(
         runtime,
     )
     observation = torch.cat(tuple(grid.flatten(start_dim=-3) for grid in grids), dim=-1)
-    if observation.shape[-1] != MULTISCALE_TERRAIN_DIM:
+    expected = (
+        336
+        if terrain_cfg is not None and terrain_cfg.type == "lunar_scene_pack"
+        else MULTISCALE_TERRAIN_DIM
+    )
+    if observation.shape[-1] != expected:
         raise RuntimeError(
             f"Multi-scale terrain observation has dim {observation.shape[-1]}, "
             f"expected {MULTISCALE_TERRAIN_DIM}."
@@ -879,13 +925,9 @@ def build_multiscale_site_belief_observation(
     elif site_point.shape[:-1] == positions.shape[:-1]:
         target_xy = site_point[..., :2]
     else:
-        raise ValueError(
-            "site_point must have shape [E, 3] or match the per-rover position shape."
-        )
+        raise ValueError("site_point must have shape [E, 3] or match the per-rover position shape.")
     if site_valid is None:
-        site_valid = torch.ones(
-            positions.shape[:2], dtype=torch.bool, device=positions.device
-        )
+        site_valid = torch.ones(positions.shape[:2], dtype=torch.bool, device=positions.device)
     elif site_valid.shape != positions.shape[:2]:
         raise ValueError(
             f"site_valid must have shape {tuple(positions.shape[:2])}, "
@@ -979,8 +1021,7 @@ def summarize_local_terrain_grid_per_agent(grid: torch.Tensor) -> torch.Tensor:
     """Return the five sender-local terrain statistics for each rover."""
     if grid.ndim < 5 or grid.shape[-1] != 2:
         raise ValueError(
-            "local terrain grid must have shape [..., agents, x, y, 2], got "
-            f"{tuple(grid.shape)}."
+            f"local terrain grid must have shape [..., agents, x, y, 2], got {tuple(grid.shape)}."
         )
     relative_height = grid[..., 0]
     risk = grid[..., 1]

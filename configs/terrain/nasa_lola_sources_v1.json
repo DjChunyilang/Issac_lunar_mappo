@@ -1,0 +1,22 @@
+{
+  "schema": "lunar_source_catalog_v1",
+  "catalog_url": "https://pgda.gsfc.nasa.gov/products/78",
+  "readme_url": "https://pgda.gsfc.nasa.gov/data/LOLA_5mpp/README",
+  "coordinate_frame": "MOON_ME DE421, lunar south polar stereographic",
+  "native_spacing_m": 5.0,
+  "measurement_class": "laser_altimetry_surface_interpolated",
+  "quality_semantics": "total_height_rms_m_including_orbit_and_interpolation; not independent pixel Gaussian sigma",
+  "regions": {
+    "npb": {
+      "name": "Amundsen 1",
+      "role": "development",
+      "reason": "NPB crop already used in feasibility and implementation debugging",
+      "geographic_group": "nasa_npb",
+      "urls": {
+        "dtm": "https://pgda.gsfc.nasa.gov/data/LOLA_5mpp/NPB/NPB_final_adj_5mpp_surf.tif",
+        "sample_count": "https://pgda.gsfc.nasa.gov/data/LOLA_5mpp/NPB/NPB_final_adj_5mpp_ldec.tif",
+        "height_error": "https://pgda.gsfc.nasa.gov/data/LOLA_5mpp/NPB/NPB_final_adj_5mpp_toterr.tif"
+      }
+    }
+  }
+}

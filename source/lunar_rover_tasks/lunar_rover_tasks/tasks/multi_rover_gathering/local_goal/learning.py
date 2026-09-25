@@ -15,11 +15,17 @@ def bounded_log_prob(normal, latent):
 
 
 class RecurrentPolicy(nn.Module):
-    def __init__(self, critic_dim):
+    def __init__(self, critic_dim, *, terrain_channels=2):
         super().__init__()
+        if terrain_channels not in (2, 3):
+            raise ValueError("Expected legacy or validity-aware terrain channels")
+        self.terrain_channels = terrain_channels
         # Same shared two-convolution N1 multiscale encoder as the legacy route.
         self.terrain = nn.Sequential(
-            nn.Conv2d(2, 16, 3, padding=1), nn.ELU(), nn.Conv2d(16, 32, 3, padding=1), nn.ELU()
+            nn.Conv2d(terrain_channels, 16, 3, padding=1),
+            nn.ELU(),
+            nn.Conv2d(16, 32, 3, padding=1),
+            nn.ELU(),
         )
         self.terrain_projection = nn.Sequential(nn.Linear(864, 64), nn.ELU())
         self.ego = nn.Sequential(nn.Linear(15, 32), nn.ELU())
@@ -40,16 +46,19 @@ class RecurrentPolicy(nn.Module):
         shape = obs.shape[:-1]
         obs = obs.reshape(-1, obs.shape[-1])
         encoded = []
-        for start, end, nx, ny in [(66, 192, 7, 9), (192, 234, 3, 7), (234, 290, 4, 7)]:
-            grid = obs[:, start:end].reshape(-1, nx, ny, 2).permute(0, 3, 1, 2)
+        start = 66
+        for nx, ny in [(7, 9), (3, 7), (4, 7)]:
+            end = start + nx * ny * self.terrain_channels
+            grid = obs[:, start:end].reshape(-1, nx, ny, self.terrain_channels).permute(0, 3, 1, 2)
+            start = end
             encoded.append(F.adaptive_avg_pool2d(self.terrain(grid), (3, 3)).flatten(1))
         features = torch.cat(
             [
                 self.ego(obs[:, :15]),
                 self.neighbors(obs[:, 15:66]),
-                self.aggregation(obs[:, 290:295]),
+                self.aggregation(obs[:, start : start + 5]),
                 self.terrain_projection(torch.cat(encoded, -1)),
-                self.feedback(obs[:, 295:]),
+                self.feedback(obs[:, start + 5 :]),
             ],
             -1,
         )

@@ -23,6 +23,7 @@ class DoneFlags:
     terminated: torch.Tensor
     truncated: torch.Tensor
     done: torch.Tensor
+    invalid_terrain: torch.Tensor | None = None
 
 
 @dataclass(slots=True)
@@ -109,6 +110,7 @@ def compute_done(
     safety: SafetyCfg,
     *,
     flatness_ok: torch.Tensor | None = None,
+    terrain_unknown: torch.Tensor | None = None,
 ) -> tuple[DoneFlags, torch.Tensor]:
     next_hold = update_success_hold_count(
         hold_count,
@@ -117,13 +119,21 @@ def compute_done(
         thresholds,
         flatness_ok=flatness_ok,
     )
+    invalid = (
+        torch.zeros_like(next_hold, dtype=torch.bool)
+        if terrain_unknown is None
+        else terrain_unknown
+    )
+    next_hold = torch.where(invalid, 0, next_hold)
     success = next_hold >= thresholds.hold_steps
     collision = check_collision(positions, safety)
     out_of_bounds = check_out_of_bounds(positions, safety)
     timeout = step_count >= max_episode_steps
-    collision_terminal = collision if safety.collision_termination_enabled else torch.zeros_like(collision)
+    collision_terminal = (
+        collision if safety.collision_termination_enabled else torch.zeros_like(collision)
+    )
     terminated = success | collision_terminal | out_of_bounds
-    truncated = timeout & ~terminated
+    truncated = (timeout | invalid) & ~terminated
     done = terminated | truncated
     return (
         DoneFlags(
@@ -134,6 +144,7 @@ def compute_done(
             terminated=terminated,
             truncated=truncated,
             done=done,
+            invalid_terrain=invalid,
         ),
         next_hold,
     )

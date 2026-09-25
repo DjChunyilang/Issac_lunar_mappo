@@ -1,0 +1,5 @@
+# Install torch==2.10.0 from https://download.pytorch.org/whl/cu126 first.
+# Keep this environment independent from .venv_isaaclab and Blender.
+-r requirements-proxy.txt
+-r requirements-terrain.txt
+-r requirements-nmpc.txt

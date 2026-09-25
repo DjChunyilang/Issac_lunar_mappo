@@ -42,7 +42,7 @@ class LocalTerrainMemory:
             self._xy[slot] = point
             self._features[slot] = feature
             self._timestamps[slot] = timestamp
-        self.tree = cKDTree(self.xy)
+        self.tree = cKDTree(self.xy) if len(self.samples) else None
 
     def lookup(self, xy):
         xy = np.atleast_2d(xy)

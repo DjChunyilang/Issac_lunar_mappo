@@ -4136,6 +4136,8 @@ def main() -> None:
     exp = raw_cfg.get("experiment", {})
     algo = raw_cfg.get("algorithm", {})
     cfg = cfg_from_experiment(args.config)
+    if cfg.terrain.type == "lunar_scene_pack":
+        raise ValueError("Legacy SKRL models/checkpoints do not support lunar_training_terrain_v2; use the no-learning real-map benchmark")
     configured_strict_thresholds = strict_thresholds_from_config(raw_cfg)
     if args.device is not None:
         cfg.simulation.device = args.device

@@ -93,17 +93,23 @@ def evaluate(policy, raw, run, cache, phase, episodes_per_cell):
     # Core scenario construction seeds global libraries. Evaluation must not
     # change the seed-23 training sampling stream.
     saved = (torch.get_rng_state(), np.random.get_state(), random.getstate())
+    cuda_rng = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
     try:
         return _evaluate(policy, raw, run, cache, phase, episodes_per_cell)
     finally:
+        if cuda_rng is not None:
+            torch.cuda.set_rng_state_all(cuda_rng)
         torch.set_rng_state(saved[0])
         np.random.set_state(saved[1])
         random.setstate(saved[2])
 
 
 def _evaluate(policy, raw, run, cache, phase, episodes_per_cell):
+    if raw.get("terrain", {}).get("type") == "lunar_scene_pack":
+        raise ValueError("Legacy six-cell synthetic evaluation cannot evaluate real scene packs")
+    policy_device = next(policy.parameters()).device
     policy_hash = hashlib.sha256(
-        b"".join(v.detach().numpy().tobytes() for v in policy.state_dict().values())
+        b"".join(v.detach().cpu().numpy().tobytes() for v in policy.state_dict().values())
     ).hexdigest()
     report_path = (
         run / "metrics" / ("baseline_eval.json" if phase == "before" else "final_eval_proxy.json")
@@ -141,10 +147,10 @@ def _evaluate(policy, raw, run, cache, phase, episodes_per_cell):
             if topology == "Bottleneck":
                 cell_raw["terrain"]["crater_count"] = 30
             cfg = make_cfg(cell_raw, run / "config" / f"{cell}_{batch_index}.yaml")
-            env = LocalGoalEnvironment(cfg, cache)
+            env = LocalGoalEnvironment(cfg, cache, policy_device=policy_device)
             snapshots.extend(scenario_snapshot(env.core))
             obs, _ = env.observe()
-            hidden = torch.zeros(count, 4, 128)
+            hidden = torch.zeros(count, 4, 128, device=policy_device)
             completed = set()
             trace = []
             macro_steps = 0
@@ -165,7 +171,8 @@ def _evaluate(policy, raw, run, cache, phase, episodes_per_cell):
                 with torch.no_grad():
                     action, _, _, hidden = policy.sample(obs, hidden, deterministic=True)
                 step = env.step(
-                    action.numpy(), enabled=torch.tensor([i not in completed for i in range(count)])
+                    action.detach().cpu().numpy(),
+                    enabled=torch.tensor([i not in completed for i in range(count)]),
                 )
                 obs = step.actor
                 if batch_index == 0:
@@ -239,6 +246,11 @@ def main():
     torch.manual_seed(23)
     np.random.seed(23)
     raw = load_yaml(args.config)
+    if raw.get("terrain", {}).get("type") == "lunar_scene_pack":
+        raise ValueError(
+            "Real-map learning remains paused; use benchmark_lunar_training_maps.py for no-learning checks. A real-map evaluation protocol and budget must be implemented before this training entry is enabled."
+        )
+    policy_device = torch.device(raw.get("local_goal", {}).get("policy_device", "cpu"))
     expected = {
         "version": VERSION,
         "planner_revision": "prefix_consistency_v2",
@@ -268,13 +280,15 @@ def main():
         (run / directory).mkdir(parents=True, exist_ok=True)
     cfg = make_cfg(raw, run / "config" / "experiment.yaml")
     cache = ROOT / ".venv_isaaclab" / "local_goal_solver_v1"
-    env = LocalGoalEnvironment(cfg, cache)
+    env = LocalGoalEnvironment(cfg, cache, policy_device=policy_device)
     obs, state = env.observe()
-    policy = RecurrentPolicy(state.shape[-1])
+    policy = RecurrentPolicy(state.shape[-1], terrain_channels=env.terrain_channels).to(
+        policy_device
+    )
     optimizer = torch.optim.Adam(policy.parameters(), lr=raw["algorithm"]["learning_rate"])
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
     interactions, elapsed, updates = 0, 0.0, 0
-    hidden = torch.zeros(env.e, 4, 128)
+    hidden = torch.zeros(env.e, 4, 128, device=policy_device)
     resume = args.resume or (run / "checkpoints" / "latest.pt" if args.evaluate_only else None)
     if resume:
         checkpoint = torch.load(resume, map_location="cpu", weights_only=False)
@@ -295,8 +309,10 @@ def main():
             checkpoint["updates"],
         )
         env.load_state_dict(checkpoint["environment"])
-        hidden = checkpoint["hidden"]
+        hidden = checkpoint["hidden"].to(policy_device)
         torch.set_rng_state(checkpoint["torch_rng"])
+        if checkpoint.get("cuda_rng") is not None:
+            torch.cuda.set_rng_state_all(checkpoint["cuda_rng"])
         np.random.set_state(checkpoint["numpy_rng"])
         if "python_rng" in checkpoint:
             random.setstate(checkpoint["python_rng"])
@@ -309,7 +325,9 @@ def main():
         "version": VERSION,
         "implementation_sha256": code_hash,
         "command": sys.argv,
-        "device": "cpu",
+        "device": str(policy_device),
+        "solver_device": "cpu",
+        "terrain_contract": env.terrain_contract(),
         "torch": torch.__version__,
         "config": "config/experiment.yaml",
         "checkpoint": "checkpoints/latest.pt",
@@ -340,11 +358,16 @@ def main():
                 {"version": VERSION, "policy": policy.state_dict(), "config": raw}, initial_path
             )
         saved_training_rng = torch.get_rng_state()
-        initial_policy = RecurrentPolicy(state.shape[-1])
+        saved_cuda_rng = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        initial_policy = RecurrentPolicy(state.shape[-1], terrain_channels=env.terrain_channels).to(
+            policy_device
+        )
         initial_policy.load_state_dict(torch.load(initial_path, weights_only=False)["policy"])
         # Construction itself consumes RNG; preserve the exact training stream.
         evaluate(initial_policy, raw, run, cache, "before", args.eval_episodes)
         torch.set_rng_state(saved_training_rng)
+        if saved_cuda_rng is not None:
+            torch.cuda.set_rng_state_all(saved_cuda_rng)
     training_start = time.monotonic()
     deadline = training_start + max(0, args.max_seconds - elapsed)
     starting_interactions = interactions
@@ -360,7 +383,9 @@ def main():
                 action, latent, log, following_hidden = policy.sample(obs, hidden)
                 value = policy.value(state)
             step = env.step(
-                action.numpy(), max_low_steps=min(5, remaining // env.e), deadline=deadline
+                action.detach().cpu().numpy(),
+                max_low_steps=min(5, remaining // env.e),
+                deadline=deadline,
             )
             with torch.no_grad():
                 terminal_value = policy.value(step.terminal_critic)
@@ -418,6 +443,7 @@ def main():
             "environment": env.state_dict(),
             "hidden": hidden,
             "torch_rng": torch.get_rng_state(),
+            "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
             "numpy_rng": np.random.get_state(),
             "python_rng": random.getstate(),
             "budget_interactions": args.max_interactions,

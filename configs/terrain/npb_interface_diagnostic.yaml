@@ -1,0 +1,42 @@
+# Interface/resource experiment only. Vehicle/success thresholds inherited from
+# exp167 remain historical diagnostic assumptions, not lunar safety conclusions.
+extends: ../experiment/exp167_local_goal_nmpc.yaml
+experiment:
+  name: lunar_terrain_validation
+  num_envs: 1
+  device: cpu
+simulation:
+  episode_length_s: 20.0
+initial_state:
+  spawn_radius_min: 8.0
+  spawn_radius_max: 12.0
+  center_xy_range: 40.0
+  jitter_std: 0.25
+terrain:
+  type: lunar_scene_pack
+  feature_schema: lunar_training_terrain_v2
+  scene_manifests: []  # Required via explicit benchmark --scene.
+  dynamics_enabled: true
+  raster_device: same
+  raster_cache_mib: 1536
+  raster_risk_slope_scale: 0.6
+  raster_risk_rms_scale_m: 0.15
+  raster_min_traversability: 0.25
+  local_memory_resolution_m: 0.2
+  local_memory_support_radius_m: 0.155
+  raster_task_basis: >-
+    Diagnostic only: scene is 200 m, spawn spans 8–12 m, 20 s episode.
+    Risk scales and inherited vehicle/flatness limits are engineering hypotheses,
+    not inferred from DEM distribution. Memory resolution is an indexing choice;
+    support radius retains the existing local-sensor interpolation contract and
+    does not assert 0.155 m measurement accuracy. No learning or success comparison.
+observation:
+  schema_version: ego_v12_lunar_multiscale
+gather_point:
+  search_method: geometric_median
+safety:
+  world_xy_limit: 98.0
+local_goal:
+  policy_device: cuda
+  solver_device: cpu
+  training_paused: true

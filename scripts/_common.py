@@ -116,6 +116,7 @@ def _apply_observation_values(cfg: MultiRoverGatheringEnvCfg, values: dict) -> N
             "ego_v8_decentralized_tiered",
             "ego_v9_multiscale_intent",
             "ego_v10_multiscale_diff_intent",
+            "ego_v12_lunar_multiscale",
             "ego_v11_multiscale_site_belief",
         }
         if schema_version not in supported_schemas:
@@ -598,6 +599,11 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     _apply_values(cfg.low_level_control, low_level_control, "low_level_control")
     _validate_low_level_control(cfg)
     cfg.terrain.type = str(terrain.get("type", cfg.terrain.type))
+    for name in ('scene_manifests','feature_schema','raster_device','raster_cache_mib',
+                 'raster_risk_slope_scale','raster_risk_rms_scale_m','raster_min_traversability',
+                 'raster_task_basis','local_memory_resolution_m','local_memory_support_radius_m'):
+        if name in terrain:
+            setattr(cfg.terrain,name,terrain[name])
     cfg.terrain.amplitude = float(terrain.get("amplitude", cfg.terrain.amplitude))
     cfg.terrain.wavelength = float(terrain.get("wavelength", cfg.terrain.wavelength))
     cfg.terrain.roughness_scale = float(
@@ -674,6 +680,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
         "ego_v8_decentralized_tiered",
         "ego_v9_multiscale_intent",
         "ego_v10_multiscale_diff_intent",
+        "ego_v12_lunar_multiscale",
         "ego_v11_multiscale_site_belief",
     }:
         if abs(float(cfg.observation.communication_radius) - 12.0) > 1.0e-9:
@@ -695,6 +702,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     if (
         cfg.observation.schema_version in {
             "ego_v10_multiscale_diff_intent",
+            "ego_v12_lunar_multiscale",
             "ego_v11_multiscale_site_belief",
         }
         and cfg.planner.action_type != "differential_trajectory_primitives"
@@ -705,6 +713,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
         )
     if cfg.observation.schema_version in {
         "ego_v10_multiscale_diff_intent",
+        "ego_v12_lunar_multiscale",
         "ego_v11_multiscale_site_belief",
     }:
         if cfg.low_level_control.kinematic_model != "differential_drive":
@@ -757,6 +766,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
     if (
         cfg.observation.schema_version in {
             "ego_v10_multiscale_diff_intent",
+            "ego_v12_lunar_multiscale",
             "ego_v11_multiscale_site_belief",
         }
         and not cfg.state.include_multiscale_agent_terrain
@@ -800,6 +810,7 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
         "ego_v8_decentralized_tiered",
         "ego_v9_multiscale_intent",
         "ego_v10_multiscale_diff_intent",
+        "ego_v12_lunar_multiscale",
         "ego_v11_multiscale_site_belief",
     }:
         forbidden = {

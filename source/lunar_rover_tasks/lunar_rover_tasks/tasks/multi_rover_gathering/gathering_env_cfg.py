@@ -84,9 +84,7 @@ class SubgoalFilterCfg:
     enabled: bool = False
     mode: str = "terrain_safe_candidate"
     rho_scales: list[float] = field(default_factory=lambda: [0.65, 1.0])
-    beta_offsets_deg: list[float] = field(
-        default_factory=lambda: [-45.0, -22.5, 0.0, 22.5, 45.0]
-    )
+    beta_offsets_deg: list[float] = field(default_factory=lambda: [-45.0, -22.5, 0.0, 22.5, 45.0])
     path_samples: int = 5
     intent_deviation_weight: float = 0.35
     path_terrain_mean_weight: float = 0.70
@@ -217,6 +215,16 @@ class LowLevelControlCfg:
 @dataclass(slots=True)
 class TerrainCfg:
     type: str = "flat_proxy"
+    scene_manifests: list[str] = field(default_factory=list)
+    feature_schema: str = "legacy_terrain_v1"
+    raster_device: str = "same"
+    raster_cache_mib: int = 1536
+    raster_risk_slope_scale: float = 0.0
+    raster_risk_rms_scale_m: float = 0.0
+    raster_min_traversability: float = 0.25
+    raster_task_basis: str = ""
+    local_memory_resolution_m: float = 0.0
+    local_memory_support_radius_m: float = 0.0
     # Deterministic evaluation/training profile. ``bottleneck`` adds one
     # smooth, traversability-limited ridge with a central executable passage;
     # it changes terrain only and never enters the policy observation as a label.
@@ -394,6 +402,7 @@ class ObservationCfg:
     def effective_neighbor_dim(self) -> int:
         if self.schema_version in {
             "ego_v10_multiscale_diff_intent",
+            "ego_v12_lunar_multiscale",
             "ego_v11_multiscale_site_belief",
         }:
             return 17
@@ -407,6 +416,7 @@ class ObservationCfg:
     def effective_ego_dim(self) -> int:
         if self.schema_version in {
             "ego_v10_multiscale_diff_intent",
+            "ego_v12_lunar_multiscale",
             "ego_v11_multiscale_site_belief",
         }:
             return 15
@@ -416,9 +426,12 @@ class ObservationCfg:
 
     @property
     def effective_terrain_dim(self) -> int:
+        if self.schema_version == "ego_v12_lunar_multiscale":
+            return 336
         if self.schema_version in {
             "ego_v9_multiscale_intent",
             "ego_v10_multiscale_diff_intent",
+            "ego_v12_lunar_multiscale",
         }:
             return 224
         if self.schema_version == "ego_v11_multiscale_site_belief":
@@ -496,6 +509,11 @@ class MultiRoverGatheringEnvCfg:
         return self.observation.actor_obs_dim
 
     @property
+    def critic_multiscale_terrain_dim(self) -> int:
+        # v11 Actor includes site belief; legacy Critic remains two-channel.
+        return 336 if self.observation.schema_version == "ego_v12_lunar_multiscale" else 224
+
+    @property
     def critic_state_dim(self) -> int:
         terminal_team_dim = (
             1
@@ -511,7 +529,7 @@ class MultiRoverGatheringEnvCfg:
             + self.state.oracle_state_dim
         )
         if self.state.include_multiscale_agent_terrain:
-            base_dim += self.task.n_agents * 224
+            base_dim += self.task.n_agents * self.critic_multiscale_terrain_dim
         return base_dim
 
 

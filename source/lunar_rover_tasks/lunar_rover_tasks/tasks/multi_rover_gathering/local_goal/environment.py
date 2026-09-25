@@ -38,9 +38,19 @@ class MacroTransition:
 
 
 class LocalGoalEnvironment:
-    def __init__(self, cfg, cache_dir, *, solver_factory=build_solver):
-        if cfg.simulation.device != "cpu" or cfg.task.n_agents != 4:
-            raise ValueError("First-round route supports four rovers on CPU")
+    def __init__(
+        self,
+        cfg,
+        cache_dir,
+        *,
+        solver_factory=build_solver,
+        policy_device="cpu",
+        solver_device="cpu",
+    ):
+        if cfg.simulation.device != "cpu" or solver_device != "cpu" or cfg.task.n_agents != 4:
+            raise ValueError(
+                "NMPC host core requires four rovers and CPU solver; policy/raster devices are separate"
+            )
         if not cfg.safety.collision_termination_enabled:
             raise ValueError("Collision termination must be explicitly enabled")
         if (
@@ -50,6 +60,10 @@ class LocalGoalEnvironment:
             or cfg.reward_weights.active_dstc
         ):
             raise ValueError("New route forbids oracle/primitive/DSTC reward weights")
+        self.policy_device = torch.device(policy_device)
+        if self.policy_device.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("Requested CUDA policy device is unavailable")
+        self.terrain_channels = 3 if cfg.terrain.type == "lunar_scene_pack" else 2
         self.core = MultiRoverGatheringCore(cfg)
         self.e, self.a = self.core.num_envs, 4
         self.pool = ThreadPoolExecutor(max_workers=4)
@@ -57,7 +71,20 @@ class LocalGoalEnvironment:
         for i in range(self.e * self.a):
             solver = solver_factory(cache_dir, cfg.terrain.slope_speed_scale, build=(i == 0))
             self.planners.append(NMPCPlanner(solver, cfg.terrain.slope_speed_scale))
-        self.memories = [LocalTerrainMemory() for _ in self.planners]
+        memory_kwargs = {}
+        if self.terrain_channels == 3:
+            if (
+                min(
+                    cfg.terrain.local_memory_resolution_m, cfg.terrain.local_memory_support_radius_m
+                )
+                <= 0
+            ):
+                raise ValueError("Real maps require explicit sensor-memory scales and task basis")
+            memory_kwargs = {
+                "resolution": cfg.terrain.local_memory_resolution_m,
+                "support_radius": cfg.terrain.local_memory_support_radius_m,
+            }
+        self.memories = [LocalTerrainMemory(**memory_kwargs) for _ in self.planners]
         self.origins = np.zeros((self.e, self.a, 3))
         self.height_origins = np.zeros((self.e, self.a))
         self.goals = [None for _ in self.planners]
@@ -111,21 +138,30 @@ class LocalGoalEnvironment:
             (terrain.MULTISCALE_TERRAIN_MEDIUM_X, terrain.MULTISCALE_TERRAIN_MEDIUM_Y),
             (terrain.MULTISCALE_TERRAIN_COARSE_X, terrain.MULTISCALE_TERRAIN_COARSE_Y),
         ]
-        samples = base[..., 66:290].numpy()
+        samples = base[..., 66 : 66 + 112 * self.terrain_channels].numpy()
         for e in range(self.e):
             for a in range(self.a):
                 offset = 0
                 points, features = [], []
                 for xs, ys in specs:
-                    count = len(xs) * len(ys) * 2
-                    grid = samples[e, a, offset : offset + count].reshape(len(xs), len(ys), 2)
+                    count = len(xs) * len(ys) * self.terrain_channels
+                    grid = samples[e, a, offset : offset + count].reshape(
+                        len(xs), len(ys), self.terrain_channels
+                    )
                     offset += count
                     xy = np.stack(np.meshgrid(xs, ys, indexing="ij"), -1).reshape(-1, 2)
                     slope = np.stack(np.gradient(grid[..., 0], xs, ys, edge_order=1), -1).reshape(
                         -1, 2
                     )
                     matrix = rotation(poses[e, a, 2])
-                    points.append(xy @ matrix.T + poses[e, a, :2])
+                    valid = np.ones(grid.shape[:2], dtype=bool)
+                    if self.terrain_channels == 3:
+                        from scipy.ndimage import minimum_filter
+
+                        # Gradients require neighboring height samples too.
+                        valid = minimum_filter(grid[..., 2], size=3, mode="nearest") > 0.5
+                    keep = valid.reshape(-1)
+                    points.append((xy @ matrix.T + poses[e, a, :2])[keep])
                     feature = np.zeros((len(xy), 5))
                     feature[:, 0] = (
                         grid[..., 0].reshape(-1)
@@ -134,7 +170,7 @@ class LocalGoalEnvironment:
                     )
                     feature[:, 1:3] = slope @ matrix.T
                     feature[:, 4] = 1 - grid[..., 1].reshape(-1)
-                    features.append(feature)
+                    features.append(feature[keep])
                 self.memories[e * self.a + a].observe(
                     np.concatenate(points),
                     np.concatenate(features),
@@ -307,7 +343,10 @@ class LocalGoalEnvironment:
                             values[6 + k * 2 : 8 + k * 2] = rotation(-pose[2]) @ (point - pose[:2])
                     extra[e, a, 85 + slot * 10 : 95 + slot * 10] = values
         extra = torch.from_numpy(extra)
-        return torch.cat([base, extra], -1), torch.cat([state, extra[:, :, :10].flatten(1)], -1)
+        return (
+            torch.cat([base, extra], -1).to(self.policy_device),
+            torch.cat([state, extra[:, :, :10].flatten(1)], -1).to(self.policy_device),
+        )
 
     def _physics(self, commands, active):
         c = self.core
@@ -339,6 +378,7 @@ class LocalGoalEnvironment:
             c.cfg.success_thresholds,
             c.cfg.safety,
             flatness_ok=flat.is_flat,
+            terrain_unknown=c.last_terrain_unknown.any(-1),
         )
         c.success_hold_count = torch.where(active, hold, c.success_hold_count)
         physical = torch.stack(
@@ -372,9 +412,19 @@ class LocalGoalEnvironment:
         self.distance += physical[..., 0].mean(-1).numpy() * active.numpy()
         return terms.total, done, gates
 
-    def state_dict(self):
+    def terrain_contract(self):
+        bank = self.core.terrain_runtime.scene_bank
         return {
-            "core": copy.deepcopy(self.core.__dict__),
+            "observation": self.core.cfg.observation.schema_version,
+            "terrain": bank.contract() if bank is not None else "legacy_terrain_v1",
+        }
+
+    def state_dict(self):
+        core = copy.deepcopy(self.core.__dict__)
+        core["terrain_runtime"].scene_bank = None
+        return {
+            "terrain_contract": self.terrain_contract(),
+            "core": core,
             "local": {
                 name: copy.deepcopy(getattr(self, name))
                 for name in (
@@ -393,7 +443,15 @@ class LocalGoalEnvironment:
         }
 
     def load_state_dict(self, state):
-        self.core.__dict__.update(state["core"])
+        bank = self.core.terrain_runtime.scene_bank
+        if (bank is not None or "terrain_contract" in state) and state.get(
+            "terrain_contract"
+        ) != self.terrain_contract():
+            raise ValueError("Checkpoint terrain/observation contract mismatch")
+        self.core.__dict__.update(copy.deepcopy(state["core"]))
+        self.core.terrain_runtime.scene_bank = bank
+        if bank is not None:
+            bank.prefetch(self.core.terrain_runtime.scene_indices)
         for name, value in state["local"].items():
             setattr(self, name, value)
         for planner, (previous, blocked) in zip(self.planners, state["warm"]):
@@ -402,7 +460,9 @@ class LocalGoalEnvironment:
 
     def step(self, actions, *, gamma=0.99, max_low_steps=5, deadline=float("inf"), enabled=None):
         poses = self.poses()
-        actions = np.asarray(actions)
+        actions = (
+            actions.detach().cpu().numpy() if torch.is_tensor(actions) else np.asarray(actions)
+        )
         for e in range(self.e):
             for a in range(self.a):
                 i = e * self.a + a
@@ -417,7 +477,11 @@ class LocalGoalEnvironment:
                 self.core.committed_plan_local_xy[e, a] = torch.as_tensor(actions[e, a, :2] * 1.6)
                 self.core.committed_reference_speed[e, a] = goal.speed_cap
                 self.core.committed_planned_yaw_delta[e, a] = float(actions[e, a, 2] * np.pi)
-        active = torch.ones(self.e, dtype=torch.bool) if enabled is None else enabled.clone()
+        active = (
+            torch.ones(self.e, dtype=torch.bool)
+            if enabled is None
+            else enabled.detach().cpu().clone()
+        )
         reward = torch.zeros(self.e)
         duration = torch.zeros(self.e, dtype=torch.long)
         terminated, truncated = torch.zeros_like(active), torch.zeros_like(active)
@@ -460,8 +524,8 @@ class LocalGoalEnvironment:
             reward += gamma**duration * r * active
             duration += active.long()
             obs, state = self.observe()
-            terminal_actor[active] = obs[active]
-            terminal_critic[active] = state[active]
+            terminal_actor[active.to(self.policy_device)] = obs[active.to(self.policy_device)]
+            terminal_critic[active.to(self.policy_device)] = state[active.to(self.policy_device)]
             ended = active & done.done
             for e in torch.where(ended)[0].tolist():
                 episodes.append(
@@ -469,7 +533,8 @@ class LocalGoalEnvironment:
                         "env": e,
                         "success": bool(done.success[e]),
                         "collision": bool(done.collision[e]),
-                        "timeout": bool(done.truncated[e]),
+                        "timeout": bool(done.truncated[e] and not done.invalid_terrain[e]),
+                        "invalid_terrain": bool(done.invalid_terrain[e]),
                         "out_of_bounds": bool(done.out_of_bounds[e]),
                         "dmax": float(self.core.metrics.dmax[e]),
                         "dispersion": float(self.core.metrics.dispersion[e]),
@@ -511,10 +576,10 @@ class LocalGoalEnvironment:
             self.reset(ids)
         obs, state = self.observe()
         return MacroTransition(
-            reward,
-            duration,
-            terminated,
-            truncated,
+            reward.to(self.policy_device),
+            duration.to(self.policy_device),
+            terminated.to(self.policy_device),
+            truncated.to(self.policy_device),
             terminal_actor,
             terminal_critic,
             obs,

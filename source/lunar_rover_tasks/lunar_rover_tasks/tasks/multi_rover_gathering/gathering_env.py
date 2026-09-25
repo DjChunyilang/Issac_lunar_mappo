@@ -110,6 +110,10 @@ class MultiRoverGatheringCore:
     def __init__(self, cfg: MultiRoverGatheringEnvCfg | None = None):
         self.cfg = cfg or MultiRoverGatheringEnvCfg()
         if self.cfg.simulation.device == "cuda" and not torch.cuda.is_available():
+            if self.cfg.terrain.type == "lunar_scene_pack":
+                raise RuntimeError(
+                    "CUDA scene execution requested but unavailable; no silent CPU fallback"
+                )
             self.cfg.simulation.device = "cpu"
         self.device = torch.device(self.cfg.simulation.device)
         self.num_envs = self.cfg.simulation.num_envs
@@ -119,11 +123,45 @@ class MultiRoverGatheringCore:
             self.num_envs,
             device=self.device,
         )
+        if self.cfg.terrain.type == "lunar_scene_pack":
+            from lunar_rover_tasks.terrain_data.batched import SceneBank
+            from lunar_rover_tasks.terrain_data.scene_pack import SCHEMA
+
+            terrain_cfg = self.cfg.terrain
+            if (
+                terrain_cfg.feature_schema != SCHEMA
+                or self.cfg.observation.schema_version != "ego_v12_lunar_multiscale"
+                or not terrain_cfg.raster_task_basis
+                or min(terrain_cfg.raster_risk_slope_scale, terrain_cfg.raster_risk_rms_scale_m)
+                <= 0
+            ):
+                raise ValueError(
+                    "Raster scenes require v2 terrain, v12 observations and explicit task/risk assumptions"
+                )
+            if not terrain_cfg.dynamics_enabled:
+                raise ValueError("Raster scenes must use their geometry in environment dynamics")
+            scene_device = (
+                self.device if terrain_cfg.raster_device == "same" else terrain_cfg.raster_device
+            )
+            self.terrain_runtime.scene_bank = SceneBank(
+                terrain_cfg.scene_manifests,
+                device=scene_device,
+                max_bytes=terrain_cfg.raster_cache_mib * 1024**2,
+            )
+            self.terrain_runtime.scene_indices = torch.zeros(
+                self.num_envs, dtype=torch.long, device=self.device
+            )
+        self.last_terrain_unknown = torch.zeros(
+            self.num_envs, self.n_agents, dtype=torch.bool, device=self.device
+        )
+        self.last_terrain_blocked = torch.zeros_like(self.last_terrain_unknown)
         self.positions = torch.zeros(self.num_envs, self.n_agents, 3, device=self.device)
         self.yaws = torch.zeros(self.num_envs, self.n_agents, device=self.device)
         self.velocities_xy = torch.zeros(self.num_envs, self.n_agents, 2, device=self.device)
         self.angular_velocities = torch.zeros(self.num_envs, self.n_agents, device=self.device)
-        self.previous_physical_action = torch.zeros(self.num_envs, self.n_agents, 2, device=self.device)
+        self.previous_physical_action = torch.zeros(
+            self.num_envs, self.n_agents, 2, device=self.device
+        )
         self.committed_plan_local_xy = torch.zeros(
             self.num_envs, self.n_agents, 2, device=self.device
         )
@@ -136,9 +174,7 @@ class MultiRoverGatheringCore:
         self.committed_planned_yaw_delta = torch.zeros(
             self.num_envs, self.n_agents, device=self.device
         )
-        self.coordination_token = torch.zeros(
-            self.num_envs, self.n_agents, device=self.device
-        )
+        self.coordination_token = torch.zeros(self.num_envs, self.n_agents, device=self.device)
         self.step_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.global_step_count = 0
         self.success_hold_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -200,14 +236,14 @@ class MultiRoverGatheringCore:
         self.metrics = self.prev_metrics
         self.last_trajectory: Trajectory | None = None
         self.last_control: ControlCommand | None = None
-        self.last_terrain_features = torch.zeros(self.num_envs, self.n_agents, 5, device=self.device)
+        self.last_terrain_features = torch.zeros(
+            self.num_envs, self.n_agents, 5, device=self.device
+        )
         self.last_terrain_speed_scale = torch.ones(self.num_envs, self.n_agents, device=self.device)
         self.last_height_delta = torch.zeros(self.num_envs, self.n_agents, device=self.device)
         self.last_steering_angle = torch.zeros(self.num_envs, self.n_agents, device=self.device)
         self.last_actual_yaw_rate = torch.zeros(self.num_envs, self.n_agents, device=self.device)
-        self.last_left_wheel_speed = torch.zeros(
-            self.num_envs, self.n_agents, device=self.device
-        )
+        self.last_left_wheel_speed = torch.zeros(self.num_envs, self.n_agents, device=self.device)
         self.last_right_wheel_speed = torch.zeros_like(self.last_left_wheel_speed)
         self.last_turning_radius = torch.full(
             (self.num_envs, self.n_agents),
@@ -220,6 +256,7 @@ class MultiRoverGatheringCore:
             "ego_v8_decentralized_tiered",
             "ego_v9_multiscale_intent",
             "ego_v10_multiscale_diff_intent",
+            "ego_v12_lunar_multiscale",
             "ego_v11_multiscale_site_belief",
         }:
             self.communication_cache = TieredCommunicationCache(
@@ -228,14 +265,13 @@ class MultiRoverGatheringCore:
                 max_neighbors=self.cfg.observation.max_neighbors,
                 device=self.device,
                 full_radius_m=self.communication_radius,
-                map_max_distance_m=(
-                    2.0 * float(self.cfg.safety.world_xy_limit) * (2.0**0.5)
-                ),
+                map_max_distance_m=(2.0 * float(self.cfg.safety.world_xy_limit) * (2.0**0.5)),
                 include_plan_intent=(
                     self.cfg.observation.schema_version
                     in {
                         "ego_v9_multiscale_intent",
                         "ego_v10_multiscale_diff_intent",
+                        "ego_v12_lunar_multiscale",
                         "ego_v11_multiscale_site_belief",
                     }
                 ),
@@ -243,6 +279,7 @@ class MultiRoverGatheringCore:
                     self.cfg.observation.schema_version
                     in {
                         "ego_v10_multiscale_diff_intent",
+                        "ego_v12_lunar_multiscale",
                         "ego_v11_multiscale_site_belief",
                     }
                 ),
@@ -310,6 +347,7 @@ class MultiRoverGatheringCore:
         if self.cfg.observation.schema_version in {
             "ego_v9_multiscale_intent",
             "ego_v10_multiscale_diff_intent",
+            "ego_v12_lunar_multiscale",
         }:
             return build_multiscale_local_terrain_observation(
                 self.positions,
@@ -470,12 +508,14 @@ class MultiRoverGatheringCore:
         unassigned_slots = centers[:, None, :].expand(-1, self.n_agents, -1).clone()
         unassigned_slots[..., :2] += slot_offsets
         travel_cost = (
-            positions[:, :, None, :2] - unassigned_slots[:, None, :, :2]
-        ).square().sum(dim=-1)
+            (positions[:, :, None, :2] - unassigned_slots[:, None, :, :2]).square().sum(dim=-1)
+        )
         agent_ids = torch.arange(self.n_agents, device=self.device)
         permutation_costs = torch.stack(
-            [travel_cost[:, agent_ids, permutation].sum(dim=-1)
-             for permutation in self._execution_slot_permutations],
+            [
+                travel_cost[:, agent_ids, permutation].sum(dim=-1)
+                for permutation in self._execution_slot_permutations
+            ],
             dim=1,
         )
         assignment = self._execution_slot_permutations[permutation_costs.argmin(dim=1)]
@@ -567,12 +607,14 @@ class MultiRoverGatheringCore:
         unassigned_slots = metrics.centroid[:, None, :].expand(-1, self.n_agents, -1).clone()
         unassigned_slots[..., :2] += slot_offsets
         travel_cost = (
-            self.positions[:, :, None, :2] - unassigned_slots[:, None, :, :2]
-        ).square().sum(dim=-1)
+            (self.positions[:, :, None, :2] - unassigned_slots[:, None, :, :2]).square().sum(dim=-1)
+        )
         agent_ids = torch.arange(self.n_agents, device=self.device)
         permutation_costs = torch.stack(
-            [travel_cost[:, agent_ids, permutation].sum(dim=-1)
-             for permutation in self._execution_slot_permutations],
+            [
+                travel_cost[:, agent_ids, permutation].sum(dim=-1)
+                for permutation in self._execution_slot_permutations
+            ],
             dim=1,
         )
         assignment = self._execution_slot_permutations[permutation_costs.argmin(dim=1)]
@@ -594,11 +636,7 @@ class MultiRoverGatheringCore:
             runtime = self.terrain_runtime.subset(env_ids)
         if metrics is None:
             positions = self.positions if env_ids is None else self.positions[env_ids]
-            velocities = (
-                self.velocities_xy
-                if env_ids is None
-                else self.velocities_xy[env_ids]
-            )
+            velocities = self.velocities_xy if env_ids is None else self.velocities_xy[env_ids]
             metrics = compute_team_metrics(positions, velocities)
         gather_cfg = self.cfg.gather_point
         return evaluate_gather_point_flatness(
@@ -670,7 +708,9 @@ class MultiRoverGatheringCore:
         env_ids = env_ids.to(device=self.device, dtype=torch.long)
         count = int(env_ids.numel())
         self.randomize_terrain(env_ids)
-        base_angles = torch.linspace(0.0, 2.0 * torch.pi, self.n_agents + 1, device=self.device)[:-1]
+        base_angles = torch.linspace(0.0, 2.0 * torch.pi, self.n_agents + 1, device=self.device)[
+            :-1
+        ]
         base = torch.stack((torch.cos(base_angles), torch.sin(base_angles)), dim=-1)
         spawn_radius_min, spawn_radius_max, center_xy_range, jitter_std = (
             self._effective_initial_state_values()
@@ -708,16 +748,35 @@ class MultiRoverGatheringCore:
             sin_rotation = torch.sin(formation_rotation)
             rotated_base = torch.stack(
                 (
-                    cos_rotation * base[None, :, 0]
-                    - sin_rotation * base[None, :, 1],
-                    sin_rotation * base[None, :, 0]
-                    + cos_rotation * base[None, :, 1],
+                    cos_rotation * base[None, :, 0] - sin_rotation * base[None, :, 1],
+                    sin_rotation * base[None, :, 0] + cos_rotation * base[None, :, 1],
                 ),
                 dim=-1,
             )
         else:
             rotated_base = base[None, :, :].expand(count, -1, -1)
         xy = centers + radius * rotated_base + jitter
+        if self.terrain_runtime.scene_bank is not None:
+            runtime = self.terrain_runtime.subset(env_ids)
+            for attempt in range(64):
+                supported = runtime.scene_bank.query(xy, runtime.scene_indices).metrics_valid.all(
+                    -1
+                )
+                if bool(supported.all()):
+                    break
+                # Resample by support only, never reject a high-slope location.
+                candidates = torch.empty_like(centers).uniform_(
+                    -center_xy_range, center_xy_range, generator=self.generator
+                )
+                xy = torch.where(
+                    supported[:, None, None], xy, candidates + radius * rotated_base + jitter
+                )
+            else:
+                raise ValueError(
+                    "Spawn support unavailable within explicit initial-state range; revise scene/task proposal"
+                )
+        self.last_terrain_unknown[env_ids] = False
+        self.last_terrain_blocked[env_ids] = False
         self.positions[env_ids, :, :2] = xy
         if self._terrain_dynamics_enabled:
             terrain_features = query_terrain_features(
@@ -812,14 +871,11 @@ class MultiRoverGatheringCore:
                 self.cfg.terrain,
                 self.terrain_runtime,
             )
-            if self.cfg.state.include_multiscale_agent_terrain
-            and actor_terrain.shape[-1] != 224
+            if self.cfg.state.include_multiscale_agent_terrain and actor_terrain.shape[-1] != 224
             else actor_terrain
         )
         communication_snapshot = (
-            self.communication_cache.snapshot()
-            if self.communication_cache is not None
-            else None
+            self.communication_cache.snapshot() if self.communication_cache is not None else None
         )
         self.last_communication_snapshot = communication_snapshot
         execution_target = None
@@ -1005,9 +1061,7 @@ class MultiRoverGatheringCore:
             current_yaws=self.yaws,
             reference_speed=decoded.reference_speed,
             motion_direction=(decoded.motion_direction if differential_primitives else None),
-            planned_yaw_delta=(
-                decoded.planned_yaw_delta if differential_primitives else None
-            ),
+            planned_yaw_delta=(decoded.planned_yaw_delta if differential_primitives else None),
             primitive_type=(decoded.primitive_type if differential_primitives else None),
         )
         self.committed_plan_local_xy = decoded.local_subgoal_xy.clone()
@@ -1069,9 +1123,7 @@ class MultiRoverGatheringCore:
                 self.terrain_runtime,
             )["risk_mean"]
             path_terrain["reference_risk_mean"] = reference_risk
-            path_terrain["relative_risk_mean"] = (
-                path_terrain["risk_mean"] - reference_risk
-            )
+            path_terrain["relative_risk_mean"] = path_terrain["risk_mean"] - reference_risk
         conflict_safe_distance = max(
             float(self.cfg.success_thresholds.min_pairwise_distance),
             float(self.cfg.safety.collision_distance),
@@ -1088,18 +1140,18 @@ class MultiRoverGatheringCore:
         )
         if self.communication_cache is not None:
             pair_age = 0.5 * (
-                self.communication_cache.age
-                + self.communication_cache.age.transpose(1, 2)
+                self.communication_cache.age + self.communication_cache.age.transpose(1, 2)
             )
             active = trajectory_conflicts["active"]
             active_count = active.sum(dim=(1, 2)).clamp_min(1)
             trajectory_conflicts["message_age_at_conflict"] = (
                 pair_age.masked_fill(~active, 0.0).sum(dim=(1, 2)) / active_count
             )
-            pair_full = self.communication_cache.full & self.communication_cache.full.transpose(1, 2)
+            pair_full = self.communication_cache.full & self.communication_cache.full.transpose(
+                1, 2
+            )
             trajectory_conflicts["full_message_conflict_ratio"] = (
-                pair_full.masked_fill(~active, False).sum(dim=(1, 2)).float()
-                / active_count
+                pair_full.masked_fill(~active, False).sum(dim=(1, 2)).float() / active_count
             )
         else:
             trajectory_conflicts["message_age_at_conflict"] = torch.zeros(
@@ -1179,6 +1231,7 @@ class MultiRoverGatheringCore:
             self.cfg.success_thresholds,
             self.cfg.safety,
             flatness_ok=flatness_ok,
+            terrain_unknown=self.last_terrain_unknown.any(-1),
         )
         success_gates = compute_success_gates(
             metrics,
@@ -1189,15 +1242,9 @@ class MultiRoverGatheringCore:
         active_dstc_reward = torch.zeros(self.num_envs, device=self.device)
         if self.active_dstc_runtime is not None:
             coefficients = self.cfg.reward_coefficients
-            belief_progress = (
-                self.active_dstc_runtime.potential - previous_dstc_potential
-            )
-            new_commit = (
-                self.active_dstc_runtime.committed & ~previous_dstc_committed
-            ).float()
-            current_site_distance = (
-                self.active_dstc_runtime.mean_committed_distance(self.positions)
-            )
+            belief_progress = self.active_dstc_runtime.potential - previous_dstc_potential
+            new_commit = (self.active_dstc_runtime.committed & ~previous_dstc_committed).float()
+            current_site_distance = self.active_dstc_runtime.mean_committed_distance(self.positions)
             site_progress = torch.where(
                 previous_dstc_committed,
                 previous_dstc_site_distance - current_site_distance,
@@ -1227,13 +1274,9 @@ class MultiRoverGatheringCore:
             path_terrain_risk_mean=(
                 path_terrain["risk_mean"] if path_terrain is not None else None
             ),
-            path_terrain_risk_max=(
-                path_terrain["risk_max"] if path_terrain is not None else None
-            ),
+            path_terrain_risk_max=(path_terrain["risk_max"] if path_terrain is not None else None),
             path_terrain_reference_risk_mean=(
-                path_terrain.get("reference_risk_mean")
-                if path_terrain is not None
-                else None
+                path_terrain.get("reference_risk_mean") if path_terrain is not None else None
             ),
             path_height_change_mean=(
                 path_terrain["height_change_mean"] if path_terrain is not None else None
@@ -1274,14 +1317,10 @@ class MultiRoverGatheringCore:
                     path_terrain["risk_max"] if path_terrain is not None else None
                 ),
                 path_terrain_reference_risk_mean=(
-                    path_terrain.get("reference_risk_mean")
-                    if path_terrain is not None
-                    else None
+                    path_terrain.get("reference_risk_mean") if path_terrain is not None else None
                 ),
                 path_height_change_mean=(
-                    path_terrain["height_change_mean"]
-                    if path_terrain is not None
-                    else None
+                    path_terrain["height_change_mean"] if path_terrain is not None else None
                 ),
                 filter_raw_path_risk_mean=(
                     filter_result.info["raw_path_terrain_risk_mean"]
@@ -1352,6 +1391,8 @@ class MultiRoverGatheringCore:
             "turning_radius": self.last_turning_radius.clone(),
         }
         terrain_runtime = self.terrain_runtime.clone()
+        terrain_unknown_snapshot = self.last_terrain_unknown.clone()
+        terrain_blocked_snapshot = self.last_terrain_blocked.clone()
         success_hold_count = self.success_hold_count.clone()
         oracle_point = self.oracle_point.clone()
         oracle_search_snapshot = {
@@ -1387,12 +1428,8 @@ class MultiRoverGatheringCore:
                 "collision_other": analytical_prd.collision_other.clone(),
                 "failure_other": analytical_prd.failure_other.clone(),
                 "loo_baseline": analytical_prd.total.clone(),
-                "source_reconstruction_error": (
-                    analytical_prd.source_reconstruction_error.clone()
-                ),
-                "own_action_invariance_error": (
-                    analytical_prd.own_action_invariance_error.clone()
-                ),
+                "source_reconstruction_error": (analytical_prd.source_reconstruction_error.clone()),
+                "own_action_invariance_error": (analytical_prd.own_action_invariance_error.clone()),
                 "actual_collision_participants": (
                     analytical_prd.actual_collision_participants.clone()
                 ),
@@ -1411,9 +1448,7 @@ class MultiRoverGatheringCore:
                 **self.active_dstc_runtime.diagnostics(),
                 "target_points": self.active_dstc_runtime.target_points.clone(),
                 "target_valid": self.active_dstc_runtime.target_valid.clone(),
-                "committed_centers": (
-                    self.active_dstc_runtime.committed_centers.clone()
-                ),
+                "committed_centers": (self.active_dstc_runtime.committed_centers.clone()),
                 "reward": active_dstc_reward.clone(),
             }
             if self.active_dstc_runtime is not None
@@ -1462,6 +1497,8 @@ class MultiRoverGatheringCore:
                 "flat_geometry_capture": flat_geometry_capture_snapshot,
                 "dynamic_terminal_slot_goal": dynamic_terminal_slot_goal_snapshot,
                 "terrain_runtime": terrain_runtime,
+                "terrain_unknown": terrain_unknown_snapshot,
+                "terrain_blocked": terrain_blocked_snapshot,
                 "gather_point_flatness": gather_point_flatness_snapshot,
                 "centroid_flatness_reward": centroid_flatness_reward_snapshot,
                 "analytical_prd": analytical_prd_snapshot,
@@ -1486,8 +1523,7 @@ class MultiRoverGatheringCore:
         }:
             action_count = (
                 DIFFERENTIAL_PRIMITIVE_ACTION_COUNT
-                if self.cfg.planner.action_type
-                == "differential_trajectory_primitives"
+                if self.cfg.planner.action_type == "differential_trajectory_primitives"
                 else SPATIOTEMPORAL_ACTION_COUNT
             )
             return torch.randint(
@@ -1590,6 +1626,34 @@ class MultiRoverGatheringCore:
             self.last_right_wheel_speed.zero_()
         delta_xy = direction * linear_eff.unsqueeze(-1) * dt
         next_xy = old_positions[..., :2] + delta_xy
+        self.last_terrain_unknown.zero_()
+        self.last_terrain_blocked.zero_()
+        if self.terrain_runtime.scene_bank is not None:
+            bank = self.terrain_runtime.scene_bank
+            spacing = min(min(s.meta["processing_spacing_xy_m"]) for s in bank.scenes)
+            samples = max(
+                2, int(torch.ceil(delta_xy.norm(dim=-1).max() / (spacing / 2)).item()) + 1
+            )
+            fractions = torch.linspace(0, 1, samples, device=self.device)
+            path = (
+                old_positions[..., :2, None].transpose(-1, -2)
+                + delta_xy[..., None, :] * fractions[:, None]
+            )
+            query = bank.query(path, self.terrain_runtime.scene_indices)
+            support = query.metrics_valid.all(-1)
+            features = query.features.nan_to_num()
+            scores = torch.exp(
+                -features[..., 1:3].norm(dim=-1) / self.cfg.terrain.raster_risk_slope_scale
+                - features[..., 3] / self.cfg.terrain.raster_risk_rms_scale_m
+            )
+            passable = (scores >= self.cfg.terrain.raster_min_traversability).all(-1)
+            self.last_terrain_unknown = ~support
+            self.last_terrain_blocked = ~passable & support
+            allowed = support & passable
+            next_xy = torch.where(allowed[..., None], next_xy, old_positions[..., :2])
+            self.yaws = torch.where(allowed, self.yaws, wrap_to_pi(self.yaws - yaw_rate * dt))
+            yaw_rate = torch.where(allowed, yaw_rate, 0.0)
+            speed_scale = torch.where(allowed, speed_scale, 0.0)
         self.positions[..., :2] = next_xy
         if self._terrain_dynamics_enabled:
             next_features = query_terrain_features(
@@ -1631,7 +1695,9 @@ class MultiRoverGatheringGymEnv(_GymEnvBase):
 
     metadata = {"render_modes": []}
 
-    def __init__(self, cfg: MultiRoverGatheringEnvCfg | None = None, render_mode: str | None = None):
+    def __init__(
+        self, cfg: MultiRoverGatheringEnvCfg | None = None, render_mode: str | None = None
+    ):
         del render_mode
         import gymnasium as gym
 
@@ -1660,8 +1726,7 @@ class MultiRoverGatheringGymEnv(_GymEnvBase):
                     self.cfg.task.n_agents,
                     (
                         DIFFERENTIAL_PRIMITIVE_ACTION_COUNT
-                        if self.cfg.planner.action_type
-                        == "differential_trajectory_primitives"
+                        if self.cfg.planner.action_type == "differential_trajectory_primitives"
                         else SPATIOTEMPORAL_ACTION_COUNT
                     ),
                     dtype=np.int64,
@@ -1701,9 +1766,17 @@ class MultiRoverGatheringGymEnv(_GymEnvBase):
         terminated = bool(output.terminated[0].detach().cpu())
         truncated = bool(output.truncated[0].detach().cpu())
         output.info["per_agent_reward"] = per_agent_reward
-        return self._pack_obs(output.actor_obs, output.critic_state), reward, terminated, truncated, output.info
+        return (
+            self._pack_obs(output.actor_obs, output.critic_state),
+            reward,
+            terminated,
+            truncated,
+            output.info,
+        )
 
-    def _pack_obs(self, actor_obs: torch.Tensor, critic_state: torch.Tensor) -> dict[str, np.ndarray]:
+    def _pack_obs(
+        self, actor_obs: torch.Tensor, critic_state: torch.Tensor
+    ) -> dict[str, np.ndarray]:
         return {
             "policy": actor_obs[0].detach().cpu().numpy().astype(np.float32),
             "critic": critic_state[0].detach().cpu().numpy().astype(np.float32),
@@ -1736,8 +1809,7 @@ class MultiRoverGatheringSKRLEnv:
         action_space = (
             gym.spaces.Discrete(
                 DIFFERENTIAL_PRIMITIVE_ACTION_COUNT
-                if self.cfg.planner.action_type
-                == "differential_trajectory_primitives"
+                if self.cfg.planner.action_type == "differential_trajectory_primitives"
                 else SPATIOTEMPORAL_ACTION_COUNT
             )
             if self.cfg.planner.action_type
@@ -1786,10 +1858,7 @@ class MultiRoverGatheringSKRLEnv:
         return None
 
     def _split_agents(self, actor_obs: torch.Tensor) -> dict[str, torch.Tensor]:
-        return {
-            agent: actor_obs[:, index, :]
-            for index, agent in enumerate(self.possible_agents)
-        }
+        return {agent: actor_obs[:, index, :] for index, agent in enumerate(self.possible_agents)}
 
 
 MultiRoverGatheringEnv = MultiRoverGatheringCore

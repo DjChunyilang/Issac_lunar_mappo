@@ -226,6 +226,7 @@ def build_actor_observation(
         )
         if cfg.observation.schema_version in {
             "ego_v10_multiscale_diff_intent",
+            "ego_v12_lunar_multiscale",
             "ego_v11_multiscale_site_belief",
         }
         else build_ego_features(positions, yaws, velocities_xy, angular_velocities)
@@ -234,11 +235,13 @@ def build_actor_observation(
         "ego_v8_decentralized_tiered",
         "ego_v9_multiscale_intent",
         "ego_v10_multiscale_diff_intent",
+        "ego_v12_lunar_multiscale",
         "ego_v11_multiscale_site_belief",
     }
     multiscale_intent_schema = cfg.observation.schema_version in {
         "ego_v9_multiscale_intent",
         "ego_v10_multiscale_diff_intent",
+        "ego_v12_lunar_multiscale",
         "ego_v11_multiscale_site_belief",
     }
     if multiscale_intent_schema:
@@ -254,6 +257,7 @@ def build_actor_observation(
         if (
             cfg.observation.schema_version in {
                 "ego_v10_multiscale_diff_intent",
+                "ego_v12_lunar_multiscale",
                 "ego_v11_multiscale_site_belief",
             }
             and committed_planned_yaw_delta is None
@@ -277,6 +281,7 @@ def build_actor_observation(
                     if cfg.observation.schema_version
                     in {
                         "ego_v10_multiscale_diff_intent",
+                        "ego_v12_lunar_multiscale",
                         "ego_v11_multiscale_site_belief",
                     }
                     else ()

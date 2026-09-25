@@ -1,4 +1,5 @@
 .venv_isaaclab/
+.venv_terrain_cuda/
 external/IsaacLab/
 outputs/runs/
 outputs/checkpoints/*.pt

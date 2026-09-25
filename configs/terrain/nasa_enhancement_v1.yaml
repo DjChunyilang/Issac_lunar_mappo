@@ -1,0 +1,32 @@
+# Mechanism-diagnostic hypothesis only. Not fitted lunar-region statistics.
+classification: hypothesis
+parameter_evidence: >-
+  Allan et al. 2019 motivates a real DEM with unresolved detail and crater/rock
+  distributions. The numbers below are explicitly engineering hypotheses for
+  unit, geometry and resource checks, not estimates for NPB or LUPEX.
+method_reference: https://ntrs.nasa.gov/citations/20190027571
+unresolved_diameter_limit_m: 2.0
+max_features: 10000
+fractal:
+  enabled: true
+  seed: 230923
+  rms_m: 0.025
+  cutoff_m: 2.0
+  hurst: 0.7
+craters:
+  enabled: true
+  seed: 230924
+  density_per_m2: 0.002
+  diameter_min_m: 0.8
+  diameter_max_m: 2.0
+  size_exponent: 2.0
+  depth_to_diameter: 0.08
+  rim_to_diameter: 0.025
+rocks:
+  enabled: true
+  seed: 230925
+  density_per_m2: 0.004
+  diameter_min_m: 0.6
+  diameter_max_m: 1.2
+  size_exponent: 2.0
+  height_to_diameter: 0.3

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import torch
 
-from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import MultiRoverGatheringEnvCfg
+from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import (
+    MultiRoverGatheringEnvCfg,
+)
 from lunar_rover_tasks.tasks.multi_rover_gathering.metrics import TeamMetrics
 from lunar_rover_tasks.tasks.multi_rover_gathering.oracle import build_oracle_features
 from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import (
@@ -75,9 +77,7 @@ def build_critic_state(
     )
     expected_team_dim = cfg.state.team_state_dim + (1 if include_terminal_min_pairwise else 0)
     if team.shape[-1] != expected_team_dim:
-        raise ValueError(
-            f"Team state has dim {team.shape[-1]}, expected {expected_team_dim}."
-        )
+        raise ValueError(f"Team state has dim {team.shape[-1]}, expected {expected_team_dim}.")
     if terrain_grid is None:
         terrain_grid = build_local_terrain_grid(positions, yaws, cfg.terrain)
     terrain = summarize_local_terrain_grid(terrain_grid)
@@ -91,10 +91,9 @@ def build_critic_state(
     if cfg.state.include_multiscale_agent_terrain:
         if multiscale_agent_terrain is None:
             raise ValueError(
-                "The configured 950-dim critic state requires each rover's "
-                "224-dim multiscale terrain observation."
+                "The configured critic requires each rover's versioned multiscale terrain observation."
             )
-        expected_shape = (*positions.shape[:2], 224)
+        expected_shape = (*positions.shape[:2], cfg.critic_multiscale_terrain_dim)
         if multiscale_agent_terrain.shape != expected_shape:
             raise ValueError(
                 "Multiscale critic terrain has shape "
