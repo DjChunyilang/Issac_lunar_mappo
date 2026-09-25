@@ -1,0 +1,26 @@
+# NASA engineering baseline; not a measured NPB microterrain population.
+method: nasa_sfd_v2
+classification: hypothesis
+parameter_evidence: >-
+  NASA Ames synthterrain VIPER_Env_Spec at commit
+  e10ba36e9aa5b923bc7e6746ef089859af9ccaf8 supplies the CSFD and static
+  spatial laws. Regional validity is unverified. Diameter limits and geometry
+  retain the existing engineering diagnostic; 0.1 m is processing, not observation.
+seed: 23
+probability_spacing_m: 0.1
+generation_buffer_m: 5.0
+unresolved_diameter_limit_m: 2.0
+max_features: 10000
+fractal:
+  enabled: false
+craters:
+  enabled: true
+  diameter_min_m: 0.8
+  diameter_max_m: 2.0
+  depth_to_diameter: 0.08
+  rim_to_diameter: 0.025
+rocks:
+  enabled: true
+  diameter_min_m: 0.6
+  diameter_max_m: 1.2
+  height_to_diameter: 0.3

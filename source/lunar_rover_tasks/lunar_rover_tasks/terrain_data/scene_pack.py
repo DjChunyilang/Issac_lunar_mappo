@@ -91,7 +91,10 @@ def build_scene(
             Window(col, row, width, height), ds.transform
         ) * Affine.scale(width / target_w, height / target_h)
         # Native halo supports strict interpolation and original-baseline metrics.
-        halo = source_half_width + 2
+        generation_buffer = float((enhancement or {}).get("generation_buffer_m", 0))
+        if generation_buffer < 0 or not np.isfinite(generation_buffer):
+            raise ValueError("Invalid generation buffer")
+        halo = max(source_half_width + 2, int(np.ceil(generation_buffer / min(dx, dy))) + 2)
         c0, r0 = max(0, col - halo), max(0, row - halo)
         c1, r1 = min(ds.width, col + width + halo), min(ds.height, row + height + halo)
         native = (
@@ -157,7 +160,49 @@ def build_scene(
     final = base.copy()
     layers = {}
     catalog = {}
-    if enhancement is not None:
+    probability_arrays = {}
+    if enhancement is not None and enhancement.get("method") == "nasa_sfd_v2":
+        from .nasa_sfd import enhance_nasa
+
+        bx, by = int(np.ceil(generation_buffer / actual_dx)), int(np.ceil(generation_buffer / actual_dy))
+        pr, pc = np.meshgrid(
+            (np.arange(-by, target_h + by) + 0.5) * actual_dy / dy + row - r0 - 0.5,
+            (np.arange(-bx, target_w + bx) + 0.5) * actual_dx / dx + col - c0 - 0.5,
+            indexing="ij",
+        )
+        padded, padded_valid = strict_sample(native, pr, pc)
+        crop = (slice(by, by + target_h), slice(bx, bx + target_w))
+        padded[crop], padded_valid[crop] = base, valid
+        padded_final, padded_layers, catalog, probabilities = enhance_nasa(
+            padded, padded_valid, (actual_dx, actual_dy), enhancement
+        )
+        final = padded_final[crop].copy()
+        layers = {k: v[crop].copy() for k, v in padded_layers.items()}
+        probability_arrays = {f"probability_{k}": v for k, v in probabilities.items()}
+        # Catalogues use target-scene lower-left coordinates; buffer centres can
+        # therefore be negative. World-local coordinates are separately explicit.
+        shift_x, shift_y = bx * actual_dx, by * actual_dy
+        ex, ey = width * dx, height * dy
+        lower_left = transform * (0, target_h)
+        for kind in ("craters", "rocks"):
+            for item in catalog[kind]:
+                item["x_m"] -= shift_x
+                item["y_m"] -= shift_y
+                x, y = item["x_m"], item["y_m"]
+                support = item["diameter_m"] * (1 if kind == "craters" else 0.5)
+                item["centre_in_target"] = bool(0 <= x < ex and 0 <= y < ey)
+                item["affects_target"] = bool(np.hypot(max(-x, 0, x - ex), max(-y, 0, y - ey)) < support)
+                item["local_xy_m"] = [x - ex / 2, y - ey / 2]
+                item["projected_xy_m"] = [lower_left[0] + x, lower_left[1] + y]
+        catalog["generation"].update(
+            grid_origin_lower_left_m=[-shift_x, -shift_y],
+            probability_transform=list(transform * Affine.translation(-bx, -by))[:6],
+            buffer_xy_m=[shift_x, shift_y],
+            target_crop_rc=[by, bx, target_h, target_w],
+            target_area_m2=float(valid.sum() * actual_dx * actual_dy),
+        )
+        del padded, padded_valid, padded_final, padded_layers, pr, pc
+    elif enhancement is not None:
         final, layers, catalog = enhance(base, valid, (actual_dx, actual_dy), enhancement)
     half = max(1, int(np.ceil(metric_baseline_m / (2 * min(actual_dx, actual_dy)))))
     metrics = local_metrics(final, valid, actual_dx, actual_dy, half)
@@ -173,6 +218,7 @@ def build_scene(
     }
     arrays.update({f"quality_{k}": v for k, v in qualities.items()})
     arrays.update({f"layer_{k}": v for k, v in layers.items()})
+    arrays.update(probability_arrays)
     output.mkdir(parents=True)
     files = {}
     for name, array in arrays.items():
@@ -184,6 +230,14 @@ def build_scene(
             "shape": list(array.shape),
             "dtype": str(array.dtype),
         }
+    if catalog.get("generation", {}).get("method") == "nasa_sfd_v2":
+        for name, contents in (
+            ("catalog_generation", catalog),
+            ("catalog_target", {k: [i for i in catalog[k] if i["centre_in_target"]] for k in ("craters", "rocks")}),
+        ):
+            path = output / f"{name}.json"
+            path.write_text(json.dumps(contents, indent=2, allow_nan=False))
+            files[name] = {"file": path.name, "sha256": file_hash(path)}
     with rasterio.open(
         output / "height.tif",
         "w",

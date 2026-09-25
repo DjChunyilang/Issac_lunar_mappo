@@ -104,6 +104,13 @@ def enhance(base, valid, spacing_xy_m, spec):
     Source-resolved terrain is never silently replaced. Random generated
     features are constrained below the declared unresolved diameter limit.
     """
+    if spec.get("method") == "nasa_sfd_v2":
+        from .nasa_sfd import enhance_nasa
+
+        final, layers, catalog, _ = enhance_nasa(base, valid, spacing_xy_m, spec)
+        return final, layers, catalog
+    if spec.get("method", "legacy_hypothesis_v1") != "legacy_hypothesis_v1":
+        raise ValueError("Unknown enhancement method")
     if spec.get("classification") != "hypothesis" or not spec.get("parameter_evidence"):
         raise ValueError("Enhancement requires explicit hypothesis classification and evidence")
     dx, dy = spacing_xy_m
