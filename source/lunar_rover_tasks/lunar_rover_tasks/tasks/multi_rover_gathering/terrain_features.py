@@ -209,6 +209,11 @@ def randomize_terrain_runtime(
 
 
 def is_flat_terrain(terrain_cfg: TerrainCfg | None) -> bool:
+    if terrain_cfg is not None and terrain_cfg.type in {"lupex_dtm", "raster_dtm"}:
+        raise ValueError(
+            "Real DTM requires terrain_data.runtime and lunar_dtm_metrics_v1; "
+            "legacy roughness/traversability and vehicle safety criteria cannot be reused silently"
+        )
     return (
         terrain_cfg is None
         or terrain_cfg.type == "flat_proxy"

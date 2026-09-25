@@ -1,0 +1,43 @@
+{
+  "schema": "lupex_provenance_v1",
+  "paper": "https://doi.org/10.3847/PSJ/ae10a4",
+  "author_pdf": "https://github.com/ryodohemmi/public/blob/main/Hemmi%2B2025/Hemmi%2B2025.pdf",
+  "evidence": "Hemmi et al. 2025, Table 1 (NAC pairs), Table 2 (TC control sources), Sections 2.2, 4.1, 4.2 and 4.4",
+  "shared_method": "All products share the SfS processing family and LOLA reference; geographic holdout does not establish cross-instrument or cross-reconstruction generalization.",
+  "nominal_grid_m": 1,
+  "qualitative_feature_scale_m": 10,
+  "feature_scale_is_guaranteed_resolution": false,
+  "uncertainty": {
+    "probe_range_m": [0, 5],
+    "probe_spacing_m": 0.01,
+    "definition": "Height perturbation of one pixel with neighbours fixed until photometric misfit doubles; approximate lower bound, not posterior standard deviation.",
+    "omits": ["spatial covariance", "albedo errors", "photometric model errors", "image registration errors", "initial DEM uncertainty", "camera model uncertainty"],
+    "recommended_use": "Within-product relative sensitivity comparisons, accompanied by external alignment and slope-baseline evidence"
+  },
+  "regions": {
+    "cr1": {
+      "nac_pairs": ["M130413987", "M131418183", "M132632632", "M134396598", "M139811097", "M143780066"],
+      "tc_controls": ["DTMTCO_03_00367S892E1774PS", "DTMTCO_03_00570S897E1937PS", "DTMTCO_03_00683S896E2165PS", "DTMTCO_03_00719S898E1942PS"]
+    },
+    "gr1": {
+      "nac_pairs": ["M129647142", "M138264280", "M141405746", "M145354371", "M146121156", "M193023270"],
+      "tc_controls": ["DTMTCO_03_00570S887E2908PS", "DTMTCO_03_00582S883E2718PS", "DTMTCO_03_00774S881E2895PS", "DTMTCO_03_01112S888E2989PS"]
+    },
+    "gr2": {
+      "nac_pairs": ["M129701439", "M132042242", "M140781507", "M141446469", "M143807204", "M146155065"],
+      "tc_controls": ["DTMTCO_03_00570S887E2908PS", "DTMTCO_03_00672S894E2351PS", "DTMTCO_03_00899S892E3027PS", "DTMTCO_03_01129S890E2733PS", "DTMTCO_03_01802S882E2494PS"]
+    },
+    "lp1": {
+      "nac_pairs": ["M1098753609", "M1103475755", "M1156113997", "M1157708411", "M1252470864", "M177476016"],
+      "tc_controls": ["DTMTCO_03_00656S851E0301PS", "DTMTCO_03_00656S864E0294PS", "DTMTCO_03_00811S851E0412PS", "DTMTCO_03_00823S847E0326PS", "DTMTCO_03_00829S848E0278PS", "DTMTCO_03_01658S851E0309PS", "DTMTCO_03_02648S855E0458PS", "DTMTCO_03_04830S845E0343PS", "DTMTCO_03_04832S860E0353PS", "DTMTCO_03_04840S855E0272PS"]
+    },
+    "mp1": {
+      "nac_pairs": ["M128106739", "M132836066", "M136384859", "M139919591", "M141093708", "M147016300"],
+      "tc_controls": ["DTMTCO_03_00683S863E3590PS", "DTMTCO_03_00851S855E0046PS", "DTMTCO_03_01688S860E3562PS", "DTMTCO_03_02683S857E0008PS"]
+    },
+    "mp2": {
+      "nac_pairs": ["M129287651", "M136357718", "M141066563", "M145775171", "M150482299", "M170601473"],
+      "tc_controls": ["DTMTCO_03_00683S863E3590PS", "DTMTCO_03_00851S855E0046PS", "DTMTCO_03_01688S860E3562PS", "DTMTCO_03_02683S857E0008PS"]
+    }
+  }
+}

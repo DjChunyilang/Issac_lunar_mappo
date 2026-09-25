@@ -1,0 +1,6 @@
+# Optional real-terrain audit/query stack; install after requirements-proxy.txt.
+rasterio==1.4.4
+pyproj==3.7.2
+shapely==2.1.2
+pyshp==2.4.2
+scipy>=1.15,<2
