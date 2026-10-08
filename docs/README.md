@@ -6,6 +6,7 @@
 
 1. 先读 [current_status.md](current_status.md)，了解当前主线、推荐 checkpoint、评估状态和结果边界。
    - 地图工作首先读[地图主线](architecture/lunar_map_mainline.md)：真实轨道 DEM → 插值表示 → NASA 模型坑石增强。当前结果见[验收记录](experiments/nasa_sfd_v2_2026-09-24.md)，操作见[运行手册](runbooks/nasa_sfd_v2.md)。这是2026-09-25确认的地图路线，训练继续暂停。
+   - 2026-09-19的项目路线重审先读[终端区域文献综述与缺陷审查](references/terminal_feasibility_review_2026-09-19.md)、[完整重设计](architecture/terminal_feasibility_redesign_v1.md)和[因果实验协议](experiments/terminal_feasibility_research_protocol.md)。这是研究设计，尚未替换exp167实现或启动训练；27篇文献的核查范围见[检索日志](references/terminal_feasibility_search_log_2026-09-19.md)。
 2. 理解当前执行路线读 [docs/implementation_plan.md](implementation_plan.md)，理解整体分层路线读 [architecture/overall_plan_v3.md](architecture/overall_plan_v3.md)。
 3. 理解长期技术路径读根目录 `多月球车自组织集合局部参考轨迹规划技术文档.md`，理解短版技术摘要和接口读 [docs/technical_design.md](technical_design.md) 与 [interface_spec.md](interface_spec.md)。
 4. 理解工程骨架读 [docs/scaffold.md](scaffold.md)。
@@ -32,12 +33,15 @@ Markdown数学公式统一使用 `$...$` 表示行内公式，使用独占一行
 
 ## 当前主文档
 
+- [学习系统审查与升级方案](architecture/learning_system_review_2026-09-26.md)：奖励、动作／观测／状态、网络与算法的首轮代码审查、无学习数值证据及L1—L4验证顺序；生产实现未切换，训练继续暂停。
+- [新地图任务适配方案](architecture/lunar_task_adaptation_v1.md)：2026-09-26接受的24 m暂定通信范围、分层出生与停稳集合候选，包含待实现项和无学习验证顺序；尚未切换运行配置。
 - [地图主线：真实 DEM 与 NASA 模型增强](architecture/lunar_map_mainline.md)：地图部分当前统一入口，包含数据规模、处理链、已完成能力、后续地理扩展及旧路线处置。
 - [NASA SFD验收记录](experiments/nasa_sfd_v2_2026-09-24.md)与[复现手册](runbooks/nasa_sfd_v2.md)：7张地图、36项地形测试、GPU短程执行及可视化；模型增强未作NPB区域标定，学习暂停。
 - [真实地形比较协议](experiments/lunar_terrain_comparison_protocol.md)：地理隔离、配对增强和后续训练比较条件；尚未开始训练。
 - [NASA早期接入记录](experiments/nasa_terrain_implementation_2026-09-24.md)、[阶段规划](architecture/nasa_terrain_training_implementation_plan.md)、[可行性调查](references/nasa_terrain_feasibility_2026-09-23.md)与[方法文献核查](references/lunar_terrain_methods_review_2026-09-23.md)：实施和选型依据，旧驱动阻塞是历史状态。
 - [LUPEX数据审计](experiments/lunar_terrain_data_audit_2026-09-22.md)、[原生查询接口说明](architecture/real_lunar_terrain_v1.md)与[审计工具手册](runbooks/lunar_terrain.md)：补充数据与跨源评估候选，保留六区四组成果；不是另一个默认地图主线。
 - [月面地形数据与仿真文献调研](references/lunar_terrain_data_review_2026-09-19.md)和[逐项证据表](references/lunar_terrain_evidence_2026-09-19.csv)：9月19日研究依据；固定25米场地及0.75米判据仅为历史参照，最新数据能力与约束以上述审计和适配说明为准。
+- [终端区域文献综述与缺陷审查](references/terminal_feasibility_review_2026-09-19.md)、[完整重设计](architecture/terminal_feasibility_redesign_v1.md)、[实验协议草案](experiments/terminal_feasibility_research_protocol.md)：2026-09-19研究交付，围绕信息条件、联合可达性、奖励与可学习性；不是新版算法已实施或通过验收的声明。
 - [exp167连续局部目标＋NMPC](experiments/exp_167_local_goal_nmpc.md)和[运行手册](runbooks/local_goal_nmpc.md)：当前独立CPU闭环、限额pilot、依赖安装与恢复入口；不代表正式收敛。
 - [current_status.md](current_status.md)：当前项目状态和下一步工作。
 - [docs/implementation_plan.md](implementation_plan.md)：当前 V3 实施路线、里程碑、checkpoint 状态机和验收标准。

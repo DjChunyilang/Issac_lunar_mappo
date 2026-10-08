@@ -8,7 +8,7 @@
 
 后续更新：真实数据已于2026-09-22完成[六区审计和基准接入](../experiments/lunar_terrain_data_audit_2026-09-22.md)。本文保留为历史调研；涉及固定25米场地、原平坦度标准或默认合成细节的建议，均由[真实数据优先的约束处置](../architecture/real_lunar_terrain_v1.md)替代，不能继续作为数据筛选条件。
 
-配套：[逐项证据表](lunar_terrain_evidence_2026-09-19.csv)。本文关注任务所处地形是否具有月面依据，以及数据尺度能否支持终端区域判据。
+配套：[逐项证据表](lunar_terrain_evidence_2026-09-19.csv)。与[终端区域研究综述](terminal_feasibility_review_2026-09-19.md)互补：本文关注任务所处地形是否具有月面依据，以及数据尺度能否支持终端区域判据。
 
 ## 1. 主要判断
 
