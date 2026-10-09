@@ -1,74 +1,18 @@
-# Isaac 多车月面集合第一阶段项目
+# Isaac 多车月面集合项目
 
-本仓库实现多月球车自组织集合任务的第一阶段工程闭环。当前主路线是：
+本仓库研究多月球车在局部感知和有限通信下的自组织集合。代理环境使用 Torch 向量化动力学进行训练和诊断；Isaac Sim / PhysX 用于候选策略的高保真闭环评估。
 
-```text
-高吞吐 proxy 环境训练
--> proxy strict evaluation
--> Isaac Sim / Isaac Lab / PhysX high-fidelity closed-loop evaluation
-```
+**当前正式训练暂停，没有通过完整任务验收的推荐 checkpoint。** 当前事实、失败门控和下一步见[项目状态](docs/current_status.md)；文档阅读顺序见[文档入口](docs/README.md)。
 
-训练主环境使用明确标注的 proxy rover 模型和 torch 向量化动力学核心，用于高吞吐采样、奖励调试、观测/动作接口验证和 checkpoint selection。Isaac Sim / PhysX 当前作为 checkpoint 级高保真闭环评估、迁移 sanity check 和展示层，不参与每次 PPO / MAPPO 梯度更新。
+## 本地起步
 
-## 文档入口
-
-先阅读：
-
-```text
-docs/README.md
-docs/current_status.md
-docs/implementation_plan.md
-多月球车自组织集合局部参考轨迹规划技术文档.md
-docs/architecture/overall_plan_v3.md
-docs/experiments/README.md
-```
-
-长期技术路径管理读根目录 `多月球车自组织集合局部参考轨迹规划技术文档.md`，工程脚手架读 `docs/scaffold.md`，短版技术摘要和接口读 `docs/technical_design.md` 与 `docs/interface_spec.md`。旧 V1 / V2 / V3 原文压缩包已移出仓库，存放在仓库父目录 `../original_design_docs_v1_v2_v3_2026-06-16.zip`。训练生成产物位于 `outputs/`，并由 git 忽略；长期状态以 Markdown 实验文档、suite JSON、`final_eval_proxy.json` 和 `checkpoint_status.json` 为准。
-
-## 环境
-
-本地目标环境为 `.venv_isaaclab` 和 Python 3.12。Isaac stack 目标为：
-
-- Isaac Sim 6.0.0
-- Isaac Lab v3.0.0-beta
-- PyTorch 2.10.0+cu128
-- 通过 Isaac Lab `rl[skrl]` 安装 SKRL
-
-## 常用命令
-
-基础验收：
+本机已有 `.venv_isaaclab` 时，可运行：
 
 ```bash
 .venv_isaaclab/bin/python -m pip install -e source/lunar_rover_tasks
 .venv_isaaclab/bin/python -m pytest -q -ra
 ```
 
-Proxy 训练 / 诊断：
+新环境与 Isaac 栈安装见[环境手册](docs/runbooks/setup_environment.md)。Proxy 训练、独立评估和结果路径分别见[训练手册](docs/runbooks/train_proxy.md)、[评估手册](docs/runbooks/evaluate_proxy.md)和[输出管理](docs/references/output_management.md)。恢复正式训练前先核对[路线图](docs/roadmap.md)及实验配置。
 
-```bash
-.venv_isaaclab/bin/python scripts/train_proxy_convergence.py \
-  --config configs/experiment/exp_008_terrain3d_weak_warmstart.yaml \
-  --output-layout run \
-  --run-name <run_id> \
-  --device cuda
-```
-
-Checkpoint 统一评估：
-
-```bash
-.venv_isaaclab/bin/python scripts/run_checkpoint_evaluation.py \
-  --config configs/experiment/<config>.yaml \
-  --checkpoint outputs/runs/<experiment>/<run_id>/checkpoints/best.pt \
-  --device cuda \
-  --run-dir outputs/runs/<experiment>/<run_id>
-```
-
-## 任务 ID
-
-Gymnasium task 注册 ID：
-
-```text
-Isaac-MultiRover-Gathering-Direct-v0
-```
-
-Actor observation 不包含 oracle 信息。oracle 集合点仅用于 centralized critic、reward shaping 和评价指标。PhysX / Jackal 评估结果只能说明 proxy checkpoint 在当前高保真 placeholder 场景中的闭环表现，不能直接写成真实月球车物理训练结果。
+Gymnasium task ID：`Isaac-MultiRover-Gathering-Direct-v0`。Actor 不接收 oracle 集合点；oracle 仅用于 centralized critic、辅助奖励和评估。`outputs/` 存放生成结果并由 Git 忽略，长期结论记录在[实验索引](docs/experiments/README.md)及对应实验文档。

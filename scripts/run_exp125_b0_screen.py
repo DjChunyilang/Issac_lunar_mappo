@@ -10,6 +10,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from _common import ROOT, load_yaml
 from evaluate_terrain_contrast import evaluate_terrain_contrast

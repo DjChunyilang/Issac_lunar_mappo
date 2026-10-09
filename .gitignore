@@ -1,13 +1,8 @@
 .venv_isaaclab/
 .venv_terrain_cuda/
 external/IsaacLab/
-outputs/runs/
-outputs/checkpoints/*.pt
-outputs/logs/**
-outputs/videos/**
-outputs/figures/**
-outputs/tensorboard/**
-outputs/**
+# Generated runs, diagnostics and exported Isaac scenes.
+outputs/
 runs/
 events.out.tfevents.*
 __pycache__/

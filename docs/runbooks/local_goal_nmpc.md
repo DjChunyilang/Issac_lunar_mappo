@@ -117,7 +117,7 @@ OMP_NUM_THREADS=1 .venv_isaaclab/bin/python -m pytest -q \
 
 ### 2026-09-18 提交前全量验证
 
-使用上述acados环境变量执行 `python -m pytest -q -ra`：exp167测试（含5项真实acados求解器测试）通过；全量存在6项历史配置解析失败，另有1项CUDA测试因CPU环境跳过。失败均来自 `exp156_timeout_diag_{far_bottleneck,near_open}_{96s,144s,192s}.yaml`，依赖本机未恢复的 `outputs/runs/exp156_differential_multiscale_ablation/n0_seed23_full_2400iter/metrics/paired_configs/{far_bottleneck,near_open}.json`。这6项配置已存在于本轮之前，未伪造历史产物或放宽测试，当前不能宣称全量绿灯。
+当时使用上述acados环境变量执行 `python -m pytest -q -ra`：exp167测试（含5项真实acados求解器测试）通过；全量有6项历史配置解析失败，另有1项CUDA测试因CPU环境跳过。失败均来自 `exp156_timeout_diag_{far_bottleneck,near_open}_{96s,144s,192s}.yaml`，依赖本机未恢复的 `outputs/runs/exp156_differential_multiscale_ablation/n0_seed23_full_2400iter/metrics/paired_configs/{far_bottleneck,near_open}.json`。这是2026-09-18的历史验证记录。2026-10-09已将这6项不可独立解析的配置移至[历史诊断配置](../archive/configs/README.md)，当前测试结论应以最新运行结果为准。
 
 Markdown公式检查、整理文档的相对链接检查、三个新增shell入口语法检查及 `git diff --check`通过。acados产生API弃用警告。
 

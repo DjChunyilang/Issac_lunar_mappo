@@ -1,0 +1,4 @@
+# Historical and design material is available by explicit path or rg --no-ignore.
+docs/archive/
+docs/design/
+docs/status/

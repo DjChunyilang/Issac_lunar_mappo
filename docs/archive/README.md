@@ -2,6 +2,8 @@
 
 本目录保存历史进度日志和构建记录。旧设计原文压缩包不提交到仓库。
 
+另见[历史诊断配置](configs/README.md)、[2026-09-26状态快照](current_status_snapshot_2026-09-26.md)和[上下文卫生静态审计报告](context_hygiene_audit_2026-10-09.md)。后两者只供追溯，不是当前任务指令。
+
 当前状态请阅读：
 
 ```text
@@ -24,4 +26,4 @@ docs/experiments/README.md
 ../original_design_docs_v1_v2_v3_2026-06-16.zip
 ```
 
-当前长期技术路径请读根目录 `多月球车自组织集合局部参考轨迹规划技术文档.md`，当前正式脚手架请读 `docs/scaffold.md`，短版技术摘要请读 `docs/technical_design.md`。
+长期技术背景按需读[设计基线](../design/README.md)；工程骨架见[脚手架](../scaffold.md)，短版说明见[技术摘要](../technical_design.md)。

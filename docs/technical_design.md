@@ -1,6 +1,6 @@
 # 技术设计
 
-本文是短版技术摘要，只定义任务建模、信息边界、观测/状态/action、轨迹控制链、reward、网络接口和评估判据。长期技术路径管理见主目录 `多月球车自组织集合局部参考轨迹规划技术文档.md`，工程目录见 [scaffold.md](scaffold.md)，当前实施计划见 [implementation_plan.md](implementation_plan.md)。
+本文是短版技术摘要，只定义任务建模、信息边界、观测/状态/action、轨迹控制链、reward、网络接口和评估判据。长期设计基线见[技术文档](design/多月球车自组织集合局部参考轨迹规划技术文档.md)，工程目录见[脚手架](scaffold.md)；实际状态以[当前状态](current_status.md)为准。
 
 ## 任务与路线
 

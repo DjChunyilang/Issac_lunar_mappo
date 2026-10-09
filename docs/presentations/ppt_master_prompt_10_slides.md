@@ -546,7 +546,7 @@ Actor 只获得执行期可提供的信息，Critic 才在训练时使用团队�
 | 第 10 页 timeout 轨迹诊断 | `outputs/runs/exp116_structured_bicycle_quintic_map25_time96_linear_gain32/success_gate_trajectory_diagnostics_seed1023.json` |
 | 当前结论与下一步 | `docs/current_status.md` |
 | 实验索引 | `docs/experiments/README.md` |
-| 完整技术说明 | `多月球车自组织集合局部参考轨迹规划技术文档.md` |
+| 完整技术说明（设计基线） | `docs/design/多月球车自组织集合局部参考轨迹规划技术文档.md` |
 
 ## 制作人复核清单
 
