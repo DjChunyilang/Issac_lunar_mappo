@@ -1,0 +1,4 @@
+# Shared actuator/footprint proxy diagnostic only; no S02 planner integration.
+extends: upstream_scale_s00.yaml
+experiment:
+  name: upstream_scale_s01

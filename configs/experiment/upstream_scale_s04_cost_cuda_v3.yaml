@@ -1,0 +1,5 @@
+extends: upstream_scale_s04_cost_v3.yaml
+experiment:
+  name: upstream_scale_s04_cost_cuda_v3
+upstream_scale:
+  planner_device: cuda

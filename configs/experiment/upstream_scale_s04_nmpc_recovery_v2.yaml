@@ -1,0 +1,8 @@
+# Independent zero-mode recovery, identical physical NMPC model and gates.
+extends: upstream_scale_s04_calibration_cuda_v4.yaml
+experiment:
+  name: upstream_scale_s04_nmpc_recovery_v2
+upstream_scale:
+  planner_adapter: nmpc_upstream_v2
+  planner_device: cpu
+  mppi_parameters: {}

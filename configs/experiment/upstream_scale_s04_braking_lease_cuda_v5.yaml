@@ -1,0 +1,6 @@
+# Independent research configuration; all physical and task thresholds retained.
+extends: upstream_scale_s04_frame_review_cuda_v3.yaml
+experiment:
+  name: upstream_scale_s04_braking_lease_cuda_v5
+upstream_scale:
+  motion_lease_version: braking_clearance_lease_v3

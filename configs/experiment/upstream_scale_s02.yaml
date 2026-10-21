@@ -1,0 +1,15 @@
+# Independent 40-step planner diagnostics. No environment/task or learning claim.
+extends: upstream_scale_s01_review_v2.yaml
+experiment:
+  name: upstream_scale_s02
+  training_paused: true
+upstream_scale:
+  planner_execution_version: upstream_planning_v1
+  execution_review_version: footprint_review_v2
+  terrain_query_version: batch_ties_v2
+  planner_adapter: mppi_upstream_v1
+  planner_device: cpu
+  mppi_samples: 512
+  mppi_iterations: 2
+  clock_mode: offline_simulated_latency
+  simulated_latency_s: 0.5

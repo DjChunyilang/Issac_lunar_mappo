@@ -1,0 +1,6 @@
+# Paired actual-sensor flat birth exploration with the public safety layer on.
+extends: upstream_scale_s04_target_probe_cuda_v4.yaml
+experiment:
+  name: upstream_scale_s04_target_safety_probe_cuda_v4
+upstream_scale:
+  execution_safety_version: footprint_discrete_cbf_upstream_v1

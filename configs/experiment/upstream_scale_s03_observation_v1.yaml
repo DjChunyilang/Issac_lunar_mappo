@@ -1,0 +1,6 @@
+# Private dense memory -> unchanged N1 input shape, with new-scale normalization.
+extends: upstream_scale_s03_precision_v2.yaml
+experiment:
+  name: upstream_scale_s03_observation_v1
+upstream_scale:
+  observation_execution_version: dense_actor_clock_upstream_v1

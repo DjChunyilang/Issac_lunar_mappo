@@ -1,0 +1,20 @@
+# S00 contract foundation only; no legacy execution, no training.
+experiment:
+  name: upstream_scale_s00
+  seed: 23
+  num_envs: 2
+  device: cpu
+  episode_length_s: 360.0
+  training_paused: true
+local_goal:
+  training_paused: true
+upstream_scale:
+  schema_version: upstream_runtime_v1
+  design_profile: configs/design/upstream_vehicle_proxy_v2.yaml
+  design_profile_sha256: 1b62f5a7c04c79e77092aac5a0bd82b6369089fafae837c77bba5e2eb839d51c
+  planner_adapter: mppi_upstream_v1
+  planner_device: cpu
+  mppi_samples: 512
+  mppi_iterations: 2
+  clock_mode: offline_simulated_latency
+  simulated_latency_s: 0.5

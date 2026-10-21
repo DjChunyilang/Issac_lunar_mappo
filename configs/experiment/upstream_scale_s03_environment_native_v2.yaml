@@ -1,0 +1,5 @@
+extends: upstream_scale_s03_environment_v2.yaml
+experiment:
+  name: upstream_scale_s03_environment_native_v2
+upstream_scale:
+  planner_adapter: primitive47_upstream_v1

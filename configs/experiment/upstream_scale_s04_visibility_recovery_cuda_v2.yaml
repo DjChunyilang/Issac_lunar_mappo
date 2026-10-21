@@ -1,0 +1,7 @@
+# Independent legal-sender transit routing and exact regular-flat review.
+extends: upstream_scale_s04_selected_cuda_v4.yaml
+experiment:
+  name: upstream_scale_s04_visibility_recovery_cuda_v2
+upstream_scale:
+  leader_execution_version: leader_square_visibility_upstream_v2
+  review_acceleration_version: flat_grid_pose_cache_v2

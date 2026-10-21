@@ -1,0 +1,6 @@
+# Main S05 B1 CPU benchmark; selected independent calibration parameters.
+extends: upstream_scale_s04_selected_cuda_v4.yaml
+experiment:
+  name: upstream_scale_s05_benchmark_cpu_v1
+upstream_scale:
+  planner_device: cpu

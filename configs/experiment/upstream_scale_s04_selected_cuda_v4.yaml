@@ -1,0 +1,14 @@
+# Independent36-case sequential calibration2026-10-14; closure still required.
+# Source: calibration_36_seed101_103_107_109_cuda_20261014_03.
+extends: upstream_scale_s04_calibration_cuda_v4.yaml
+experiment:
+  name: upstream_scale_s04_selected_cuda_v4
+upstream_scale:
+  mppi_parameters:
+    goal_scale: 2.0
+    terrain_scale: 0.5
+    neighbor_scale: 0.5
+    smooth_scale: 0.5
+    noise_v: 0.375
+    noise_w: 0.15
+    temperature: 0.5

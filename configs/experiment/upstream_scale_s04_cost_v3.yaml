@@ -1,0 +1,6 @@
+# S04 exploratory cost repair; hard constraints and learning reward unchanged.
+extends: upstream_scale_s03_environment_v2.yaml
+experiment:
+  name: upstream_scale_s04_cost_v3
+upstream_scale:
+  planner_adapter: mppi_upstream_v3

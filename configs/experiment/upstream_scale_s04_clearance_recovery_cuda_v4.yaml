@@ -1,0 +1,6 @@
+# Isolated research attempt: legal navigation clearance, original physical limits.
+extends: upstream_scale_s04_priority_recovery_cuda_v3.yaml
+experiment:
+  name: upstream_scale_s04_clearance_recovery_cuda_v4
+upstream_scale:
+  leader_execution_version: leader_square_visibility_upstream_v4

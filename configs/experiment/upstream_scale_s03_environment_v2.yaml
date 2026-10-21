@@ -1,0 +1,7 @@
+# Delivery ticket (issue+1 s) and accepted execution lease (activation+1 s).
+# Both remain finite; raw sampled requests and original v1 expiry are retained.
+extends: upstream_scale_s03_environment_v1.yaml
+experiment:
+  name: upstream_scale_s03_environment_v2
+upstream_scale:
+  environment_execution_version: actual_loop_upstream_v2

@@ -1,0 +1,6 @@
+# Same selected planner cost with exact regular-grid footprint acceleration.
+extends: upstream_scale_s05_benchmark_cpu_v1.yaml
+experiment:
+  name: upstream_scale_s05_benchmark_cpu_review_v2
+upstream_scale:
+  review_acceleration_version: flat_grid_pose_cache_v2

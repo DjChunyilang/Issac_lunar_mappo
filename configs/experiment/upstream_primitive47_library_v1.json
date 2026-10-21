@@ -1,0 +1,532 @@
+{
+  "library": {
+    "version": "upstream_primitive47_v1",
+    "count": 47,
+    "profile_fingerprint": "27d94d4b64026a546034abfd6cb3243c597029d3c94b5472db44825de0246d32",
+    "source_library_sha256": "c41f447bb35a957f80ab8a3cc522743e8ecec42d5d3f84b7d69fdab03fd5d68e",
+    "displacement_scale": 2.5,
+    "forward_speed_scale": 2.4154589371980677,
+    "reverse_speed_cap": 0.5,
+    "entries": [
+      {
+        "index": 0,
+        "local_xy": [
+          0.0,
+          0.0
+        ],
+        "reference_speed": 0.0,
+        "motion_direction": 0.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 0
+      },
+      {
+        "index": 1,
+        "local_xy": [
+          1.0,
+          -1.0
+        ],
+        "reference_speed": 1.0869565217391306,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 2,
+        "local_xy": [
+          1.0,
+          -1.0
+        ],
+        "reference_speed": 1.9323671497584543,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 3,
+        "local_xy": [
+          1.0,
+          -1.0
+        ],
+        "reference_speed": 2.7777777777777777,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 4,
+        "local_xy": [
+          1.0,
+          0.0
+        ],
+        "reference_speed": 1.0869565217391306,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 5,
+        "local_xy": [
+          1.0,
+          0.0
+        ],
+        "reference_speed": 1.9323671497584543,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 6,
+        "local_xy": [
+          1.0,
+          0.0
+        ],
+        "reference_speed": 2.7777777777777777,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 7,
+        "local_xy": [
+          1.0,
+          1.0
+        ],
+        "reference_speed": 1.0869565217391306,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 8,
+        "local_xy": [
+          1.0,
+          1.0
+        ],
+        "reference_speed": 1.9323671497584543,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 9,
+        "local_xy": [
+          1.0,
+          1.0
+        ],
+        "reference_speed": 2.7777777777777777,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 10,
+        "local_xy": [
+          2.0,
+          -2.0
+        ],
+        "reference_speed": 1.0869565217391306,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 11,
+        "local_xy": [
+          2.0,
+          -2.0
+        ],
+        "reference_speed": 1.9323671497584543,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 12,
+        "local_xy": [
+          2.0,
+          -2.0
+        ],
+        "reference_speed": 2.7777777777777777,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 13,
+        "local_xy": [
+          2.0,
+          -1.0
+        ],
+        "reference_speed": 1.0869565217391306,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 14,
+        "local_xy": [
+          2.0,
+          -1.0
+        ],
+        "reference_speed": 1.9323671497584543,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 15,
+        "local_xy": [
+          2.0,
+          -1.0
+        ],
+        "reference_speed": 2.7777777777777777,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 16,
+        "local_xy": [
+          2.0,
+          0.0
+        ],
+        "reference_speed": 1.0869565217391306,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 17,
+        "local_xy": [
+          2.0,
+          0.0
+        ],
+        "reference_speed": 1.9323671497584543,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 18,
+        "local_xy": [
+          2.0,
+          0.0
+        ],
+        "reference_speed": 2.7777777777777777,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 19,
+        "local_xy": [
+          2.0,
+          1.0
+        ],
+        "reference_speed": 1.0869565217391306,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 20,
+        "local_xy": [
+          2.0,
+          1.0
+        ],
+        "reference_speed": 1.9323671497584543,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 21,
+        "local_xy": [
+          2.0,
+          1.0
+        ],
+        "reference_speed": 2.7777777777777777,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 22,
+        "local_xy": [
+          2.0,
+          2.0
+        ],
+        "reference_speed": 1.0869565217391306,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 23,
+        "local_xy": [
+          2.0,
+          2.0
+        ],
+        "reference_speed": 1.9323671497584543,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 24,
+        "local_xy": [
+          2.0,
+          2.0
+        ],
+        "reference_speed": 2.7777777777777777,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 25,
+        "local_xy": [
+          3.0,
+          -2.0
+        ],
+        "reference_speed": 1.0869565217391306,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 26,
+        "local_xy": [
+          3.0,
+          -2.0
+        ],
+        "reference_speed": 1.9323671497584543,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 27,
+        "local_xy": [
+          3.0,
+          -2.0
+        ],
+        "reference_speed": 2.7777777777777777,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 28,
+        "local_xy": [
+          3.0,
+          -1.0
+        ],
+        "reference_speed": 1.0869565217391306,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 29,
+        "local_xy": [
+          3.0,
+          -1.0
+        ],
+        "reference_speed": 1.9323671497584543,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 30,
+        "local_xy": [
+          3.0,
+          -1.0
+        ],
+        "reference_speed": 2.7777777777777777,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 31,
+        "local_xy": [
+          3.0,
+          0.0
+        ],
+        "reference_speed": 1.0869565217391306,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 32,
+        "local_xy": [
+          3.0,
+          0.0
+        ],
+        "reference_speed": 1.9323671497584543,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 33,
+        "local_xy": [
+          3.0,
+          0.0
+        ],
+        "reference_speed": 2.7777777777777777,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 34,
+        "local_xy": [
+          3.0,
+          1.0
+        ],
+        "reference_speed": 1.0869565217391306,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 35,
+        "local_xy": [
+          3.0,
+          1.0
+        ],
+        "reference_speed": 1.9323671497584543,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 36,
+        "local_xy": [
+          3.0,
+          1.0
+        ],
+        "reference_speed": 2.7777777777777777,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 37,
+        "local_xy": [
+          3.0,
+          2.0
+        ],
+        "reference_speed": 1.0869565217391306,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 38,
+        "local_xy": [
+          3.0,
+          2.0
+        ],
+        "reference_speed": 1.9323671497584543,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 39,
+        "local_xy": [
+          3.0,
+          2.0
+        ],
+        "reference_speed": 2.7777777777777777,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 1
+      },
+      {
+        "index": 40,
+        "local_xy": [
+          -1.0,
+          -1.0
+        ],
+        "reference_speed": -0.5,
+        "motion_direction": -1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 2
+      },
+      {
+        "index": 41,
+        "local_xy": [
+          -1.0,
+          0.0
+        ],
+        "reference_speed": -0.5,
+        "motion_direction": -1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 2
+      },
+      {
+        "index": 42,
+        "local_xy": [
+          -1.0,
+          1.0
+        ],
+        "reference_speed": -0.5,
+        "motion_direction": -1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 2
+      },
+      {
+        "index": 43,
+        "local_xy": [
+          0.0,
+          0.0
+        ],
+        "reference_speed": 0.0,
+        "motion_direction": 0.0,
+        "planned_yaw_delta": 0.7853981633974483,
+        "primitive_type": 3
+      },
+      {
+        "index": 44,
+        "local_xy": [
+          0.0,
+          0.0
+        ],
+        "reference_speed": 0.0,
+        "motion_direction": 0.0,
+        "planned_yaw_delta": -0.7853981633974483,
+        "primitive_type": 3
+      },
+      {
+        "index": 45,
+        "local_xy": [
+          2.0,
+          2.0
+        ],
+        "reference_speed": 1.0869565217391306,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 4
+      },
+      {
+        "index": 46,
+        "local_xy": [
+          2.0,
+          -2.0
+        ],
+        "reference_speed": 1.0869565217391306,
+        "motion_direction": 1.0,
+        "planned_yaw_delta": 0.0,
+        "primitive_type": 4
+      }
+    ],
+    "ordering": "hold, endpoint-major/speed-minor forward, reverse, spin, yield"
+  },
+  "sha256": "4ce1ff4d048871917c523ef870ba6d72a8036840c6cb6d99c8118f9d6f231812"
+}

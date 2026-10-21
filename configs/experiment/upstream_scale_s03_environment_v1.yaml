@@ -1,0 +1,6 @@
+# Full sensor/communication/queue/task/reward diagnostic loop; safety still pending.
+extends: upstream_scale_s03_observation_v1.yaml
+experiment:
+  name: upstream_scale_s03_environment_v1
+upstream_scale:
+  environment_execution_version: actual_loop_upstream_v1

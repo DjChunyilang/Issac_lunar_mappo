@@ -1,0 +1,5 @@
+extends: upstream_scale_s03_environment_v2.yaml
+experiment:
+  name: upstream_scale_s03_environment_cuda_v2
+upstream_scale:
+  planner_device: cuda

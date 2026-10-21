@@ -1,0 +1,5 @@
+extends: upstream_scale_s04_cost_cuda_v3.yaml
+experiment:
+  name: upstream_scale_s04_calibration_cuda_v4
+upstream_scale:
+  planner_adapter: mppi_upstream_v4

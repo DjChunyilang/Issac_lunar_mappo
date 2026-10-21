@@ -1,0 +1,5 @@
+extends: upstream_scale_s03_environment_v2.yaml
+experiment:
+  name: upstream_scale_s03_environment_safety_v2
+upstream_scale:
+  execution_safety_version: footprint_discrete_cbf_upstream_v1

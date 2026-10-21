@@ -1,0 +1,6 @@
+# Same complete physical review, using supported flat observation-frame subsets.
+extends: upstream_scale_s04_clearance_recovery_cuda_v4.yaml
+experiment:
+  name: upstream_scale_s04_frame_review_cuda_v3
+upstream_scale:
+  review_acceleration_version: flat_frame_pose_cache_v3

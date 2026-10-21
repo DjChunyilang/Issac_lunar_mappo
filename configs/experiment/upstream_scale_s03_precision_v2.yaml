@@ -1,0 +1,6 @@
+# Explicit split precision fixes low-speed feedback boundaries; no hot migration.
+extends: upstream_scale_s03.yaml
+experiment:
+  name: upstream_scale_s03_precision_v2
+upstream_scale:
+  planner_adapter: mppi_upstream_v2

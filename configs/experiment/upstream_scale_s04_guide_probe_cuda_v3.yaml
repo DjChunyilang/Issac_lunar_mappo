@@ -1,0 +1,8 @@
+# Exploratory near-goal recovery; formal calibration uses independent seeds.
+extends: upstream_scale_s04_cost_cuda_v3.yaml
+experiment:
+  name: upstream_scale_s04_guide_probe_cuda_v3
+upstream_scale:
+  mppi_parameters:
+    goal_scale: 2.0
+    temperature: 0.5

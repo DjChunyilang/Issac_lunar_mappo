@@ -1,0 +1,7 @@
+# Strict geometry/dynamics review and bounded batched CPU terrain lookup.
+extends: upstream_scale_s01.yaml
+experiment:
+  name: upstream_scale_s01_review_v2
+upstream_scale:
+  execution_review_version: footprint_review_v2
+  terrain_query_version: batch_ties_v2

@@ -1,0 +1,8 @@
+# Dense perception/communication/task integration; no training authorization.
+extends: upstream_scale_s02.yaml
+experiment:
+  name: upstream_scale_s03
+  training_paused: true
+upstream_scale:
+  timing_version: actual_control_history_v1
+  review_acceleration_version: pose_scope_cache_v1

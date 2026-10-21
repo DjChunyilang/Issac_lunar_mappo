@@ -1,0 +1,6 @@
+# Align legal parked-peer priority release with the existing HOLD exit radius.
+extends: upstream_scale_s04_visibility_recovery_cuda_v2.yaml
+experiment:
+  name: upstream_scale_s04_priority_recovery_cuda_v3
+upstream_scale:
+  leader_execution_version: leader_square_visibility_upstream_v3
