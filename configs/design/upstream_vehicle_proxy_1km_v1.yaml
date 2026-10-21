@@ -1,0 +1,183 @@
+# Design profile only. It has no `experiment` section and is intentionally
+# rejected by cfg_from_experiment. Runtime migration needs a separate version.
+schema_version: upstream_vehicle_proxy_design_v2
+status: provisional_assumptions_not_runtime_validated
+runtime_enabled: false
+training_paused: true
+provenance:
+  upstream: user_reported_design_input_2026_10_11
+  assumptions: user_authorized_1km_curriculum_2026_10_19
+  speed_policy: user_confirmed_forward_limit_2026_10_12
+  supersedes_design_profile: configs/design/upstream_vehicle_proxy_v2.yaml
+  document: docs/architecture/upstream_vehicle_proxy_assumptions_v2.md
+
+upstream:
+  length_m: 5.015
+  width_m: 3.2
+  height_m: 1.85
+  maximum_speed_kmh: 10.0
+  wheel_diameter_m: 1.0
+  track_width_m: 1.8
+  wheelbase_m: 2.7
+
+model:
+  type: differential_drive
+  body_reference: planar_geometry_center
+  support_layout: four_contact_patches
+  effective_track_multiplier: 1.0
+  planar_velocity_gain: 1.0
+  integration: midpoint
+  wheel_contact_width_m: 0.3
+  wheel_contact_length_m: 0.2
+  dimensions_treated_as_full_external_envelope: true
+
+physical_placeholders:
+  mass_kg: 1500.0
+  cg_height_above_ground_m: 0.8
+  ground_clearance_m: 0.3
+  gravity_mps2: 1.62
+  friction_coefficient: 0.6
+  # Mass and friction are not active parameters of a kinematic proxy.
+  calibrated_wheel_soil_model: false
+
+motion:
+  # 10 km/h / 3.6. One m/s is only an explicit first-test reference.
+  default_forward_limit_mps: 2.7777777777777777
+  forward_hard_limit_rule: upstream.maximum_speed_kmh_divided_by_3_6
+  initial_test_speed_mps: 1.0
+  preferred_forward_speed_rule: current_dynamic_cap_subject_to_goal_and_turn
+  default_reverse_limit_mps: 0.5
+  yaw_rate_limit_radps: 0.35
+  in_place_yaw_rate_limit_radps: 0.2
+  low_speed_turn_threshold_mps: 0.05
+  low_speed_transition_rule: reduce_yaw_before_entering_low_speed_mode
+  linear_acceleration_mps2: 0.2
+  linear_deceleration_mps2: 0.4
+  angular_acceleration_radps2: 0.15
+  angular_deceleration_radps2: 0.2
+  wheel_acceleration_limit_radps2: 1.2
+  # Derived from upstream straight-line top speed, not a supplied motor spec.
+  wheel_limit_rule: upstream_maximum_straight_speed_divided_by_radius
+  full_speed_diagnostic_requires_separate_run: true
+  perception_to_execution_latency_budget_s: 0.5
+
+dynamic_speed_limit:
+  enabled: true
+  version: legal_stop_corridor_v1
+  information_source: receiver_readonly_local_memory_and_legal_sender_predictions
+  limiting_factors: [global_hard_cap, wheel_coupling, yaw_mode, terrain, known_stop_corridor, stop_horizon]
+  analytic_formula_role: initial_screen_only
+  final_acceptance: delayed_motion_and_complete_brake_trajectory_full_footprint_review
+  actuator_update_order: bounded_command_then_midpoint_integrate
+  conservative_stop_envelope: hold_previous_command_before_each_decrement
+  delay_rounding: ceil_latency_over_dt
+  next_control_commitment_steps: 1
+  minimum_stationary_tail_steps: 1
+  latency_rule: by_clock_mode
+  offline_latency_rule: injected_simulated_latency
+  realtime_latency_rule: maximum_design_budget_and_measured_conservative_bound
+  stop_envelope_time_origin: information_time
+  stop_envelope_delay_prefix_role: pending_or_hypothetical_held_controls_not_added_execution_wait
+  execution_time_origin: actual_control_activation_time
+  offline_clock_mode: explicitly_injected_simulated_latency
+  realtime_clock_mode: measured_end_to_end_latency_bound
+  lower_cap_transition: bounded_brake_with_transient_overspeed_recorded
+  rolling_move_requires_terminal_stop: false
+  hold_or_explicit_stop_requires_terminal_stop: true
+
+geometry:
+  collision_envelope: circumscribed_circle
+  workspace_and_formation_envelope: effective_circumscribed_circle
+  terrain_footprint_envelope: oriented_body_rectangle_and_contact_patches
+  terrain_uncertainty_allowance_rule: shared_clearance_margin_per_vehicle
+  clearance_margin_per_vehicle_m: 0.3
+  position_error_budget_m: 0.1
+  tracking_error_budget_m: 0.1
+  heading_error_budget_deg: 0.5
+  additional_geometry_allowance_m: 0.05
+  max_swept_boundary_sample_spacing_m: 0.1
+  terrain_support_check: all_contact_patches_and_body_clearance
+
+terrain:
+  driving_slope_limit_deg: 10.0
+  parking_slope_limit_deg: 5.0
+  detrended_roughness_rms_limit_m: 0.05
+  local_step_limit_m: 0.1
+  retain_unknown_hard_boundary: true
+  preserve_real_dem_native_scale_and_uncertainty: true
+  map_window_width_m: 1000.0
+  map_window_height_m: 1000.0
+
+perception:
+  model: ideal_local_observation_for_proxy
+  forward_range_from_body_reference_m: 15.0
+  reverse_range_from_body_reference_m: 15.0
+  lateral_range_from_body_reference_m: 8.0
+  local_sample_spacing_m: 0.2
+  memory_key_resolution_m: 0.1
+  memory_max_samples: 65536
+  nearest_neighbor_support_radius_m: 0.155
+  preserve_direct_observations_and_unknown_gaps: true
+  physical_sensor_specification: unavailable
+
+communication:
+  model: distance_based_proxy_no_physical_link_budget
+  full_radius_m: 300.0
+  full_period_s: 0.2
+  sparse_radius_m: 600.0
+  sparse_period_s: 1.0
+  state_validity_s: 1.0
+  trajectory_validity_s: 0.6
+  uncertainty_velocity_bound_rule: sender_verified_enforced_hard_cap_else_run_global_hard_cap
+  unknown_sender_forward_speed_bound_mps: 2.7777777777777777
+  future_prediction_is_control_commitment: false
+  lower_sender_bound_requires: enforced_for_entire_future_query_interval
+  absolute_motion_bound_rule: maximum_forward_and_reverse_enforced_hard_limits
+
+planning:
+  dt_s: 0.2
+  horizon_s: 8.0
+  horizon_steps: 40
+  high_level_period_s: 1.0
+  request_validity_s: 1.0
+  rho_max_m: 4.0
+  reference_semantics: rolling_goal_not_one_period_displacement
+  mppi_noise_v_mps: 0.25
+  mppi_noise_omega_radps: 0.1
+  current_protocol_v1_compatible: false
+  realtime_acceptance: pending
+
+task:
+  provisional_purpose: common_safe_parking_after_rendezvous
+  n_agents: 4
+  formation: square_grid
+  square_grid_spacing_m: 7.2
+  slot_capture_radius_m: 0.2
+  slot_exit_radius_m: 0.4
+  max_center_distance_m: 12.0
+  dispersion_limit_m2: 30.0
+  common_worksite_radius_m: 10.0
+  worksite_terrain_semantics: per_vehicle_footprints_and_geometric_containment
+  certify_unused_common_area: false
+  parked_linear_speed_limit_mps: 0.01
+  parked_angular_speed_limit_radps: 0.003
+  parked_body_boundary_speed_limit_mps: 0.02
+  hold_duration_s: 5.0
+  max_position_drift_during_hold_m: 0.1
+  max_heading_drift_during_hold_deg: 1.0
+  spawn_radius_tiers_m:
+    - [20.0, 60.0]
+    - [60.0, 150.0]
+    - [150.0, 300.0]
+  min_initial_center_distance_m: 7.2
+  diagnostic_episode_lengths_s: [360.0, 1200.0]
+  default_episode_length_s: 1200.0
+
+sensitivity:
+  mass_kg: [1000.0, 1500.0, 3000.0]
+  braking_mps2: [0.2, 0.4, 0.6]
+  diagnostic_forward_speeds_mps: [0.5, 1.0, 1.5, 2.0, 2.7777777777777777]
+  effective_track_multiplier: [1.0, 1.25, 1.5]
+  friction_coefficient: [0.35, 0.6, 0.8]
+  latency_budget_s: [0.2, 0.5, 1.0]
+  full_communication_radius_m: [150.0, 300.0, 450.0]

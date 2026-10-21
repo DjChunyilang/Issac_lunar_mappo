@@ -1,0 +1,8 @@
+extends: upstream_scale_s04_braking_lease_cuda_v5.yaml
+experiment:
+  name: upstream_1km_curriculum_v1
+  episode_length_s: 1200.0
+  training_paused: true
+upstream_scale:
+  design_profile: configs/design/upstream_vehicle_proxy_1km_v1.yaml
+  design_profile_sha256: c84cac9e5a765bbc64fd325695f922225461e7c65478c82411c964ce44087b83

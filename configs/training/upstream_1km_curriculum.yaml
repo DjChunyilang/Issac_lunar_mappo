@@ -1,0 +1,27 @@
+version: rendezvous_curriculum_1km_v1
+terrain: flat_proxy
+policy_decision_period_s: 5.0
+discount_reference_period_s: 1.0
+gamma: 0.997
+lambda: 0.95
+reward_scaling: log1p
+observation_scaling: log1p
+value_normalization: running
+rollout_decisions: 16
+ppo_epochs: 5
+easy_replay_fraction: 0.2
+promotion_window_episodes: 40
+promotion_success_fraction: 0.8
+minimum_stage_base_steps: 10000
+evaluation_every_base_steps: 200000
+evaluation_max_base_steps: 250000
+final_evaluation_reservation: 100000
+checkpoint_every_updates: 5
+stages:
+  - {name: parking, radius_m: [5.0911688245, 5.0911688245], deadline_s: 30.0, heading_noise_deg: 180.0}
+  - {name: near_approach, radius_m: [5.5, 7.0], deadline_s: 60.0, heading_noise_deg: 30.0}
+  - {name: short_approach, radius_m: [7.0, 12.0], deadline_s: 120.0, heading_noise_deg: 45.0}
+  - {name: local_approach, radius_m: [12.0, 30.0], deadline_s: 240.0, heading_noise_deg: 60.0}
+  - {name: medium_approach, radius_m: [30.0, 75.0], deadline_s: 450.0, heading_noise_deg: 90.0}
+  - {name: long_approach, radius_m: [75.0, 150.0], deadline_s: 900.0, heading_noise_deg: 180.0}
+  - {name: wide_approach, radius_m: [150.0, 300.0], deadline_s: 1200.0, heading_noise_deg: 180.0}

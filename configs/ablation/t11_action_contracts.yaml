@@ -1,0 +1,21 @@
+# Preparation only. This is not an experiment/environment/training configuration.
+schema: t11_action_preparation_v1
+experiment_id: t11_action_contracts
+base_config: ../experiment/upstream_scale_s01_review_v2.yaml
+training_paused: true
+environment_enabled: false
+representations: [A0, A1, A2, A3]
+seeds: [23, 31, 47]
+synthetic:
+  num_envs: 2
+  agents_per_env: 4
+  actor_dim: 411
+  critic_dim: 991
+  terrain_channels: 2
+  hidden_dim: 128
+  sequence_length: 8
+screening_budgets_reserved:
+  signal_check: 100000
+  multi_seed: 500000
+  finalist: 2000000
+  multi_seed_count: 3
