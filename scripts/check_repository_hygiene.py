@@ -12,6 +12,19 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY_DOCS = (
+    "AGENTS.md",
+    "docs/implementation_plan.md",
+    "docs/interface_spec.md",
+    "docs/technical_design.md",
+    "docs/architecture/planning_pipeline.md",
+    "docs/experiments/t00_repository_audit_2026-10-09.md",
+    "docs/experiments/t02_p0_contract_validation_2026-10-09.md",
+    "docs/experiments/t03_planner_protocol_validation_2026-10-10.md",
+    "docs/experiments/t04_polar_hold_validation_2026-10-10.md",
+    "docs/experiments/t05_planner_baselines_validation_2026-10-10.md",
+    "docs/experiments/t06_mppi_base_validation_2026-10-10.md",
+    "docs/experiments/t07_mppi_terrain_neighbor_validation_2026-10-10.md",
+    "docs/runbooks/planner_diagnostics.md",
     "README.md",
     "docs/README.md",
     "docs/current_status.md",

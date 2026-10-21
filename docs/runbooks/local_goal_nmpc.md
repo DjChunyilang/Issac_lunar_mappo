@@ -1,5 +1,7 @@
 # 连续局部目标＋NMPC 首轮运行
 
+本页描述 exp167 默认 `legacy_v1` 的运行与历史复现。新版 `finite_task_v2` 使用独立 P0 诊断配置，任务截止、时钟和奖励差异见[当前接口](../interface_spec.md)，验收及无学习审计命令见[T02 记录](../experiments/t02_p0_contract_validation_2026-10-09.md)。新版正式训练仍由入口门控暂停。
+
 2026-09-24更新：本文主体描述历史合成CPU路线。真实地图的三通道观测、独立策略/地形设备与无学习检查见[NASA地图运行手册](nasa_training_maps.md)；原六分层评估不能用于新地图。
 
 这是独立的 `exp167` proxy 路线，不要求安装 CUDA、Isaac Sim 或 Isaac Lab，不使用旧 checkpoint。旧 `train_skrl_mappo.py` 和原语环境保持可用。
@@ -142,3 +144,9 @@ Markdown公式检查、整理文档的相对链接检查、三个新增shell入�
 该命令只分析已有记录，不产生新环境交互或策略更新，输出 `metrics/comparison.json` 与 `figures/`。`metrics/progress.json` 可查看当前评估层、批次和底层步数；训练阶段以 `train_metrics.jsonl` 为准。
 
 仅当出现完整任务稳定成功且阻塞改善时，才讨论 CUDA、课程或正式训练预算。若碰撞减少但超时上升、或请求不同而执行趋同，不自动扩大训练，也不继续收紧安全约束。
+
+T03统一规划协议使用独立 `configs/experiment/t03_planner_protocol.yaml`，配置继承P0且保持训练暂停；实际求解器配对及相关回归命令见[T03验收](../experiments/t03_planner_protocol_validation_2026-10-10.md)。原exp167/P0仍使用原调用链。
+
+T04使用独立 `configs/experiment/t04_polar_hold.yaml` 和 `scripts/audit_polar_hold.py`。真实HOLD与合成PPO诊断命令见[T04验收](../experiments/t04_polar_hold_validation_2026-10-10.md)；低维MOVE的NMPC完整适配留至T05，当前完整任务评测提前拒绝，正式训练保持暂停。
+
+T05新增nmpc_polar_v1接通真实低维MOVE；T06/T07接入CPU批量MPPI。上述旧配置及T04桥接行为保持原状，新无学习命令统一见[规划诊断手册](planner_diagnostics.md)。CUDA验收延期、正式训练暂停，旧完整任务评测不自动开放。

@@ -1,5 +1,95 @@
 # 实验索引
 
+- [2026-10-20：v2课程正式训练启动，新配置准入通过，按每级25万步边界运行](t11_v2_curriculum_launch_2026-10-20.md)
+
+- [2026-10-20：六项配置调整与审定，独立v2候选及阶段预算／固定评估接通，训练未启动](t11_six_point_review_2026-10-20.md)
+
+- [2026-10-20：下一次正式长训练前的完整参数审查，0 新增环境步，训练保持停止](t11_next_long_training_parameter_audit_2026-10-20.md)
+
+- [2026-10-20：1 km 课程训练按用户要求停于 161.46 万步，完整恢复点已保存](t11_1km_curriculum_long_training_2026-10-19.md)
+
+- [2026-10-19：价值目标归一化短学习完成，停车局部改善、远距筛选未通过](t11_value_normalization_trial_2026-10-19.md)
+
+- [2026-10-19：三项组合闭环验证完成：初始化优势保留部分，学习增益筛选未通过](t11_combined_learning_validation_2026-10-19.md)
+
+- [2026-10-19：顺序修复完成，独立裁剪、探索尺度、终端未生效动作信用及完整归档](t11_learning_repair_execution_2026-10-19.md)
+
+- [2026-10-19：文献与离线深度复核，初始化／门控混杂、停车零覆盖、价值及Adam更新耦合](t11_decision_credit_deep_review_2026-10-19.md)
+
+- [2026-10-19：三组20万步对照完成，B连续性改善、C均值靠拢但停车退化，均未通过筛选](t11_decision_credit_results_2026-10-19.md)
+
+- [2026-10-18：A→B→C三组有界学习启动，每组20万底层步](t11_decision_credit_launch_2026-10-18.md)
+
+
+- [2026-10-18：持续决策、物理时间折扣与三组短训练入口实现，训练仍暂停](t11_decision_learning_implementation_2026-10-18.md)
+
+
+- [2026-10-18：九个同状态短程对照，HOLD/MOVE奖励信用与目标持续性](t11_decision_credit_2026-10-18.md)
+
+- [2026-10-18：A1完成100k后的失败诊断，提前HOLD与局部学习梯度强化](t11_a1_failure_final100k_2026-10-18.md)
+
+- [2026-10-18：A0第35批失败诊断，192回合超时、目标方向抖动与队形发散](t11_a0_failure_update35_2026-10-18.md)
+
+- [2026-10-17：A1第47批集合趋势核查，地形全通过、队形未达标与HOLD比例上升](t11_a1_gathering_trend_update47_2026-10-17.md)
+
+- [2026-10-17：最终四进程16环境配置，从第17批完整恢复长期skrl训练](t11_owner16_training_resume_2026-10-17.md)
+
+- [2026-10-17：主机OOM修复、逐owner分片恢复与完整批次内存验证](t11_checkpoint_oom_repair_2026-10-17.md)
+
+- [2026-10-17：按用户要求切换六进程48环境skrl训练，学习状态接续与进程树监测](t11_skrl_owner48_restart_2026-10-17.md)
+
+- [2026-10-17：优化版skrl A1真实续训与前3批CPU/内存/GPU监测](t11_skrl_training_restart_2026-10-17.md)
+
+- [2026-10-17：深度计算优化、真实skrl MAPPO迁移、长回放/完整更新等价与CPU/GPU容量实测](t11_skrl_deep_optimization_2026-10-17.md)
+
+- [2026-10-17：优化后关键路径与深度优化路线，双进程容量探针1.53倍吞吐](t11_deep_performance_analysis_2026-10-17.md)
+
+- [2026-10-17：运动采样原生记忆/安全约束/CPU并行优化，8.13倍短程提速与125项测试](t11_motion_optimization_2026-10-17.md)
+
+- [2026-10-17：运动训练CPU剖析、记忆66.4%与安全投影23.9%的优化方案](t11_motion_performance_analysis_2026-10-17.md)
+
+- [2026-10-16：解除学习路径零运动、速度承诺修复与100k续训](t11_learned_lease_repair_2026-10-16.md)
+
+- [2026-10-16：优化版真实训练试跑、约5.9倍采样提速与零运动问题](t11_optimized_training_trial_2026-10-16.md)
+
+- [2026-10-16：原生CPU/CUDA核、整轨迹批处理与约4倍采样加速](t11_native_acceleration_2026-10-16.md)
+
+- [2026-10-16：训练交互与复核优化、CPU/GPU实测取舍](t11_interaction_acceleration_2026-10-16.md)
+
+- [2026-10-16：暂停剩余矩阵、独立100k准入及A1首批真实学习结果](t11_signal100k_start_2026-10-16.md)
+
+- [2026-10-16：集合计算等价加速、四进程续跑与NPB入口修复](t11_compute_acceleration_2026-10-16.md)
+
+- [2026-10-16：矩阵分进程续跑、v5四例集合成功、144回合扩展与依赖审核](t11_matrix_continuation_2026-10-16.md)
+- [2026-10-15：等待评测期间的耗时分析、训练报告、比较协议和迁移包](t11_parallel_preparation_2026-10-15.md)
+- [2026-10-15晚间：速度承诺修复、MPPI完整回合、原语评测恢复与A1完整批次](t11_speed_lease_repair_2026-10-15.md)
+- [2026-10-15：T11评测恢复、集合停滞与训练运行流程](t11_progress_repair_2026-10-15.md)
+[新尺度安全、独立校准与四组真实学习准备](upstream_scale_training_preparation_2026-10-14.md)：两例安全开启68/77 s集合、实际控制与广播审计；12组真实循环采样/诊断更新、36例540次规划校准和四组运行定义已形成。九类校准闭环及新尺度完整矩阵未全部完成，正式训练暂停。
+
+[S03完整环境、执行租约与学习入口](upstream_scale_environment_2026-10-14.md)：19项局部契约通过，真实宏步/GRU/诊断PPO、新尺度足迹QP与四组桥接接线；K512两例安全开/关出生集合已完成，正式训练准备仍待统一版本全矩阵。
+
+[S03低速精度修复与真实观测](upstream_scale_s03_precision_observation_2026-10-13.md)：独立MPPI v2保留原始采样概率，物理限幅／预测float64；真实私有记忆构造411／991维，消息v2、SE2和网络前向接线。完整环境与T11学习尚未验收。
+
+[S03密集感知、合法通信与实际停车](upstream_scale_s03_components_2026-10-13.md)：密集观测与私有记忆、sender／有效期、强制运动上界、实际延迟历史及停车状态机已实现；完整S03与T11仍待验收。
+
+[S02新尺度规划器接通](upstream_scale_planners_2026-10-13.md)：40步协议、完整基线、真实NMPC与批量MPPI；1015项冻结回归、56个实际规划／首控制案例及10组恢复通过。追加54容量面板与九组复杂B1配对通过；实际感知集合、S02完整出口及T11学习尚待后续验收。
+
+[T11动作表示无学习准备](t11_action_preparation_2026-10-13.md)：A0–A3共享骨干、97项概率／循环状态契约及12个三种子面板通过，完整保存768个采样；新尺度执行桥接、训练筛选与Gate C仍待前置门槛。
+
+[S01复核v2修复](upstream_scale_review_v2_repair_2026-10-13.md)：邻车规范／半径及地形动力学一致性拒绝已补齐；407项通过，八车满速／停车／恢复通过。分块查询已启用，同一严格复核下13.47→3.33 s；实时及完整环境门槛仍未通过。
+
+[S01复核与耗时诊断](upstream_scale_diagnosis_2026-10-12.md)：复现邻车半径未绑定几何、预测速度未绑定地形两项拒绝缺口；417648次逐点球查询是主要耗时来源。批量原型保守规则配对通过，尚未启用运行路径或通过实时门槛。
+
+[新尺度S00／S01基础执行](upstream_scale_foundation_2026-10-12.md)：独立不可变规范、版本隔离、NumPy／Torch联合限幅及足迹／停车储备；八车离线实际达到10 km/h并停车，恢复与异步reset通过。40步规划器、实际感知通信及完整新尺度任务尚未验收。
+
+[局部记忆、坡地集合位置与 NMPC 停滞修复](gathering_failure_repairs_2026-10-11.md)：78 定向回合 76 成功，原 34 失败恢复 32，两例 96 s 驻留不足保留；直接观测、选址、求解恢复与停车修正分别版本化，不颁发新 Gate B/T10。
+
+当前工程证据：[T00仓库审计](t00_repository_audit_2026-10-09.md)、[T02 P0契约验收](t02_p0_contract_validation_2026-10-09.md)。这两项不参与训练方案的性能排名。
+
+[任务尺度审计](task_scale_audit_2026-10-11.md)：核对局部目标、地图/工作区、实际出生、感知支持、通信、车辆包络及任务/计算时间；只读覆盖完整 T10 轨迹。尺度调整与新任务验证待实施，未改历史配置。
+
+[MPPI完整CUDA验收](mppi_cuda_validation_2026-10-11.md)：独立stable_v2的66项CUDA契约与695项相关回归全部通过（含18项真实acados）；36个K/B负载面板、9个B1同噪声对照及27个复杂场景对照通过。新GPU千例评测已完整通过Gate B；CUDA完整144回合通过简单集合门槛，110成功、34失败，复杂失败保留，正式训练暂停。[首次接通诊断](mppi_cuda_diagnostic_2026-10-11.md)保留原v1的17项契约16通过、1失败及三个集合pilot；不覆盖历史CPU验收。
+
 地图路线已于2026-09-25确定为[真实DEM与NASA增强](../architecture/lunar_map_mainline.md)。下表的地图工程通过与训练任务的strict通过分别解释；学习继续暂停。
 
 除非实验文档另有说明，proxy strict gate 为：
@@ -144,3 +234,13 @@ PhysX / Jackal tracking 结果是 high-fidelity validation，不等于 Isaac Lab
 | exp167 | near/far × Open/Mixed/修复Bottleneck | 连续局部目标＋acados NMPC＋N1 GRU MAPPO | seed23，累计99,999底层训练交互 | pilot未通过，暂停训练 | 原pilot前后0/96成功；规划修正后固定长目标16/16到达、近距停车正常，非完整任务收敛。 | [exp_167_local_goal_nmpc.md](exp_167_local_goal_nmpc.md)、[固定目标诊断](exp_167_fixed_goal_diagnosis.md)、[规划修正](exp_167_planner_correction.md) |
 
 新增实验时，在这里加一行，并在本目录创建独立的 `exp_###_*.md` 文档。日期流水账放入 `docs/archive/`，不要继续堆到当前实验文档里。
+
+- [T03 统一规划器协议验收](t03_planner_protocol_validation_2026-10-10.md)：独立诊断接入、NMPC桥接配对与版本化恢复。
+
+- [T04 条件动作与 Gate A 验收](t04_polar_hold_validation_2026-10-10.md)：极坐标／HOLD概率、循环PPO契约与真实停车诊断。
+
+- [T05完整规划基线](t05_planner_baselines_validation_2026-10-10.md)：真实低维NMPC、line/quintic物理轨迹与冻结47回放；categorical保持兼容。
+- [T06 Torch批量MPPI基础](t06_mppi_base_validation_2026-10-10.md)：CPU数值、采样规模、独立状态、停车与回退；初始CUDA延期，后续见[独立CUDA验收](mppi_cuda_validation_2026-10-11.md)。
+- [T07地形与邻车MPPI](t07_mppi_terrain_neighbor_validation_2026-10-10.md)：软代价实际生效、硬边界及CPU局部闭环；保留起伏地形未到达记录，不代表Gate B或完整任务通过。
+
+T08–T10实施证据：[代理安全投影](t08_safety_projection_validation_2026-10-10.md)、[CPU千例评测](t09_planner_benchmark_validation_2026-10-10.md)、[K512无学习集合](t10_gathering_validation_2026-10-10.md)。各阶段严格状态独立记录，pilot不代替正式验收。
