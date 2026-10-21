@@ -1,0 +1,7 @@
+extends: t07_mppi_terrain_neighbor.yaml
+experiment:
+  name: t08_safety_projection
+local_goal:
+  safety_projection: discrete_cbf_qp_v1
+  safety_deadline_s: null
+  training_paused: true

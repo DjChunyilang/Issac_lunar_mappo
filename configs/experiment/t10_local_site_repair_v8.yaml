@@ -1,0 +1,4 @@
+extends: t10_local_site_repair_v7.yaml
+experiment_id: t10_local_site_repair_v8
+local_goal:
+  no_learning_script: leader_local_site_v8

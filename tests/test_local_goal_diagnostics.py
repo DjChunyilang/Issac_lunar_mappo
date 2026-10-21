@@ -26,6 +26,7 @@ def test_observed_support_has_gap_between_fine_and_medium_forward_samples():
 
 def test_fresh_stationary_full_plan_allows_nearby_terminal_but_expiry_does_not():
     env = LocalGoalEnvironment.__new__(LocalGoalEnvironment)
+    env.finite_task = False  # This fixture exercises the legacy transport contract.
     env.a = 4
     env.core = SimpleNamespace(step_count=torch.tensor([1]))
     separation = float(np.sqrt(2) * 0.6)
@@ -87,6 +88,7 @@ def test_verified_prefix_moves_then_stops_without_crossing_unknown_or_neighbor(d
 
 def test_sparse_payload_cannot_enable_stop_intent_uncertainty():
     env = LocalGoalEnvironment.__new__(LocalGoalEnvironment)
+    env.finite_task = False  # This fixture exercises the legacy transport contract.
     env.a = 4
     env.core = SimpleNamespace(step_count=torch.tensor([0]))
     env.received = {

@@ -1,0 +1,8 @@
+# Flat-model CUDA acceptance; the original CPU and action contracts stay frozen.
+extends: t06_mppi_base.yaml
+experiment:
+  name: t06_mppi_base_cuda
+local_goal:
+  planner_device: cuda
+  mppi_query_chunk: 1024
+  training_paused: true

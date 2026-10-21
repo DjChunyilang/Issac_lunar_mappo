@@ -108,6 +108,8 @@ class MultiRoverGatheringCore:
     """Torch-vectorized first-stage task core."""
 
     def __init__(self, cfg: MultiRoverGatheringEnvCfg | None = None):
+        if getattr(cfg, "runtime_family", None) == "upstream_scale_v1":
+            raise ValueError("Upstream scale requires its versioned execution environment; legacy core refused")
         self.cfg = cfg or MultiRoverGatheringEnvCfg()
         if self.cfg.simulation.device == "cuda" and not torch.cuda.is_available():
             if self.cfg.terrain.type == "lunar_scene_pack":
@@ -926,6 +928,8 @@ class MultiRoverGatheringCore:
         return actor_obs, critic_state
 
     def step(self, action: torch.Tensor) -> StepOutput:
+        if self.cfg.local_goal_contract.task_contract_version == "finite_task_v2":
+            raise ValueError("finite_task_v2 requires LocalGoalEnvironment, not the legacy action path")
         discrete_actions = self.cfg.planner.action_type in {
             "spatiotemporal_primitives",
             "differential_trajectory_primitives",

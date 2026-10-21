@@ -1,0 +1,8 @@
+# Unified planner diagnostics only; no formal training.
+extends: p0_contract_v2.yaml
+experiment:
+  name: t03_planner_protocol
+local_goal:
+  planner_protocol: planner_protocol_v1
+  planner_adapter: nmpc_bridge_v1
+  training_paused: true

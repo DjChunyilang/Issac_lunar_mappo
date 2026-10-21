@@ -1,0 +1,6 @@
+extends: t10_local_site_repair_v4.yaml
+experiment:
+  name: t10_local_site_repair_v5
+local_goal:
+  no_learning_script: leader_local_site_v5
+  training_paused: true

@@ -1,0 +1,7 @@
+extends: t08_safety_projection.yaml
+experiment:
+  name: t09_planner_benchmark
+local_goal:
+  nmpc_deadline_s: 10.0
+  mppi_deadline_s: null
+  training_paused: true

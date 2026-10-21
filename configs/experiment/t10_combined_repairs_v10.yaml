@@ -1,0 +1,4 @@
+extends: t10_local_site_repair_v9.yaml
+experiment_id: t10_combined_repairs_v10
+local_goal:
+  diagnostic_nmpc_adapter: nmpc_recovery_v4

@@ -1,0 +1,6 @@
+extends: t10_local_site_repair_v2.yaml
+experiment:
+  name: t10_combined_repairs_v3
+local_goal:
+  diagnostic_nmpc_adapter: nmpc_recovery_v3
+  training_paused: true

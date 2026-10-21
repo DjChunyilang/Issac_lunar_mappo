@@ -1,0 +1,11 @@
+# CPU terrain/neighbor diagnostics; training and CUDA validation remain paused.
+extends: t06_mppi_base.yaml
+experiment:
+  name: t07_mppi_terrain_neighbor
+local_goal:
+  planner_adapter: mppi_terrain_neighbor_v1
+  planner_revision: mppi_terrain_neighbor_v1
+  mppi_terrain_cost: true
+  mppi_neighbor_cost: true
+  mppi_unknown_cost: true
+  mppi_terrain_dynamics: true

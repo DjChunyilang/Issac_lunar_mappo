@@ -17,6 +17,10 @@ if str(SOURCE) not in sys.path:
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import (  # noqa: E402
     MultiRoverGatheringEnvCfg,
 )
+from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal.upstream_spec import (  # noqa: E402
+    UpstreamRuntimeConfig,
+    parse_upstream_experiment,
+)
 
 
 def _deep_merge_yaml(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -418,7 +422,7 @@ def _validate_gather_point(cfg: MultiRoverGatheringEnvCfg) -> None:
         )
 
 
-def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
+def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg | UpstreamRuntimeConfig:
     data = load_yaml(path)
     data = _require_mapping(str(path), data)
     if "experiment" not in data:
@@ -427,7 +431,16 @@ def cfg_from_experiment(path: str | Path) -> MultiRoverGatheringEnvCfg:
             "experiment YAML and does not merge configs/agent, configs/env, "
             "configs/task, or configs/reward fragments."
         )
+    if "upstream_scale" in data:
+        return parse_upstream_experiment(data, ROOT)
     cfg = MultiRoverGatheringEnvCfg()
+    local_goal = _require_mapping("local_goal", data.get("local_goal", {}))
+    for key in cfg.local_goal_contract.__dataclass_fields__:
+        if key in local_goal:
+            setattr(cfg.local_goal_contract, key, local_goal[key])
+    from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal.contracts import contract_metadata
+
+    contract_metadata(cfg)  # Reject inconsistent/unknown task and observation versions early.
     experiment = _require_mapping("experiment", data.get("experiment", {}))
     simulation = _require_mapping("simulation", data.get("simulation", {}))
     task = _require_mapping("task", data.get("task", {}))

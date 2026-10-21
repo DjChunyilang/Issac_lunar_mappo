@@ -1,0 +1,6 @@
+extends: t10_memory_repair_cuda_v3.yaml
+experiment:
+  name: t10_memory_repair_cuda_v4
+local_goal:
+  terrain_memory_version: direct_batch_v3
+  training_paused: true

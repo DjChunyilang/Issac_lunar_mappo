@@ -1,0 +1,10 @@
+# Independent stable numerical revision; do not resume a v1 planner state.
+extends: t07_mppi_terrain_neighbor.yaml
+experiment:
+  name: t07_mppi_terrain_neighbor_cuda_v2
+local_goal:
+  planner_adapter: mppi_terrain_neighbor_stable_v2
+  planner_revision: mppi_terrain_neighbor_stable_v2
+  planner_device: cuda
+  mppi_query_chunk: 1024
+  training_paused: true

@@ -1,0 +1,3 @@
+# Additional dependencies for the existing .venv_terrain_cuda environment.
+# Torch CUDA installation is owned by scripts/install_terrain_cuda.sh.
+osqp==1.0.4

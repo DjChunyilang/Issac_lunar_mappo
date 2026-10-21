@@ -5,20 +5,10 @@ from pathlib import Path
 
 import numpy as np
 
-from .contracts import DT, N, PlannerFeedback, TimedTrajectory, wrap
+from .contracts import DT, N, PlannerFeedback, wrap
+from .execution import dynamics, rollout, validate_trajectory, stopped_prefix
 
 
-def dynamics(pose, control, feature, slope_scale):
-    v, w = control
-    scale = np.clip(
-        feature[4]
-        * np.exp(-abs(feature[1] * np.cos(pose[2]) + feature[2] * np.sin(pose[2])) * slope_scale),
-        0.25,
-        1.0,
-    )
-    v, w = v * scale, w * scale
-    mid = pose[2] + 0.5 * DT * w
-    return pose + DT * np.array([v * np.cos(mid), v * np.sin(mid), w]), np.array([v, w])
 
 
 def shifted_controls(previous):
@@ -27,14 +17,16 @@ def shifted_controls(previous):
     return np.vstack([previous.controls[1:], brake])
 
 
-def build_solver(cache_dir, slope_scale, *, build=True):
+def build_solver(cache_dir, slope_scale, *, build=True, revision="prefix_consistency_v2"):
     # Lazy optional dependencies: legacy route works without either package.
     import casadi as ca
     from acados_template import AcadosOcp, AcadosOcpSolver
 
     ocp = AcadosOcp()
     model = ocp.model
-    model.name = "local_goal_v1"
+    if revision not in ("prefix_consistency_v2", "merit_recovery_v3", "merit_recovery_v4"):
+        raise ValueError("Unsupported NMPC solver revision")
+    model.name = "local_goal_" + revision[-2:] if revision.startswith("merit_recovery_") else "local_goal_v1"
     x = ca.SX.sym("x", 5)  # pose and previous wheel-equivalent controls
     u = ca.SX.sym("u", 2)
     p = ca.SX.sym("p", 22 + 3 * 128)  # goal/dynamics/continuity, neighbors, observed free disks
@@ -101,6 +93,12 @@ def build_solver(cache_dir, slope_scale, *, build=True):
     ocp.solver_options.nlp_solver_tol_eq = 1e-4
     ocp.solver_options.nlp_solver_tol_ineq = 1e-4
     ocp.solver_options.print_level = 0
+    if revision.startswith("merit_recovery_"):
+        ocp.solver_options.globalization = "MERIT_BACKTRACKING"
+        ocp.solver_options.globalization_alpha_min = 0.01
+        ocp.solver_options.globalization_alpha_reduction = 0.5
+        ocp.solver_options.nlp_solver_max_iter = 12
+        ocp.solver_options.hpipm_mode = "ROBUST"
     cache_dir = Path(cache_dir).resolve()
     cache_dir.mkdir(parents=True, exist_ok=True)
     ocp.code_export_directory = str(cache_dir / "code")
@@ -120,78 +118,16 @@ class NMPCPlanner:
         self.solver.reset()
 
     def rollout(self, pose, controls, memory, now):
-        states, velocities = [pose.copy()], []
-        for u in controls:
-            features, _, _ = memory.lookup(states[-1][:2])
-            state, velocity = dynamics(states[-1], u, features[0], self.slope_scale)
-            states.append(state)
-            velocities.append(velocity)
-        return TimedTrajectory(
-            np.array(states),
-            np.array(controls),
-            np.array(velocities),
-            now + np.arange(N + 1) * DT,
-            now,
-        )
+        return rollout(pose, controls, memory, now, self.slope_scale)
 
     def validate(self, plan, memory, neighbors, cap, previous_control):
-        if not all(
-            np.isfinite(a).all() for a in (plan.states, plan.controls, plan.velocities, plan.times)
-        ):
-            return "nonfinite"
-        u = plan.controls
-        if (abs(u[:, 0]) > cap + 1e-4).any() or (abs(u[:, 1]) > 2.4001).any():
-            return "speed_limit"
-        if (
-            abs(u[:, 0, None] + u[:, 1, None] * np.array([-0.188, 0.188])) > 18 * 0.098 + 1e-4
-        ).any():
-            return "wheel_limit"
-        if (
-            abs(np.diff(np.vstack([previous_control, u]), axis=0)) > np.array([0.3001, 0.6001])
-        ).any():
-            return "slew_limit"
-        # Swept check at 0.025 s (not just shooting nodes), also for neighbor crossing.
-        for alpha in np.linspace(0, 1, 9):
-            points = (1 - alpha) * plan.states[:-1, :2] + alpha * plan.states[1:, :2]
-            if not memory.safe(points).all():
-                return "unknown_or_impassable"
-            for neighbor in neighbors:
-                peer = (1 - alpha) * neighbor.positions[:-1] + alpha * neighbor.positions[1:]
-                margin = (1 - alpha) * neighbor.radii[:-1] + alpha * neighbor.radii[1:]
-                # Add a sub-sampling Lipschitz allowance for relative displacement.
-                sweep = (
-                    np.linalg.norm(
-                        np.diff(plan.states[:, :2], axis=0) - np.diff(neighbor.positions, axis=0),
-                        axis=1,
-                    )
-                    / 16
-                )
-                if (np.linalg.norm(points - peer, axis=1) < margin + sweep - 1e-4).any():
-                    return "neighbor_swept_collision"
-        return ""
+        return validate_trajectory(plan, memory, neighbors, cap, previous_control)
 
     def stopped_prefix(
         self, pose, controls, memory, neighbors, cap, previous_control, now, deadline
     ):
-        """Retain optimized controls only; append a rate-limited, validated stop.
-
-        This neither searches for a new goal nor silently substitutes a route.
-        Validate the complete horizon including the stationary tail and peers.
-        """
-        for length in range(N - 1, 0, -1):
-            if time.monotonic() >= deadline:
-                break
-            candidate = controls.copy()
-            last = candidate[length - 1].copy()
-            for k in range(length, N):
-                last = last + np.clip(-last, [-0.3, -0.6], [0.3, 0.6])
-                candidate[k] = last
-            if np.max(abs(candidate[-1])) > 1e-6:
-                continue
-            trajectory = self.rollout(pose, candidate, memory, now)
-            if not self.validate(trajectory, memory, neighbors, cap, previous_control):
-                return trajectory, length
-        return None, 0
+        return stopped_prefix(pose, controls, memory, neighbors, cap, previous_control,
+                              now, deadline, self.slope_scale)
 
     def configure(self, warm, pose, request, memory, neighbors, previous_control, cap):
         """Refresh terrain parameters from the latest control rollout, not stale shooting nodes."""
@@ -397,3 +333,84 @@ def track_trajectory(pose, trajectory):
     forward = error[0] * np.cos(pose[2]) + error[1] * np.sin(pose[2])
     lateral = -error[0] * np.sin(pose[2]) + error[1] * np.cos(pose[2])
     return np.array([v + forward, w + 2 * wrap(error[2]) + np.sign(v) * lateral])
+
+
+class NMPCRecoveryPlanner(NMPCPlanner):
+    """Bounded cold/short-reference recovery, with unchanged hard constraints.
+
+    The short reference changes the cost target only; exports still require the
+    original speed cap, local terrain, neighbors and execution-limit checks.
+    """
+    recovery_version = "bounded_recovery_v3"
+    adaptive_reference = False
+
+    def reset(self):
+        super().reset()
+        self.last_diagnostics = {}
+
+    def plan(self, pose, request, memory, neighbors, previous_control, now):
+        from dataclasses import replace
+
+        started = time.monotonic()
+        saved_deadline = self.deadline
+        initial_blocked = self.blocked
+        result, feedback = super().plan(pose, request, memory, neighbors, previous_control, now)
+        self.last_diagnostics = {"version": self.recovery_version, "attempts": [
+            {"source": "warm", "solver_status": feedback.solver_status, "reason": feedback.reason}]}
+        delta = request.target[:2] - pose[:2]
+        if request.speed_cap < .05 or np.linalg.norm(delta) < .2:
+            return result, feedback
+        if not feedback.reason and np.max(abs(result.controls[0])) > 1e-5:
+            return result, feedback
+        safe_previous = self.previous
+        total_passes = feedback.solver_passes
+        references = (("cold_goal", np.linalg.norm(delta)), ("cold_short_reference", .4))
+        if self.adaptive_reference:
+            references = (("cold_goal", np.linalg.norm(delta)),
+                          ("cold_short_reference", min(.4, np.linalg.norm(delta)/2)),
+                          ("cold_near_reference", min(.1, np.linalg.norm(delta)/4)))
+        for source, distance in references:
+            remaining = saved_deadline - (time.monotonic() - started)
+            if remaining <= 0:
+                break
+            self.previous = None
+            if self.adaptive_reference:
+                self.blocked = initial_blocked
+            self.solver.reset()
+            self.deadline = remaining
+            target = request.target.copy()
+            target[:2] = pose[:2] + delta * min(1., distance / np.linalg.norm(delta))
+            intermediate = replace(request, target=target)
+            try:
+                candidate, candidate_feedback = super().plan(
+                    pose, intermediate, memory, neighbors, previous_control, now)
+            finally:
+                self.deadline = saved_deadline
+            total_passes += candidate_feedback.solver_passes
+            self.last_diagnostics["attempts"].append({"source": source,
+                "reference_xy": target[:2].tolist(), "solver_status": candidate_feedback.solver_status,
+                "reason": candidate_feedback.reason})
+            if (not candidate_feedback.emergency_brake and not candidate_feedback.reason
+                and not self.validate(candidate, memory, neighbors, request.speed_cap, previous_control)
+                and np.max(abs(candidate.controls[0])) > 1e-5):
+                result, feedback = candidate, candidate_feedback
+                self.last_diagnostics["selected"] = source
+                break
+            self.previous = safe_previous
+        else:
+            self.previous = safe_previous
+        if "selected" not in self.last_diagnostics:
+            self.previous = safe_previous
+            self.last_diagnostics["selected"] = "original_fallback"
+            if self.adaptive_reference:
+                self.blocked = initial_blocked+DT
+        if self.adaptive_reference:
+            feedback.blocked_seconds = self.blocked
+        feedback.solver_passes = total_passes
+        feedback.solve_seconds = time.monotonic() - started
+        return result, feedback
+
+
+class NMPCAdaptiveRecoveryPlanner(NMPCRecoveryPlanner):
+    recovery_version = "bounded_recovery_v4"
+    adaptive_reference = True

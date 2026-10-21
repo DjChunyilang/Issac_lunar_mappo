@@ -1,0 +1,8 @@
+# GPU planner only; sensing, proxy execution and OSQP remain on the CPU.
+extends: t10_gathering_no_learning.yaml
+experiment:
+  name: t10_gathering_no_learning_cuda
+local_goal:
+  planner_device: cuda
+  mppi_query_chunk: 1024
+  training_paused: true

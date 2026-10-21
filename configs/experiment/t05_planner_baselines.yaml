@@ -1,0 +1,8 @@
+# Unified native/intent baseline diagnostics; no training.
+extends: t04_polar_hold.yaml
+experiment:
+  name: t05_planner_baselines
+local_goal:
+  planner_adapter: nmpc_polar_v1
+  planner_revision: prefix_consistency_v2
+  training_paused: true

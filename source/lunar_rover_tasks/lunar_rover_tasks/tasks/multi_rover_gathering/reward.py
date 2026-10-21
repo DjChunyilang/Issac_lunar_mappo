@@ -385,3 +385,68 @@ def compute_reward(
         ),
         mean_oracle_distance,
     )
+
+def finite_task_potentials(metrics, flatness_cost, hold_count, cfg):
+    """Reward potentials only; privileged task state never enters the Actor."""
+    coeff, thresholds = cfg.reward_coefficients, cfg.success_thresholds
+    dmax_gap = torch.relu(metrics.dmax - thresholds.dmax)
+    dispersion_gap = torch.relu(metrics.dispersion - thresholds.dispersion)
+    flat_gap = compute_centroid_flatness_activation(metrics.dmax, cfg) * torch.relu(
+        flatness_cost - 1.0
+    )
+    hold_ratio = (hold_count.float() / max(thresholds.hold_steps, 1)).clamp(0, 1)
+    return {
+        "gather": -coeff.dmax_progress * dmax_gap - coeff.dispersion_progress * dispersion_gap,
+        "flatness": -coeff.centroid_flatness_progress * flat_gap,
+        "success_hold": -coeff.success_hold_step * (1.0 - hold_ratio),
+    }
+
+
+def apply_finite_task_reward(
+    terms,
+    previous,
+    current,
+    previous_flat_cost,
+    flat_cost,
+    previous_hold,
+    hold,
+    done,
+    cfg,
+    *,
+    gamma=0.99,
+):
+    """Replace legacy progress/dwell/terminal terms; preserve physical cost scales.
+
+    Called once per executed low-level step. Macro aggregation must not apply
+    another potential difference. Invalid transitions carry zero learning reward.
+    """
+    from .termination import TerminalReason
+
+    before = finite_task_potentials(previous, previous_flat_cost, previous_hold, cfg)
+    after = finite_task_potentials(current, flat_cost, hold, cfg)
+    for key in before:
+        tail = torch.where(done.terminated, torch.zeros_like(after[key]), after[key])
+        setattr(terms, key, gamma * tail - before[key])
+    coeff, weights, thresholds = cfg.reward_coefficients, cfg.reward_weights, cfg.success_thresholds
+    terms.gather -= coeff.dmax_level * torch.relu(
+        current.dmax - thresholds.dmax
+    ) + coeff.dispersion_level * torch.relu(current.dispersion - thresholds.dispersion)
+    terms.flatness -= coeff.centroid_flatness_excess * (
+        compute_centroid_flatness_activation(current.dmax, cfg) * torch.relu(flat_cost - 1.0)
+    )
+    reason = done.terminal_reason
+    terms.terminal = (
+        (reason == TerminalReason.SUCCESS).float() * coeff.success_bonus
+        - ((reason == TerminalReason.COLLISION) | (reason == TerminalReason.OUT_OF_BOUNDS)).float()
+        * coeff.failure_penalty
+        - (reason == TerminalReason.TASK_DEADLINE).float() * coeff.timeout_penalty
+    )
+    total = torch.zeros_like(terms.total)
+    for key in terms.__dataclass_fields__:
+        if key == "total":
+            continue
+        value = torch.where(done.learning_valid, getattr(terms, key), 0.0)
+        setattr(terms, key, value)
+        total += value * (1.0 if key == "success_hold" else getattr(weights, key))
+    terms.total = total
+    return terms

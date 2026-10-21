@@ -1,0 +1,6 @@
+extends: t10_memory_repair_cuda_v4.yaml
+experiment:
+  name: t10_local_site_repair_v3
+local_goal:
+  no_learning_script: leader_local_site_v3
+  training_paused: true

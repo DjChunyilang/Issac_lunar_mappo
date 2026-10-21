@@ -1,0 +1,10 @@
+# Full 144-episode no-learning matrix, gated by the new CUDA evidence.
+extends: t10_gathering_no_learning.yaml
+experiment:
+  name: t10_gathering_no_learning_cuda_v2
+local_goal:
+  planner_adapter: mppi_terrain_neighbor_stable_v2
+  planner_revision: mppi_terrain_neighbor_stable_v2
+  planner_device: cuda
+  mppi_query_chunk: 1024
+  training_paused: true

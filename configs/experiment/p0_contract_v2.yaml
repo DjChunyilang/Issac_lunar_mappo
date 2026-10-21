@@ -1,0 +1,14 @@
+# Contract diagnostics only; formal MAPPO training remains paused.
+extends: exp167_local_goal_nmpc.yaml
+experiment:
+  name: p0_contract_v2
+success_thresholds:
+  dmax: 2.0
+  dispersion: 0.75
+  speed: 0.05
+  angular_speed: 0.1
+  hold_steps: 25
+local_goal:
+  task_contract_version: finite_task_v2
+  observation_version: local_goal_clock_v2
+  training_paused: true

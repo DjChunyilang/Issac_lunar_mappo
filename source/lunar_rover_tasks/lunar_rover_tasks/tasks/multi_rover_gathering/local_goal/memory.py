@@ -7,10 +7,16 @@ from scipy.spatial import cKDTree
 
 
 class LocalTerrainMemory:
-    def __init__(self, capacity=4096, resolution=0.1, support_radius=0.155):
+    def __init__(self, capacity=4096, resolution=0.1, support_radius=0.155,
+                 version="quantized_latest_v1"):
+        if version not in ("quantized_latest_v1", "direct_batch_v2", "direct_batch_v3"):
+            raise ValueError("Unsupported local terrain memory version")
+        if capacity <= 0 or not np.isfinite([resolution, support_radius]).all() or min(resolution, support_radius) <= 0:
+            raise ValueError("Invalid local terrain memory bounds")
         self.capacity = capacity
         self.resolution = resolution
         self.support_radius = support_radius
+        self.version = version
         self.reset()
 
     def reset(self):
@@ -30,6 +36,8 @@ class LocalTerrainMemory:
 
     def observe(self, xy, features, timestamp):
         # Only caller-supplied direct observations enter this collection.
+        if getattr(self, "version", "quantized_latest_v1") in ("direct_batch_v2", "direct_batch_v3"):
+            return self._observe_direct_batch(xy, features, timestamp)
         for point, feature in zip(xy, features):
             key = tuple(np.rint(point / self.resolution).astype(int))
             slot = self.samples.pop(key, None)
@@ -42,6 +50,62 @@ class LocalTerrainMemory:
             self._xy[slot] = point
             self._features[slot] = feature
             self._timestamps[slot] = timestamp
+        self.tree = cKDTree(self.xy) if len(self.samples) else None
+
+    def _observe_direct_batch(self, xy, features, timestamp):
+        """Replace touched indexing cells with ALL their current direct samples.
+
+        A cell is only an indexing/eviction unit, never a measurement location.
+        Distinct positions in one cell survive; exact duplicate positions merge
+        safety attributes conservatively. No support radius is enlarged.
+        """
+        xy, features = np.asarray(xy, float), np.asarray(features, float)
+        if xy.ndim != 2 or xy.shape[1:] != (2,) or features.shape != (len(xy), 5):
+            raise ValueError("Invalid direct terrain observation shape")
+        if not np.isfinite(xy).all() or not np.isfinite(features).all() or not np.isfinite(timestamp):
+            raise ValueError("Nonfinite direct terrain observation")
+        fresh = OrderedDict()
+        cells = set()
+        for point, feature in zip(xy, features):
+            cell = tuple(np.rint(point / self.resolution).astype(int))
+            cells.add(cell)
+            key = (*cell, float(point[0]), float(point[1]))
+            if key in fresh:
+                merged = fresh[key][1].copy()
+                if np.linalg.norm(feature[1:3]) > np.linalg.norm(merged[1:3]):
+                    merged[1:3] = feature[1:3]
+                merged[4] = min(merged[4], feature[4])
+                merged[0] = feature[0]
+                fresh[key] = (point.copy(), merged, float(timestamp))
+            else:
+                fresh[key] = (point.copy(), feature.copy(), float(timestamp))
+        if len(fresh) > self.capacity:
+            raise ValueError("Memory capacity cannot retain a complete direct observation batch")
+        preserve_hazards = self.version == "direct_batch_v3"
+        rows = OrderedDict((key, (self._xy[slot].copy(), self._features[slot].copy(),
+                                 float(self._timestamps[slot])))
+                           for key, slot in self.samples.items() if key[:2] not in cells or
+                           (preserve_hazards and (self._features[slot, 4] < .25 or
+                             np.linalg.norm(self._features[slot, 1:3]) > .8)))
+        if preserve_hazards:
+            for key in fresh.keys() & rows.keys():
+                point, feature, observed = fresh[key]
+                previous = rows[key][1]
+                if np.linalg.norm(previous[1:3]) > np.linalg.norm(feature[1:3]):
+                    feature[1:3] = previous[1:3]
+                feature[4] = min(feature[4], previous[4])
+                fresh[key] = point, feature, observed
+            # Reobserved hazards are current direct samples too; refresh their
+            # LRU position before capacity eviction so the whole batch survives.
+            for key in fresh:
+                rows.pop(key, None)
+        rows.update(fresh)
+        while len(rows) > self.capacity:
+            rows.popitem(last=False)
+        self.samples = OrderedDict()
+        for slot, (key, (point, feature, observed)) in enumerate(rows.items()):
+            self.samples[key] = slot
+            self._xy[slot], self._features[slot], self._timestamps[slot] = point, feature, observed
         self.tree = cKDTree(self.xy) if len(self.samples) else None
 
     def lookup(self, xy):

@@ -1,0 +1,21 @@
+# CPU correctness first; CUDA validation explicitly deferred.
+extends: t04_polar_hold.yaml
+experiment:
+  name: t06_mppi_base
+local_goal:
+  planner_adapter: mppi_base_v1
+  planner_revision: mppi_base_v1
+  planner_device: cpu
+  planner_seed: 23
+  mppi_samples: 512
+  mppi_iterations: 2
+  mppi_temperature: 1.0
+  mppi_noise_v: 0.35
+  mppi_noise_w: 0.7
+  mppi_query_chunk: 256
+  mppi_terrain_cost: false
+  mppi_neighbor_cost: false
+  mppi_unknown_cost: false
+  mppi_terrain_dynamics: false
+  mppi_deadline_s: null
+  training_paused: true

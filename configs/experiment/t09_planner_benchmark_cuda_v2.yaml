@@ -1,0 +1,10 @@
+# Seven-setting full benchmark: GPU MPPI, CPU deterministic/47/NMPC baselines.
+extends: t09_planner_benchmark.yaml
+experiment:
+  name: t09_planner_benchmark_cuda_v2
+local_goal:
+  planner_adapter: mppi_terrain_neighbor_stable_v2
+  planner_revision: mppi_terrain_neighbor_stable_v2
+  planner_device: cuda
+  mppi_query_chunk: 1024
+  training_paused: true

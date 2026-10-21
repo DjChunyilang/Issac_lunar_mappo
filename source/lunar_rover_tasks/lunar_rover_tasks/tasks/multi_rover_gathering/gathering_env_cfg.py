@@ -376,6 +376,40 @@ class SuccessThresholdsCfg:
     speed: float = 0.25
     hold_steps: int = 8
     min_pairwise_distance: float = 0.0
+    # Used only by the opt-in finite task contract; legacy gates remain unchanged.
+    angular_speed: float = 0.1
+
+
+@dataclass(slots=True)
+class LocalGoalContractCfg:
+    task_contract_version: str = "legacy_v1"
+    observation_version: str = "local_goal_v1"
+    planner_revision: str = "prefix_consistency_v2"
+    training_paused: bool = False
+    planner_protocol: str = "legacy_direct"
+    planner_adapter: str = "nmpc_bridge_v1"
+    action_version: str = "local_goal_request_v1"
+    rho_max: float = 1.6
+    beta_max: float = pi
+    planner_device: str = "cpu"
+    planner_seed: int = 23
+    mppi_samples: int = 512
+    mppi_iterations: int = 2
+    mppi_temperature: float = 1.0
+    mppi_noise_v: float = 0.35
+    mppi_noise_w: float = 0.7
+    mppi_query_chunk: int = 256
+    mppi_terrain_cost: bool = True
+    mppi_neighbor_cost: bool = True
+    mppi_unknown_cost: bool = True
+    mppi_terrain_dynamics: bool = True
+    mppi_deadline_s: float | None = None
+    safety_projection: str = "disabled"
+    safety_deadline_s: float | None = None
+    nmpc_deadline_s: float = 0.15
+    no_learning_script: str = "disabled"
+    terrain_memory_version: str = "quantized_latest_v1"
+    diagnostic_nmpc_adapter: str = "nmpc_polar_v1"
 
 
 @dataclass(slots=True)
@@ -487,6 +521,7 @@ class StateCfg:
 
 @dataclass(slots=True)
 class MultiRoverGatheringEnvCfg:
+    local_goal_contract: LocalGoalContractCfg = field(default_factory=LocalGoalContractCfg)
     simulation: SimulationCfg = field(default_factory=SimulationCfg)
     task: TaskCfg = field(default_factory=TaskCfg)
     initial_state: InitialStateCfg = field(default_factory=InitialStateCfg)

@@ -1,0 +1,7 @@
+# Independent memory repair. Old T10/CUDA configurations keep v1 semantics.
+extends: t10_gathering_no_learning_cuda_v2.yaml
+experiment:
+  name: t10_memory_repair_cuda_v3
+local_goal:
+  terrain_memory_version: direct_batch_v2
+  training_paused: true

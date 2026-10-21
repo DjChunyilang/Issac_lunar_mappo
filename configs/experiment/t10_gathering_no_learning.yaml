@@ -1,0 +1,8 @@
+extends: t09_planner_benchmark.yaml
+experiment:
+  name: t10_gathering_no_learning
+  num_envs: 2
+local_goal:
+  no_learning_script: leader_slot_v1
+  mppi_samples: 512
+  training_paused: true

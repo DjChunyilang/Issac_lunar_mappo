@@ -1,0 +1,8 @@
+# Independent GPU diagnostics; historical CPU configuration stays frozen.
+extends: t07_mppi_terrain_neighbor.yaml
+experiment:
+  name: t07_mppi_terrain_neighbor_cuda
+local_goal:
+  planner_device: cuda
+  mppi_query_chunk: 1024
+  training_paused: true

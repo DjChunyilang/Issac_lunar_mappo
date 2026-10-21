@@ -220,7 +220,8 @@ def test_enhanced_pack_serializes_and_records_native_scale_change(source, tmp_pa
     assert np.isfinite(scene.meta["enhancement_diagnostics"]["native_area_mean_residual_rms_m"])
 
 
-def test_local_goal_new_channels_checkpoint_and_unknown_memory(source, tmp_path):
+@pytest.mark.parametrize("finite_task", [False, True, "hybrid"])
+def test_local_goal_new_channels_checkpoint_and_unknown_memory(source, tmp_path, finite_task):
     import io
 
     from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal.environment import (
@@ -242,18 +243,35 @@ def test_local_goal_new_channels_checkpoint_and_unknown_memory(source, tmp_path)
         def solve(self):
             return 4
 
+    hybrid = finite_task == "hybrid"
+    finite_task = bool(finite_task)
     c = raster_cfg(pack(source, tmp_path))
     c.safety.collision_termination_enabled = True
     for k in ("oracle", "motion", "consistency", "active_dstc"):
         setattr(c.reward_weights, k, 0)
+    if finite_task:
+        c.local_goal_contract.task_contract_version = "finite_task_v2"
+        c.local_goal_contract.observation_version = "local_goal_clock_v2"
+    if hybrid:
+        c.local_goal_contract.action_version = "polar_hold_v2"
+        c.local_goal_contract.observation_version = "local_intent_clock_v3"
+        c.local_goal_contract.planner_protocol = "planner_protocol_v1"
+        c.local_goal_contract.training_paused = True
     c.terrain.local_memory_resolution_m = 0.2
     c.terrain.local_memory_support_radius_m = 0.155
     env = LocalGoalEnvironment(c, tmp_path, solver_factory=lambda *a, **kw: FailureInjection())
     try:
         obs, state = env.observe()
-        assert obs.shape == (2, 4, 522)
-        policy = RecurrentPolicy(state.shape[-1], terrain_channels=3)
-        action, _, _, _ = policy.sample(obs, torch.zeros(2, 4, 128), deterministic=True)
+        assert obs.shape == (2, 4, 522 + int(finite_task))
+        assert state.shape[-1] == c.critic_state_dim + 40 + int(finite_task)
+        policy = RecurrentPolicy(
+            state.shape[-1],
+            terrain_channels=3,
+            observation_version=c.local_goal_contract.observation_version,
+            action_version=c.local_goal_contract.action_version,
+        )
+        sampled = policy.sample(obs, torch.zeros(2, 4, 128), deterministic=True)
+        action = sampled.action if hybrid else sampled[0]
         out = env.step(action, max_low_steps=1)
         assert torch.isfinite(out.reward).all()
         saved = env.state_dict()

@@ -1,0 +1,10 @@
+# CUDA MPPI with the existing CPU proxy safety projector.
+extends: t08_safety_projection.yaml
+experiment:
+  name: t08_safety_projection_cuda_v2
+local_goal:
+  planner_adapter: mppi_terrain_neighbor_stable_v2
+  planner_revision: mppi_terrain_neighbor_stable_v2
+  planner_device: cuda
+  mppi_query_chunk: 1024
+  training_paused: true

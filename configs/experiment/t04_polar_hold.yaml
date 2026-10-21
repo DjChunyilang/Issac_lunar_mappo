@@ -1,0 +1,10 @@
+# Conditional action/probability diagnostics only; MOVE-to-NMPC adaptation awaits T05.
+extends: t03_planner_protocol.yaml
+experiment:
+  name: t04_polar_hold
+local_goal:
+  action_version: polar_hold_v2
+  observation_version: local_intent_clock_v3
+  rho_max: 1.6
+  beta_max: 3.141592653589793
+  training_paused: true

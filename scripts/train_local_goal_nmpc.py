@@ -14,6 +14,7 @@ import time
 from collections import Counter
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 # Must precede numerical-library imports. acados itself is built without OpenMP.
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -25,23 +26,110 @@ import yaml
 from _common import ROOT, cfg_from_experiment, load_yaml
 from generate_exp156_scenario_manifest import DISTANCES, TOPOLOGIES, scenario_snapshot
 from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal import VERSION
+from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import LocalGoalContractCfg
+from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal.contracts import contract_metadata
+from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal.actions import (
+    ACTION_VERSION,
+    ROLLOUT_VERSION,
+    HybridSample,
+)
+
 from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal.environment import (
     LocalGoalEnvironment,
 )
 from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal.learning import (
     RecurrentPolicy,
     ppo_update,
+    bootstrap_values,
 )
 
 
-def implementation_hash():
-    directory = (
-        ROOT / "source/lunar_rover_tasks/lunar_rover_tasks/tasks/multi_rover_gathering/local_goal"
+def implementation_sources():
+    # Include shared reward/termination/communication/configuration dependencies,
+    # not only local_goal/*.py. AST hashing ignores documentation-only edits.
+    package = ROOT / "source/lunar_rover_tasks/lunar_rover_tasks"
+    return sorted(
+        {
+            Path(__file__),
+            ROOT / "scripts/_common.py",
+            ROOT / "scripts/generate_exp156_scenario_manifest.py",
+            *package.rglob("*.py"),
+        }
     )
-    sources = [Path(__file__), *sorted(directory.glob("*.py"))]
+
+
+def implementation_hash():
     return hashlib.sha256(
-        "\n".join(ast.dump(ast.parse(p.read_text())) for p in sources).encode()
+        "\n".join(
+            str(p.relative_to(ROOT)) + ast.dump(ast.parse(p.read_text()))
+            for p in implementation_sources()
+        ).encode()
     ).hexdigest()
+
+
+def validate_checkpoint_contract(checkpoint, contracts):
+    saved = checkpoint.get("contracts")
+    if saved != contracts and (
+        saved is not None or contracts["task_contract_version"] != "legacy_v1"
+    ):
+        raise ValueError("Checkpoint task/observation/action/planner contract mismatch")
+
+
+def validate_training_gate(raw, *, evaluate_only=False):
+    if "upstream_scale" in raw:
+        raise ValueError("Upstream scale diagnostics only: legacy training/evaluation is paused; use audit_upstream_scale.py")
+    local = raw.get("local_goal", {})
+    if not evaluate_only and (
+        local.get("training_paused", False)
+        or local.get("task_contract_version") == "finite_task_v2"
+    ):
+        raise ValueError("P0 contract diagnostics only: formal MAPPO training remains paused")
+
+
+def resolved_contracts(raw):
+    local = raw.get("local_goal", {})
+    cfg = LocalGoalContractCfg(
+        **{k: local[k] for k in LocalGoalContractCfg.__dataclass_fields__ if k in local}
+    )
+    return contract_metadata(SimpleNamespace(local_goal_contract=cfg))
+
+
+def validate_evaluation_gate(raw):
+    if resolved_contracts(raw)["action_version"] == ACTION_VERSION:
+        raise ValueError(
+            "T04 MOVE-to-NMPC adaptation awaits T05; use audit_polar_hold.py for contract checks"
+        )
+
+
+def build_policy(env, device="cpu"):
+    _, state = env.observe()
+    return RecurrentPolicy(
+        state.shape[-1],
+        terrain_channels=env.terrain_channels,
+        observation_version=env.contracts["observation_version"],
+        action_version=env.contracts["action_version"],
+        rho_max=env.contracts.get("rho_max", 1.6),
+        beta_max=env.contracts.get("beta_max", np.pi),
+    ).to(device)
+
+
+def sample_for_rollout(policy, obs, hidden):
+    sample = policy.sample(obs, hidden)
+    if policy.action_version == ACTION_VERSION:
+        if not isinstance(sample, HybridSample):
+            raise ValueError("Hybrid policy must return a structured sample")
+        if sample.rollout_version != ROLLOUT_VERSION or sample.action.version != ACTION_VERSION:
+            raise ValueError("Hybrid sample version mismatch")
+        return sample.action.numpy(), sample.hidden, sample.rollout_fields()
+    action, latent, log, following_hidden = sample
+    return action.detach().cpu().numpy(), following_hidden, {"latent": latent, "log_prob": log}
+
+
+def stack_rollout(rows, policy):
+    batch = {key: torch.stack([row[key] for row in rows]) for key in rows[0]}
+    if policy.action_version == ACTION_VERSION:
+        batch["rollout_version"] = ROLLOUT_VERSION
+    return batch
 
 
 def write_json(path, payload):
@@ -105,6 +193,7 @@ def evaluate(policy, raw, run, cache, phase, episodes_per_cell):
 
 
 def _evaluate(policy, raw, run, cache, phase, episodes_per_cell):
+    validate_evaluation_gate(raw)
     if raw.get("terrain", {}).get("type") == "lunar_scene_pack":
         raise ValueError("Legacy six-cell synthetic evaluation cannot evaluate real scene packs")
     policy_device = next(policy.parameters()).device
@@ -117,6 +206,9 @@ def _evaluate(policy, raw, run, cache, phase, episodes_per_cell):
     report = {
         "version": VERSION,
         "phase": phase,
+        "implementation_sha256": implementation_hash(),
+        "config_sha256": hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest(),
+        "contracts": resolved_contracts(raw),
         "policy_sha256": policy_hash,
         "episodes_per_cell": episodes_per_cell,
         "cells": {},
@@ -124,7 +216,10 @@ def _evaluate(policy, raw, run, cache, phase, episodes_per_cell):
     if report_path.exists():
         previous = json.loads(report_path.read_text())
         if (
-            previous.get("policy_sha256") == policy_hash
+            previous.get("implementation_sha256") == report["implementation_sha256"]
+            and previous.get("config_sha256") == report["config_sha256"]
+            and previous.get("contracts") == report["contracts"]
+            and previous.get("policy_sha256") == policy_hash
             and previous["episodes_per_cell"] == episodes_per_cell
         ):
             report = previous
@@ -246,6 +341,9 @@ def main():
     torch.manual_seed(23)
     np.random.seed(23)
     raw = load_yaml(args.config)
+    validate_training_gate(raw, evaluate_only=args.evaluate_only)
+    if args.evaluate_only:
+        validate_evaluation_gate(raw)
     if raw.get("terrain", {}).get("type") == "lunar_scene_pack":
         raise ValueError(
             "Real-map learning remains paused; use benchmark_lunar_training_maps.py for no-learning checks. A real-map evaluation protocol and budget must be implemented before this training entry is enabled."
@@ -282,9 +380,7 @@ def main():
     cache = ROOT / ".venv_isaaclab" / "local_goal_solver_v1"
     env = LocalGoalEnvironment(cfg, cache, policy_device=policy_device)
     obs, state = env.observe()
-    policy = RecurrentPolicy(state.shape[-1], terrain_channels=env.terrain_channels).to(
-        policy_device
-    )
+    policy = build_policy(env, policy_device)
     optimizer = torch.optim.Adam(policy.parameters(), lr=raw["algorithm"]["learning_rate"])
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
     interactions, elapsed, updates = 0, 0.0, 0
@@ -300,6 +396,7 @@ def main():
             raise ValueError(
                 "Implementation changed since checkpoint: do not silently mix algorithm versions"
             )
+        validate_checkpoint_contract(checkpoint, env.contracts)
         policy.load_state_dict(checkpoint["policy"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
@@ -328,6 +425,7 @@ def main():
         "device": str(policy_device),
         "solver_device": "cpu",
         "terrain_contract": env.terrain_contract(),
+        "contracts": env.contracts,
         "torch": torch.__version__,
         "config": "config/experiment.yaml",
         "checkpoint": "checkpoints/latest.pt",
@@ -348,21 +446,38 @@ def main():
         evaluate(policy, raw, run, cache, "after", args.eval_episodes)
         return
     baseline_path = run / "metrics" / "baseline_eval.json"
+    baseline = json.loads(baseline_path.read_text()) if baseline_path.exists() else {}
     baseline_complete = (
-        baseline_path.exists() and len(json.loads(baseline_path.read_text()).get("cells", {})) == 6
+        len(baseline.get("cells", {})) == 6
+        and baseline.get("implementation_sha256") == code_hash
+        and baseline.get("contracts") == env.contracts
+        and baseline.get("config_sha256")
+        == hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()
     )
     if not args.skip_eval and not baseline_complete:
         initial_path = run / "checkpoints" / "initial.pt"
         if not initial_path.exists():
             torch.save(
-                {"version": VERSION, "policy": policy.state_dict(), "config": raw}, initial_path
+                {
+                    "version": VERSION,
+                    "policy": policy.state_dict(),
+                    "config": raw,
+                    "contracts": env.contracts,
+                    "implementation_sha256": code_hash,
+                },
+                initial_path,
             )
         saved_training_rng = torch.get_rng_state()
         saved_cuda_rng = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
-        initial_policy = RecurrentPolicy(state.shape[-1], terrain_channels=env.terrain_channels).to(
-            policy_device
-        )
-        initial_policy.load_state_dict(torch.load(initial_path, weights_only=False)["policy"])
+        initial_policy = build_policy(env, policy_device)
+        initial_checkpoint = torch.load(initial_path, weights_only=False)
+        validate_checkpoint_contract(initial_checkpoint, env.contracts)
+        if (
+            initial_checkpoint.get("config") != raw
+            or initial_checkpoint.get("implementation_sha256") != code_hash
+        ):
+            raise ValueError("Initial checkpoint configuration/implementation mismatch")
+        initial_policy.load_state_dict(initial_checkpoint["policy"])
         # Construction itself consumes RNG; preserve the exact training stream.
         evaluate(initial_policy, raw, run, cache, "before", args.eval_episodes)
         torch.set_rng_state(saved_training_rng)
@@ -380,28 +495,32 @@ def main():
             if remaining < env.e or time.monotonic() >= deadline:
                 break
             with torch.no_grad():
-                action, latent, log, following_hidden = policy.sample(obs, hidden)
+                action, following_hidden, sampled_fields = sample_for_rollout(policy, obs, hidden)
                 value = policy.value(state)
             step = env.step(
-                action.detach().cpu().numpy(),
+                action,
                 max_low_steps=min(5, remaining // env.e),
                 deadline=deadline,
             )
             with torch.no_grad():
-                terminal_value = policy.value(step.terminal_critic)
+                terminal_value = bootstrap_values(
+                    policy, step.terminal_critic, step.bootstrap_allowed & step.learning_valid
+                )
             buffer.append(
                 {
                     "obs": obs,
                     "state": state,
                     "hidden": hidden,
-                    "latent": latent,
-                    "log_prob": log,
+                    **sampled_fields,
                     "value": value,
                     "next_value": terminal_value,
                     "reward": step.reward,
                     "duration": step.duration,
                     "terminated": step.terminated,
                     "truncated": step.truncated,
+                    "terminal_reason": step.terminal_reason,
+                    "bootstrap_allowed": step.bootstrap_allowed,
+                    "learning_valid": step.learning_valid,
                 }
             )
             hidden = following_hidden
@@ -416,7 +535,7 @@ def main():
                         stream.write(json.dumps(record) + "\n")
         if not buffer:
             break
-        batch = {key: torch.stack([row[key] for row in buffer]) for key in buffer[0]}
+        batch = stack_rollout(buffer, policy)
         losses = ppo_update(
             policy,
             optimizer,
@@ -431,6 +550,7 @@ def main():
         env.metrics.clear()
         consumed = elapsed + time.monotonic() - training_start
         checkpoint = {
+            "contracts": env.contracts,
             "version": VERSION,
             "implementation_sha256": code_hash,
             "config": raw,
