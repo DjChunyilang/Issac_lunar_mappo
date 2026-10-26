@@ -9,13 +9,13 @@ from .upstream_spec import UpstreamSpec
 
 TASK_VERSION = "finite_task_upstream_v1"
 STATE_VERSION = "upstream_task_state_v1"
-REASONS = {"none", "environment_invalid", "collision", "out_of_bounds", "success", "task_deadline"}
+REASONS = {"none", "environment_invalid", "collision", "out_of_bounds", "success", "task_deadline", "terrain_failure"}
 
 
 class UpstreamTask:
     """Task evaluation may see actual team state; it is never a planner input."""
 
-    def __init__(self, spec, num_envs, episode_seconds=360.):
+    def __init__(self, spec, num_envs, episode_seconds=360., *, terrain_failure_terminal=False):
         if type(spec) is not UpstreamSpec:
             raise ValueError("Actual task requires an immutable upstream profile")
         if type(num_envs) is not int or num_envs < 1:
@@ -26,6 +26,7 @@ class UpstreamTask:
         if not np.isfinite(limits).all() or (limits <= 0).any():
             raise ValueError("Invalid finite task deadline")
         self.spec, self.num_envs, self.deadlines = spec, num_envs, limits
+        self.terrain_failure_terminal = terrain_failure_terminal
         self.hold_steps = round(spec.task.hold_duration / spec.grid.dt)
         self._count = np.zeros(num_envs, dtype=np.int64)
         self._anchors = np.full((num_envs, 4, 3), np.nan)
@@ -34,11 +35,11 @@ class UpstreamTask:
 
     @property
     def metadata(self):
-        return {"task_version": TASK_VERSION, "state_version": STATE_VERSION,
+        return {**({"terrain_failure_semantics":"known_terrain_terminal_v1"} if self.terrain_failure_terminal else {}), "task_version": TASK_VERSION, "state_version": STATE_VERSION,
                 "profile_fingerprint": self.spec.fingerprint, "num_envs": self.num_envs,
                 "episode_seconds": self.deadlines.tolist(), "hold_steps": self.hold_steps}
 
-    def advance(self, poses, actual_velocity, parking_reports, times, *, environment_valid=None, active_envs=None):
+    def advance(self, poses, actual_velocity, parking_reports, times, *, environment_valid=None, active_envs=None, terrain_failed=None):
         shape = (self.num_envs, 4)
         poses, speed, times = np.asarray(poses, float), np.asarray(actual_velocity, float), np.asarray(times, float)
         if poses.shape != (*shape, 3) or speed.shape != (*shape, 2) or times.shape != (self.num_envs,):
@@ -62,6 +63,9 @@ class UpstreamTask:
             raise ValueError("Continuous task hold requires one actual control step")
         finite = np.isfinite(poses).all((1, 2)) & np.isfinite(speed).all((1, 2))
         valid = valid & finite
+        failed = np.zeros(self.num_envs, bool) if terrain_failed is None else np.asarray(terrain_failed)
+        if failed.shape != valid.shape or failed.dtype != bool or (failed.any() and not self.terrain_failure_terminal):
+            raise ValueError('Known-terrain task failures require the explicit terminal semantics')
         clean = np.where(finite[:, None, None], poses, 0.)
         velocity = np.where(finite[:, None, None], speed, 0.)
         center = clean[..., :2].mean(1)
@@ -88,7 +92,7 @@ class UpstreamTask:
             and 0 <= r.roughness_rms <= self.spec.terrain.roughness_rms + 1e-8
             and 0 <= r.maximum_step <= self.spec.terrain.step_height + 1e-8
             and r.minimum_body_clearance >= -1e-8 for r in row] for row in parking_reports]).all(-1)
-        instant = valid & ~collision & ~outside & clearance & containment & stopped & terrain
+        instant = valid & ~failed & ~collision & ~outside & clearance & containment & stopped & terrain
         instant &= (dmax <= task.dmax + 1e-10) & (dispersion <= task.dispersion + 1e-10)
         count, anchors, reasons = self._count.copy(), self._anchors.copy(), self._reason.copy()
         drift_broken = np.zeros(self.num_envs, bool)
@@ -107,6 +111,7 @@ class UpstreamTask:
             if not valid[env]:reasons[env] = "environment_invalid"
             elif collision[env]:reasons[env] = "collision"
             elif outside[env]:reasons[env] = "out_of_bounds"
+            elif failed[env]:reasons[env] = "terrain_failure"
             elif count[env] >= self.hold_steps:reasons[env] = "success"
             elif times[env] >= self.deadlines[env] - 1e-10:reasons[env] = "task_deadline"
         self._count, self._anchors, self._reason = count, anchors, reasons
@@ -142,12 +147,12 @@ class UpstreamTask:
             raise ValueError("Invalid task snapshot shapes")
         if not np.isfinite(times).all() or (times < 0).any() or not np.allclose(times / self.spec.grid.dt, np.round(times / self.spec.grid.dt), atol=1e-8, rtol=0):
             raise ValueError("Invalid restored actual task time")
-        if any(x not in REASONS for x in reason) or not np.isfinite(anchors[count > 0]).all() or not np.isnan(anchors[count == 0]).all():
+        if any(x not in REASONS or (x == "terrain_failure" and not self.terrain_failure_terminal) for x in reason) or not np.isfinite(anchors[count > 0]).all() or not np.isnan(anchors[count == 0]).all():
             raise ValueError("Invalid restored task reason/anchors")
         if ((reason == "success") != (count == self.hold_steps)).any() or ((reason == "task_deadline") & (times < self.deadlines - 1e-10)).any():
             raise ValueError("Task reason disagrees with restored hold/time")
         if ((reason == "none") & (times >= self.deadlines - 1e-10)).any() or (times < count * self.spec.grid.dt - 1e-10).any():
             raise ValueError("Impossible restored task time/count")
-        if (np.isin(reason, ["environment_invalid", "collision", "out_of_bounds"]) & (count != 0)).any():
+        if (np.isin(reason, ["environment_invalid", "collision", "out_of_bounds", "terrain_failure"]) & (count != 0)).any():
             raise ValueError("Unsafe terminal state cannot retain a success hold")
         self._count, self._anchors, self._last_time, self._reason = count.copy(), anchors.copy(), times.copy(), reason.copy()

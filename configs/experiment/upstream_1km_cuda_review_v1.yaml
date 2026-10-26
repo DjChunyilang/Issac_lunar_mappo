@@ -1,0 +1,6 @@
+extends: upstream_1km_curriculum_v1.yaml
+experiment:
+  name: upstream_1km_cuda_review_v1
+  training_paused: true
+upstream_scale:
+  review_acceleration_version: cuda_sweep_pose_v1

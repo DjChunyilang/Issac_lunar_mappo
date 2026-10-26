@@ -45,7 +45,7 @@ def renew_legal_bounds(env):
 
 class UpstreamAblationRollout:
     def __init__(self,env,policy,learning_time=None):
-        if type(policy) is not AblationPolicy or policy.critic_dim!=991:
+        if type(policy) is not AblationPolicy or policy.critic_dim!=env.cfg.critic_dim or policy.terrain_channels!=env.cfg.terrain_channels:
             raise ValueError('Actual T11 collector requires the prepared shared backbone')
         expected=(.99,.95) if learning_time is None else learning_time.discounts(env.spec.grid.dt)
         if (env.reward_tracker.settings.gamma,env.reward_tracker.settings.lam)!=expected:
@@ -63,7 +63,7 @@ class UpstreamAblationRollout:
     @property
     def metadata(self):
         result={'collector_version':COLLECTOR_VERSION,'bridge':self.bridge.metadata,
-            'policy':self.policy.diagnostic_metadata,'observation_scope':'actual_dense_private_sensor',
+            'policy':self.policy.diagnostic_metadata,'observation_scope':('actual_incremental_private_grid' if self.env.cfg.obstacle_input is not None else 'actual_dense_private_sensor'),
             'device':str(self.device),'gamma':self.gamma_step,'lambda':self.lambda_step,
             'execution_bound_policy':(LEARNED_BOUND_VERSION if self.env.cfg.motion_lease_version=='braking_clearance_lease_v3'
                                       else 'legal_clearance_lease_upstream_v1'),'formal_training_ready':False}

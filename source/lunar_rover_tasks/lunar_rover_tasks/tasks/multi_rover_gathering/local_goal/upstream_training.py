@@ -15,6 +15,12 @@ from .upstream_ablation_learning import UpstreamAblationRollout
 TRAINER_VERSION='upstream_recurrent_ablation_trainer_v2'
 
 
+def long_training_budget_valid(config, budget):
+    if type(budget) is not int:return False
+    if config['version']=='rendezvous_fixed_lunar_1km_v1':return 0<budget<=2000000
+    return budget in (1000000,2000000)
+
+
 @dataclass(frozen=True)
 class TrainingOptions:
     rollout_macro_steps: int = 128
@@ -72,13 +78,15 @@ class PreparedUpstreamTrainer:
     def metadata(self):
         return {'trainer_version':TRAINER_VERSION,'options':self.options.metadata,'collector':self.collector.metadata}
 
-    def collect(self,macro_steps=None,*,on_chunk=None):
+    def collect(self,macro_steps=None,*,on_chunk=None,chunk_decisions=16):
         remaining=self.options.rollout_macro_steps if macro_steps is None else macro_steps
         if type(remaining) is not int or not 1<=remaining<=self.options.rollout_macro_steps:
             raise ValueError('Requested collection length exceeds the prepared rollout')
+        if type(chunk_decisions) is not int or not 1 <= chunk_decisions <= 16:
+            raise ValueError('Collection logging chunk must be 1 to 16 decisions')
         parts=[];episodes=[];records=[]
         while remaining:
-            length=min(16,remaining);batch,ends,trace=self.collector.collect(length)
+            length=min(chunk_decisions,remaining);batch,ends,trace=self.collector.collect(length)
             parts.append(batch);episodes.extend(ends);records.extend(trace);remaining-=length
             if on_chunk is not None:on_chunk(batch,ends,trace,remaining)
         batch={k:torch.cat([p[k] for p in parts]) for k in parts[0] if torch.is_tensor(parts[0][k])}
@@ -110,9 +118,9 @@ class PreparedUpstreamTrainer:
                 and self.collector.env.e==16 and 0<self.collector.base_steps<=20000)
         curriculum=(readiness.get('schema_version')=='t11_curriculum_readiness_v1'
                 and readiness.get('scope')=='curriculum_1km'
-                and readiness.get('maximum_base_steps') in (1000000,2000000)
                 and readiness.get('curriculum_config') is not None
                 and readiness.get('curriculum_config')==self.collector.metadata.get('curriculum_config')
+                and long_training_budget_valid(readiness['curriculum_config'],readiness.get('maximum_base_steps'))
                 and self.collector.learning_time is not None
                 and readiness.get('learning_time')==self.collector.learning_time.metadata(self.collector.env.spec.grid.dt)
                 and self.collector.env.spec.world_width==1000. and self.collector.env.spec.world_height==1000.

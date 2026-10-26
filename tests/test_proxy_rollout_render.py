@@ -12,6 +12,7 @@ import pytest
 import torch
 import yaml
 from matplotlib.colors import to_rgb
+from PIL import Image, ImageSequence
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -19,6 +20,101 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import render_skrl_proxy_rollout as rollout_render  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    ("max_frames", "expected_indices", "expected_durations_ms"),
+    [(10, [0, 2, 4, 5], [400, 400, 200, 1000]),
+     (3, [0, 4, 5], [800, 200, 1000])],
+)
+def test_saved_evaluation_gif_preserves_elapsed_time_and_endpoints(
+    tmp_path: Path,
+    max_frames: int,
+    expected_indices: list[int],
+    expected_durations_ms: list[int],
+) -> None:
+    history = [np.full((4, 3), step, dtype=float) for step in range(6)]
+    output = tmp_path / "evaluation.gif"
+    drawn_indices = []
+
+    def draw_frame(history, oracle, flatness, step_index, path, *args, **kwargs):
+        drawn_indices.append(step_index)
+        # Distinct images keep the GIF encoder from merging equal frames.
+        Image.new("RGB", (8, 8), (step_index * 40, 20, 30)).save(path)
+
+    terrain = (np.zeros((2, 2)), (-1, 1, -1, 1), (0, 1))
+    with patch.object(rollout_render, "_draw_frame", side_effect=draw_frame):
+        frame_count = rollout_render._save_gif(
+            history, [], [], output,
+            terrain_cfg=None, terrain_runtime=None, footprint_radius=0,
+            capture_interval=2, max_frames=max_frames, duration_s=.2,
+            upstream={"dt": .2, "terrain_grids": [terrain]},
+        )
+
+    assert drawn_indices == expected_indices
+    assert frame_count == len(expected_indices)
+    with Image.open(output) as animation:
+        durations = [frame.info["duration"] for frame in ImageSequence.Iterator(animation)]
+    assert durations == expected_durations_ms
+    assert sum(durations[:-1]) == 1000  # Five executed steps at dt = 0.2 s.
+
+
+def test_legacy_gif_duration_is_written_in_milliseconds(tmp_path: Path) -> None:
+    def draw_frame(history, oracle, flatness, step_index, path, *args, **kwargs):
+        Image.new("RGB", (8, 8), (step_index * 100, 20, 30)).save(path)
+
+    output = tmp_path / "legacy.gif"
+    terrain = (np.zeros((2, 2)), (-1, 1, -1, 1), (0, 1))
+    with (
+        patch.object(rollout_render, "_draw_frame", side_effect=draw_frame),
+        patch.object(rollout_render, "height_grid_for_extent", return_value=terrain),
+    ):
+        rollout_render._save_gif(
+            [np.zeros((4, 3)), np.ones((4, 3))], [], [], output,
+            terrain_cfg=None, terrain_runtime=None, footprint_radius=0,
+            capture_interval=1, max_frames=2, duration_s=.2,
+        )
+    with Image.open(output) as animation:
+        assert [frame.info["duration"] for frame in ImageSequence.Iterator(animation)] == [200, 200]
+
+
+def test_upstream_frame_renders_real_time_without_legacy_oracle(tmp_path: Path) -> None:
+    history = np.zeros((6, 4, 3))
+    history[:, :, 0] = np.arange(6)[:, None] * .2
+    history[:, :, 1] = np.arange(4)[None, :]
+    terrain = (np.array([[0., .1], [.2, .3]]), (-2, 5, -2, 5), (0., .3))
+    metadata = {
+        "vehicle": {"length": 1., "width": .5},
+        "terrain_grids": [terrain] * 5,
+        "dt": .2,
+        "panel": "heldout",
+        "env_id": 0,
+        "terminal_reason": "terrain_failure",
+    }
+    output = tmp_path / "upstream.png"
+    labels = []
+    savefig = plt.Figure.savefig
+
+    def capture_labels(fig, *args, **kwargs):
+        labels.extend(text.get_text() for text in fig.texts)
+        labels.extend(ax.get_title() for ax in fig.axes)
+        return savefig(fig, *args, **kwargs)
+
+    with (
+        patch.object(plt.Figure, "savefig", new=capture_labels),
+        patch.object(rollout_render, "_add_flatness_footprints",
+                     side_effect=AssertionError("upstream must not draw oracle footprints")),
+    ):
+        rollout_render._draw_frame(
+            history, [], [], 5, output, *terrain, 0., upstream=metadata,
+        )
+
+    with Image.open(output) as frame:
+        assert frame.size == (1200, 700)
+    rendered_labels = "\n".join(labels)
+    assert "t = 1.0 / 1.0 s | terrain_failure" in rendered_labels
+    assert "world terrain for visualization" in rendered_labels
+    assert "oracle" not in rendered_labels.lower()
 
 
 def _frame(

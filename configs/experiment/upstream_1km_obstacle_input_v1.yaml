@@ -1,0 +1,6 @@
+extends: upstream_1km_soft_hazard_v1.yaml
+experiment:
+  name: upstream_1km_obstacle_input_v1
+upstream_scale:
+  obstacle_input_config: configs/terrain/upstream_1km_obstacle_input_v1.yaml
+  observation_execution_version: obstacle_ground_known_actor_v1

@@ -17,6 +17,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import yaml
+from torch.utils.tensorboard import SummaryWriter
 
 from _common import cfg_from_experiment, ensure_output_dir, load_yaml
 from _skrl_metadata import observation_interface_metadata
@@ -197,21 +198,27 @@ def main() -> None:
     rollout_steps = int(exp.get("rollout_steps", 32))
     updates = max(1, total_steps // rollout_steps)
     metrics = []
-    for update_id in range(updates):
-        rollout = collect_rollout(
-            env,
-            actor,
-            critic,
-            rollout_steps,
-            gamma=float(algo.get("gamma", 0.99)),
-        )
-        train_metrics = update(rollout, actor, critic, optimizer)
-        train_metrics["update"] = update_id
-        if not all(torch.isfinite(torch.tensor(v)) for v in train_metrics.values()):
-            raise RuntimeError(f"non-finite training metric at update {update_id}: {train_metrics}")
-        metrics.append(train_metrics)
-
     log_dir = ensure_output_dir(exp.get("log_dir", "outputs/logs/exp_001_minimal"))
+    with SummaryWriter(str(log_dir / "tensorboard"), flush_secs=10) as writer:
+        writer.add_text("run/config", yaml.safe_dump(raw_cfg), 0)
+        writer.add_text("run/step_unit", "environment steps summed over environments, not rovers", 0)
+        for update_id in range(updates):
+            rollout = collect_rollout(
+                env,
+                actor,
+                critic,
+                rollout_steps,
+                gamma=float(algo.get("gamma", 0.99)),
+            )
+            train_metrics = update(rollout, actor, critic, optimizer)
+            train_metrics["update"] = update_id
+            if not all(torch.isfinite(torch.tensor(v)) for v in train_metrics.values()):
+                raise RuntimeError(f"non-finite training metric at update {update_id}: {train_metrics}")
+            metrics.append(train_metrics)
+            for key, value in train_metrics.items():
+                writer.add_scalar("train/" + key, value, (update_id + 1) * rollout_steps * env.num_envs)
+            writer.flush()
+
     checkpoint_dir = ensure_output_dir(exp.get("checkpoint_dir", "outputs/checkpoints"))
     log_path = log_dir / "train_metrics.json"
     checkpoint_metadata = {

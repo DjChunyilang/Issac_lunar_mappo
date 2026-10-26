@@ -12,6 +12,7 @@ import numpy as np
 import torch
 
 from .upstream_execution import brake_sequence,limit_control_torch,midpoint_torch,terrain_gain_torch
+from .upstream_execution import _midpoint_torch_values, _terrain_gain_torch_values
 from .upstream_mppi import UpstreamMPPIAdapter,UpstreamMPPIKernel
 
 PRECISION_VERSION="sampling_configured_actuator_fp64_v2"
@@ -32,7 +33,7 @@ class UpstreamMPPIKernelV2(UpstreamMPPIKernel):
             raise ValueError("MPPI controls require [B,K,40,2]")
         if raw.device != terrain.device:
             raise ValueError("MPPI controls and local terrain require the same device")
-        if self.device.type == 'cuda' and not terrain.empty and all(v._uniform_features for v in terrain._views):
+        if self.cfg.obstacle_input is None and self.device.type == 'cuda' and not terrain.empty and all(v._uniform_features for v in terrain._views):
             from .upstream_native import rollout_cuda
             result = rollout_cuda(requests, raw, terrain, self.spec)
             if result is not None:
@@ -50,6 +51,13 @@ class UpstreamMPPIKernelV2(UpstreamMPPIKernel):
         states,controls,velocities,known_nodes=[state],[],[],[]
         stopping=torch.zeros(raw.shape[:2],device=self.device,dtype=torch.bool)
         v=self.spec.vehicle;dt=self.spec.grid.dt
+        # Only this owned FP64 CUDA path defers scalar value checks. The public
+        # operators remain checked, and physical failures still raise below.
+        deferred=self.cfg.obstacle_input is not None and self.device.type=='cuda' and not raw.requires_grad
+        if deferred:
+            from .upstream_native import _project_cuda_unchecked
+        project=_project_cuda_unchecked if deferred else limit_control_torch
+        feature_valid=[]
         for t in range(40):
             # Conversion occurs after raw perturbation generation; neither
             # clipped controls nor these double predictions replace epsilon.
@@ -60,17 +68,30 @@ class UpstreamMPPIKernelV2(UpstreamMPPIKernel):
             stopping|=bound>=40-t
             desired=torch.where(stopping[...,None],0.,desired)
             target,prior=desired.reshape(-1,2),last.reshape(-1,2)
-            chunks=[limit_control_torch(target[start:start+self.settings.rollout_chunk],
+            chunks=[project(target[start:start+self.settings.rollout_chunk],
                 prior[start:start+self.settings.rollout_chunk],self.spec)
                 for start in range(0,len(prior),self.settings.rollout_chunk)]
             last=torch.cat(chunks).reshape_as(last)
             last=torch.where(last.abs()<=1e-10,0.,last)
             features,known=terrain.lookup(state[...,:2])
-            gain=terrain_gain_torch(state,features.to(torch.float64),self.spec)
-            state,velocity=midpoint_torch(state,last,self.spec,gain=gain)
+            if deferred:
+                if features.shape!=(*state.shape[:-1],5) or features.device!=state.device:
+                    raise ValueError('Terrain feature device/shape mismatch')
+                feature_valid.append(torch.isfinite(features).all(-1))
+                gain=_terrain_gain_torch_values(state,features.to(torch.float64),self.spec)
+                state,velocity=_midpoint_torch_values(state,last,self.spec,gain)
+            else:
+                gain=terrain_gain_torch(state,features.to(torch.float64),self.spec)
+                state,velocity=midpoint_torch(state,last,self.spec,gain=gain)
             states.append(state);controls.append(last);velocities.append(velocity);known_nodes.append(known)
         _,known=terrain.lookup(state[...,:2]);known_nodes.append(known)
-        return torch.stack(states,2),torch.stack(controls,2),torch.stack(velocities,2),numeric,torch.stack(known_nodes,2)
+        result=(torch.stack(states,2),torch.stack(controls,2),torch.stack(velocities,2),numeric,torch.stack(known_nodes,2))
+        if deferred:
+            physical_valid=(torch.isfinite(result[0]).all() & torch.isfinite(result[1]).all()
+                            & torch.isfinite(result[2]).all() & torch.stack(feature_valid).all())
+            if not physical_valid:
+                raise ValueError('MPPI rollout violates physical actuator contract or terrain feature finiteness')
+        return result
 
     def _cap_curves(self,requests):
         cap=torch.as_tensor([self.spec.vehicle.forward_limit if r.intent.speed_cap is None else r.intent.speed_cap

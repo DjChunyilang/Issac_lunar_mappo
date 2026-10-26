@@ -81,14 +81,18 @@ class LocalTargetScript:
         self.best_error=error;self.progress_time=now;self.recoveries=count
 
 
-def runtime_config(base_path,*,name,seed,adapter=None,device=None,safety=False,samples=512,parameters=None,episode_seconds=60.,num_envs=1):
+def runtime_config(base_path,*,name,seed,adapter=None,device=None,safety=False,samples=512,iterations=2,parameters=None,episode_seconds=60.,num_envs=1):
     # Fully parse the effective config; fingerprints bind overrides too.
     base=cfg_from_experiment(base_path);data=json.loads(base.configuration_json)
     data['experiment'].update(name=name,seed=seed,num_envs=num_envs,episode_length_s=episode_seconds)
-    u=data['upstream_scale'];u.update(mppi_samples=samples,mppi_iterations=2)
+    # Historical local diagnostics use two iterations. Training passes None to
+    # honor its experiment config, including the explicitly selected SAT setup.
+    u=data['upstream_scale'];u.update(mppi_samples=samples,
+        mppi_iterations=base.mppi_iterations if iterations is None else iterations)
     if adapter is not None:u['planner_adapter']=adapter
     if device is not None:u['planner_device']=device
-    u['execution_safety_version']='footprint_discrete_cbf_upstream_v1' if safety else 'projection_disabled'
+    u['execution_safety_version']=('footprint_discrete_cbf_upstream_v1'
+        if safety and base.predictive_footprint_checks else 'projection_disabled')
     if parameters is not None:u['mppi_parameters']=parameters
     if not u['planner_adapter'].startswith('mppi'):
         u['planner_device']='cpu';u.pop('mppi_parameters',None)

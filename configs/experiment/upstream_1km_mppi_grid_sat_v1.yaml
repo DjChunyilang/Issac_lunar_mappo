@@ -1,0 +1,8 @@
+# Explicit hard-query semantics; historical disk-cover configurations stay intact.
+extends: upstream_1km_mppi_body_geometry_v1.yaml
+experiment:
+  name: upstream_1km_mppi_grid_sat_v1
+upstream_scale:
+  mppi_iterations: 3
+  mppi_parameters:
+    large_crater_query: observed_grid_sat_v1

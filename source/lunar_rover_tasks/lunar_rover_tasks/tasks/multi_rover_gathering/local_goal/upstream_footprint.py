@@ -18,7 +18,7 @@ from .upstream_execution import control_error, limit_control_numpy, midpoint_num
 REVIEW_V2 = "footprint_review_v2"
 QUERY_V2 = "batch_ties_v2"
 NEIGHBOR_V2 = "identified_neighbor_upstream_v2"
-QUERY_BLOCK = 256
+QUERY_BLOCK = 4096
 TIE_ENTRY_BUDGET = 65536
 
 
@@ -123,13 +123,18 @@ class FootprintTerrain:
         return features, known
 
     def _batch_lookup(self, points):
-        # Keep k=1 and k=2: the original source choice for channel 3 is part of
-        # the five-channel contract, including otherwise identical ties.
-        distance, index = self._tree.query(points)
+        # A unique nearest point has the same source for k=1 and k=2. Only
+        # ties need the original k=1 choice (especially the RMS channel).
+        if len(self._xy) < 2:
+            distance, index = self._tree.query(points)
+            return self._features[index].copy(), distance <= self.support_radius + 1e-10
+        nearest, indices = self._tree.query(points, k=2)
+        distance, index = nearest[:, 0].copy(), indices[:, 0].copy()
+        tied = np.isclose(nearest[:, 0], nearest[:, 1], atol=1e-8, rtol=0)
+        if tied.any():
+            distance[tied], index[tied] = self._tree.query(points[tied])
         features = self._features[index].copy(); known = distance <= self.support_radius + 1e-10
-        if len(self._xy) < 2:return features, known
-        nearest, _ = self._tree.query(points, k=2)
-        ties = np.flatnonzero(np.isclose(nearest[:, 0], nearest[:, 1], atol=1e-8, rtol=0) & known)
+        ties = np.flatnonzero(tied & known)
         if not len(ties):return features, known
         lengths = self._tree.query_ball_point(points[ties], distance[ties] + 1e-8, return_length=True)
         # Count first, then bound the ragged neighbor allocation even for a
@@ -308,6 +313,10 @@ class FootprintReviewer:
         if flat_review is not None:
             report = flat_review(trajectory, last, terrain, neighbors, workspace, require_stop, parking_end)
             if report is not None:return report
+        # Optional CPU query batching changes neither dynamics arithmetic nor
+        # failure priority. Keep results local: reviewers are used by threads.
+        centers = (terrain.lookup(trajectory.states[:-1,:2])
+                   if self.version == REVIEW_V2 and getattr(self, 'batch_center_lookup', False) else None)
         poses = 0
         for i, control in enumerate(trajectory.controls):
             reason = control_error(control, last, self.spec)
@@ -325,7 +334,8 @@ class FootprintReviewer:
             if len(ratios) and ((ratios < .25 - 1e-7).any() or (ratios > 1 + 1e-7).any() or np.ptp(ratios) > 1e-7):
                 return FootprintReport(False, "velocity_gain_inconsistent", checked_poses=poses)
             if self.version == REVIEW_V2:
-                features, known = terrain.lookup(trajectory.states[i, :2])
+                features, known = (terrain.lookup(trajectory.states[i, :2]) if centers is None
+                                   else (centers[0][i:i+1], centers[1][i:i+1]))
                 if not known[0]:return FootprintReport(False, "unknown_footprint", checked_poses=poses)
                 gain = terrain_gain_numpy(trajectory.states[i], features[0], self.spec)
                 expected, velocity = midpoint_numpy(trajectory.states[i], control, self.spec, gain=gain)

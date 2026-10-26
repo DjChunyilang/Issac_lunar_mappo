@@ -59,6 +59,7 @@ def step_decision(bridge, payload, timing, renew_bounds):
         return bridge.step(payload)
     targets, ids = bridge.decode(payload)
     total = None
+    observations = None
     count = round(timing.policy_decision_period_s / env.spec.grid.high_level_period)
     for index in range(count):
         if env._ended.all():
@@ -67,9 +68,19 @@ def step_decision(bridge, payload, timing, renew_bounds):
             renew_bounds(env)
         requests = renew_fixed_targets(targets, env.core.times, bridge.contract.request_seconds)
         env.enqueue(requests, primitive_ids=ids)
-        part = env.step_intents(None)
+        part = env._advance_intents(None)
+        active = part['duration'] > 0
+        # Preserve the original after-activation, 1s slice boundary for an
+        # early terminal. Live rows need only the final decision observation.
+        if index == count - 1 or env._ended.all() or (part['terminated'] & active).any():
+            actor, critic = env.observe()
+            if observations is None:
+                observations = (actor, critic)
+            else:
+                observations[0][active] = actor[active]
+                observations[1][active] = critic[active]
         # Capture each renewal's planner outcome before the next plan replaces it.
-        for record in part.records:
+        for record in part['records']:
             if record.get('event') == 'request_activation':
                 plan = env.plans[record['env_id']][record['agent_id']]
                 if plan is not None:
@@ -77,18 +88,16 @@ def step_decision(bridge, payload, timing, renew_bounds):
         if total is None:
             total = part
         else:
-            active = part.duration > 0
-            weight = env.reward_tracker.settings.gamma ** total.duration
-            total.reward += weight * part.reward
-            for name, values in part.reward_components.items():
-                total.reward_components[name] += weight * values
-            total.duration += part.duration
-            for name in ('terminated', 'truncated', 'terminal_actor', 'terminal_critic',
-                         'actor', 'critic', 'terminal_reason', 'bootstrap_allowed', 'learning_valid'):
-                getattr(total, name)[active] = getattr(part, name)[active]
-            total.episodes.extend(part.episodes)
-            total.records.extend(part.records)
-    return total
+            weight = env.reward_tracker.settings.gamma ** total['duration']
+            total['reward'] += weight * part['reward']
+            for name, values in part['reward_components'].items():
+                total['reward_components'][name] += weight * values
+            total['duration'] += part['duration']
+            for name in ('terminated', 'truncated', 'terminal_reason', 'bootstrap_allowed', 'learning_valid'):
+                total[name][active] = part[name][active]
+            total['episodes'].extend(part['episodes'])
+            total['records'].extend(part['records'])
+    return None if total is None else env._transition_from_facts(total,*observations)
 
 
 def remaining_decisions(budget, used, num_envs, decision_steps, batch_decisions):

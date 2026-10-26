@@ -1736,6 +1736,8 @@ def build_mappo_config(
         "learning_starts": 0,
     }
     if run_dir is not None:
+        if int(experiment.get("tensorboard_interval", 128)) <= 0:
+            raise ValueError("All subsequent training requires a positive TensorBoard write interval")
         cfg["experiment"] = {
             "directory": str(run_dir),
             "experiment_name": "tensorboard",

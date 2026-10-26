@@ -6,6 +6,7 @@ import math
 import numpy as np
 
 from .upstream_footprint import FootprintTerrain
+from .upstream_grid import GridTerrain
 from .upstream_planning import UpstreamIntent,UpstreamPlannerInput
 from .upstream_timing import ActualControlHistory
 
@@ -41,7 +42,7 @@ class PendingPlan:
         history=ActualControlHistory(env_id,agent_id,cfg.spec.fingerprint,[now],np.asarray(pose)[None],
                                      np.zeros((0,2)),np.zeros((0,2)),previous)
         history.validate(cfg.spec,env_id,agent_id)
-        detached=terrain.with_observation_times(terrain._timestamps)
+        detached=terrain if type(terrain) is GridTerrain else terrain.with_observation_times(terrain._timestamps)
         # Use the protocol validator before accepting any queued state.
         checked=UpstreamPlannerInput(env_id,agent_id,pose,velocity,intent,detached,neighbors,previous,now,
                              cfg.spec.grid.times(now),None,cfg.spec)
@@ -90,7 +91,8 @@ class PendingPlan:
         if not isinstance(state,dict) or state.get('version')!=QUEUE_VERSION:raise ValueError('Queue state version mismatch')
         item=cls.capture(cfg,state['env_id'],state['agent_id'],state['episode'],state['information_pose'],
             state['information_velocity'],state['information_control'],state['intent'],
-            FootprintTerrain(state['terrain'],cfg.spec,query_version=cfg.terrain_query_version),
+            (GridTerrain.restore(state['terrain'],cfg) if cfg.obstacle_input is not None
+             else FootprintTerrain(state['terrain'],cfg.spec,query_version=cfg.terrain_query_version)),
             state['neighbors'],state['information_time'],primitive_id=state.get('primitive_id'))
         if not math.isclose(item.ready_time,state['ready_time'],abs_tol=1e-9):raise ValueError('Queue latency state mismatch')
         for row in state['feedback']:item.append(cfg.spec,row['pose'],row['control'],row['velocity'],row['time'])

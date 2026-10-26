@@ -1,11 +1,14 @@
 #!/usr/bin/env python
-"""Render a deterministic proxy rollout GIF from a SKRL MAPPO checkpoint."""
+"""Render proxy rollouts, including replay of saved upstream evaluation panels."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import html
 import json
 import os
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,7 +26,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from matplotlib.colors import to_rgba
-from matplotlib.patches import Circle
+from matplotlib.patches import Circle, Polygon
 
 from _common import ROOT, cfg_from_experiment, load_yaml
 from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env import MultiRoverGatheringCore
@@ -82,26 +85,15 @@ def _merge_render_artifacts_into_manifest(
     ):
         return None
 
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if not isinstance(manifest, dict):
-        raise ValueError(f"{manifest_path} must contain a JSON object.")
-    artifacts = manifest.get("artifacts")
-    if artifacts is None:
-        artifacts = {}
-        manifest["artifacts"] = artifacts
-    if not isinstance(artifacts, dict):
-        raise ValueError(f"{manifest_path} field 'artifacts' must be a JSON object.")
-    artifacts.update(
-        {
+    entries = {
             "metrics_proxy_rollout_render": _manifest_artifact_path(metrics_path),
             "figures_terrain_height": _manifest_artifact_path(
                 terrain_height_path
             ),
             "videos_proxy_rollout": _manifest_artifact_path(gif_path),
         }
-    )
     artifact_suffix = gif_path.stem.replace("-", "_")
-    artifacts.update(
+    entries.update(
         {
             f"metrics_{artifact_suffix}": _manifest_artifact_path(metrics_path),
             f"figures_{artifact_suffix}_terrain": _manifest_artifact_path(
@@ -110,6 +102,20 @@ def _merge_render_artifacts_into_manifest(
             f"videos_{artifact_suffix}": _manifest_artifact_path(gif_path),
         }
     )
+    return _merge_artifacts_into_manifest(run_dir, entries)
+
+
+def _merge_artifacts_into_manifest(run_dir: Path, entries: dict) -> Path | None:
+    manifest_path = run_dir / "run_manifest.json"
+    if not manifest_path.is_file():
+        return None
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict):
+        raise ValueError(f"{manifest_path} must contain a JSON object.")
+    artifacts = manifest.setdefault("artifacts", {})
+    if not isinstance(artifacts, dict):
+        raise ValueError(f"{manifest_path} field 'artifacts' must be a JSON object.")
+    artifacts.update(entries)
     descriptor, temp_name = tempfile.mkstemp(
         prefix=f".{manifest_path.name}.",
         suffix=".tmp",
@@ -317,7 +323,12 @@ def _draw_frame(
     terrain_extent: tuple[float, float, float, float],
     terrain_range: tuple[float, float],
     footprint_radius: float,
+    *,
+    upstream: dict | None = None,
 ) -> None:
+    if upstream is not None:
+        _draw_upstream_frame(history, step_index, output, upstream)
+        return
     xmin, xmax, ymin, ymax = _axis_limits(
         history,
         oracle_history,
@@ -423,7 +434,10 @@ def _save_gif(
     capture_interval: int,
     max_frames: int,
     duration_s: float,
+    upstream: dict | None = None,
 ) -> int:
+    if capture_interval < 1 or max_frames < 2:
+        raise ValueError("Capture interval must be positive and max_frames at least two")
     frame_indices = list(range(0, len(history), max(1, capture_interval)))
     if frame_indices[-1] != len(history) - 1:
         frame_indices.append(len(history) - 1)
@@ -436,13 +450,16 @@ def _save_gif(
         oracle_history,
         footprint_radius,
     )
-    terrain_height, terrain_extent, terrain_range = height_grid_for_extent(
-        terrain_cfg,
-        np.asarray([xmin, ymin], dtype=np.float32),
-        np.asarray([xmax, ymax], dtype=np.float32),
-        resolution=180,
-        terrain_runtime=terrain_runtime,
-    )
+    if upstream is None:
+        terrain_height, terrain_extent, terrain_range = height_grid_for_extent(
+            terrain_cfg,
+            np.asarray([xmin, ymin], dtype=np.float32),
+            np.asarray([xmax, ymax], dtype=np.float32),
+            resolution=180,
+            terrain_runtime=terrain_runtime,
+        )
+    else:
+        terrain_height, terrain_extent, terrain_range = upstream["terrain_grids"][0]
     with tempfile.TemporaryDirectory(prefix="skrl_proxy_gif_") as tmp:
         tmp_dir = Path(tmp)
         frames = []
@@ -458,10 +475,184 @@ def _save_gif(
                 terrain_extent,
                 terrain_range,
                 footprint_radius,
+                **({"upstream": upstream} if upstream is not None else {}),
             )
             frames.append(imageio.imread(frame_path))
-        imageio.mimsave(output, frames, duration=duration_s)
+        # Pillow's GIF writer uses milliseconds. Keep real elapsed time when
+        # subsampling a recorded evaluation, including a short final interval.
+        duration_ms = duration_s * 1000
+        if upstream is not None:
+            duration_ms = [
+                (b - a) * upstream["dt"] * 1000
+                for a, b in zip(frame_indices, frame_indices[1:])
+            ] + [1000]  # Pause on the terminal state; this adds no simulation time.
+        imageio.mimsave(output, frames, duration=duration_ms, loop=0)
     return len(frame_indices)
+
+
+def _draw_upstream_frame(history, step_index: int, output: Path, metadata: dict) -> None:
+    """Use the recorded world poses; no oracle or inferred terrain-failure subtype."""
+    poses = np.asarray(history)
+    current = poses[step_index]
+    colors = ("#2563eb", "#dc2626", "#16a34a", "#9333ea")
+    fig = plt.figure(figsize=(12, 7), dpi=100, constrained_layout=True)
+    layout = fig.add_gridspec(2, 3, width_ratios=(1.35, 1, 1))
+    axes = [fig.add_subplot(layout[:, 0])]
+    axes.extend(fig.add_subplot(layout[row, col]) for row in range(2) for col in (1, 2))
+    length, width = metadata["vehicle"]["length"], metadata["vehicle"]["width"]
+    corners = np.array([[length, width], [length, -width], [-length, -width], [-length, width]]) / 2
+    for view, (ax, terrain) in enumerate(zip(axes, metadata["terrain_grids"])):
+        height, extent, value_range = terrain
+        heatmap = add_height_heatmap(ax, height, extent, value_range, alpha=.8, contour=True)
+        agents = range(4) if view == 0 else (view - 1,)
+        for agent in agents:
+            color = colors[agent]
+            trail = poses[:step_index + 1, agent, :2]
+            ax.plot(trail[:, 0], trail[:, 1], color=color, linewidth=1.8, zorder=4)
+            ax.scatter(*poses[0, agent, :2], marker="x", s=32, color=color, zorder=5)
+            xy, yaw = current[agent, :2], current[agent, 2]
+            if view == 0:
+                ax.scatter(*xy, s=65, color=color, edgecolors="white", zorder=6)
+                ax.annotate(str(agent), xy, color="white", ha="center", va="center", fontsize=8, zorder=7)
+            else:
+                rotation = np.array([[np.cos(yaw), -np.sin(yaw)], [np.sin(yaw), np.cos(yaw)]])
+                ax.add_patch(Polygon(corners @ rotation.T + xy, closed=True,
+                                    facecolor=to_rgba(color, .18), edgecolor=color, linewidth=2, zorder=5))
+                ax.arrow(*xy, np.cos(yaw) * length / 2, np.sin(yaw) * length / 2,
+                         width=.06, head_width=.4, color=color, length_includes_head=True, zorder=6)
+        ax.set(xlim=extent[:2], ylim=extent[2:], xlabel="world x (m)", ylabel="world y (m)")
+        ax.set_aspect("equal", adjustable="box")
+        ax.tick_params(labelsize=7)
+        ax.grid(alpha=.2)
+        if view == 0:
+            ax.set_title(f"Team overview | Dmax {_dmax_xy(current):.2f} m", fontsize=10)
+            fig.colorbar(heatmap, ax=ax, orientation="horizontal", shrink=.85, pad=.08, label="height (m)")
+        else:
+            agent = view - 1
+            traveled = np.linalg.norm(np.diff(poses[:step_index + 1, agent, :2], axis=0), axis=-1).sum()
+            ax.set_title(f"Rover {agent} | path {traveled:.2f} m\nheight {value_range[0]:.2f} to {value_range[1]:.2f} m", fontsize=9)
+    elapsed = step_index * metadata["dt"]
+    final_time = (len(history) - 1) * metadata["dt"]
+    status = metadata["terminal_reason"] if step_index == len(history) - 1 else "running"
+    fig.suptitle(f"Final evaluation | {metadata['panel']} | env {metadata['env_id']}\n"
+                 f"t = {elapsed:.1f} / {final_time:.1f} s | {status}", fontsize=13)
+    fig.supxlabel("Proxy replay | world terrain for visualization | x: start | rectangle: body | arrow: heading", fontsize=9)
+    fig.savefig(output)
+    plt.close(fig)
+
+
+def _upstream_terrain_grids(history, terrain_cfg, terrain_runtime, vehicle):
+    extents = [_axis_limits(history, [], footprint_radius=0)]
+    positions = np.asarray(history)
+    margin = max(vehicle["length"], vehicle["width"]) * .9
+    for agent in range(4):
+        low = positions[:, agent, :2].min(axis=0)
+        high = positions[:, agent, :2].max(axis=0)
+        center = (low + high) / 2
+        half = max(float((high - low).max()) / 2 + margin, 7.)
+        extents.append((center[0]-half, center[0]+half, center[1]-half, center[1]+half))
+    return [height_grid_for_extent(
+        terrain_cfg, np.array([extent[0], extent[2]]), np.array([extent[1], extent[3]]),
+        resolution=240 if i == 0 else 180, terrain_runtime=terrain_runtime,
+    ) for i, extent in enumerate(extents)]
+
+
+def render_saved_evaluation(run_dir: str | Path, phase: str = "final", *,
+                            capture_interval: int = 2, max_frames: int = 80,
+                            from_capture: bool = False) -> dict:
+    """Replay via the existing evaluator, then render through the existing GIF path."""
+    from diagnose_upstream_environment import event_data
+    from upstream_decision_evaluation import replay_saved_evaluation
+
+    run_dir = _resolve(run_dir)
+    stem = f"evaluation_{phase}_render"
+    capture_path = run_dir / "metrics" / f"{stem}_capture.json"
+    arrays_path = run_dir / "state" / f"{stem}.npz"
+    metrics_path = run_dir / "metrics" / f"{stem}.json"
+    video_dir = run_dir / "videos" / f"evaluation_{phase}"
+    video_dir.mkdir(parents=True, exist_ok=True)
+    if not from_capture:
+        if capture_path.exists() or arrays_path.exists():
+            raise FileExistsError(f"Capture already exists; use --from-capture: {capture_path}")
+        replay = replay_saved_evaluation(run_dir, phase,
+            progress=lambda name, elapsed: print(f"Replay {name}: {int(elapsed.sum())} base steps", flush=True))
+        capture = {key: replay[key] for key in ("evaluation", "traces", "validation", "provenance")}
+        capture.update(episodes={}, command=sys.argv, new_optimizer_steps=0)
+        arrays = {}
+        for name, panel_data in replay["panels"].items():
+            for env_id, history in enumerate(panel_data["histories"]):
+                key = f"{name}_env{env_id}"
+                grids = _upstream_terrain_grids(history, panel_data["terrain_cfg"],
+                                               panel_data["terrain_runtimes"][env_id], panel_data["vehicle"])
+                arrays[f"{key}_poses"] = np.asarray(history)
+                for i, (height, extent, value_range) in enumerate(grids):
+                    arrays[f"{key}_height{i}"] = height
+                    arrays[f"{key}_extent{i}"] = np.asarray(extent)
+                    arrays[f"{key}_range{i}"] = np.asarray(value_range)
+                episode = panel_data["episodes"][env_id]
+                capture["episodes"][key] = dict(panel=name, env_id=env_id, dt=panel_data["dt"],
+                    vehicle=panel_data["vehicle"], terminal_reason=episode["terminal_reason"],
+                    steps=episode["steps"], scene_manifest=panel_data["scene_manifests"][env_id])
+        arrays_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(arrays_path, **arrays)
+        capture["arrays_sha256"] = hashlib.sha256(arrays_path.read_bytes()).hexdigest()
+        capture_path.write_text(json.dumps(event_data(capture), indent=2, ensure_ascii=False, allow_nan=False) + "\n")
+    else:
+        capture = json.loads(capture_path.read_text())
+        if hashlib.sha256(arrays_path.read_bytes()).hexdigest() != capture["arrays_sha256"]:
+            raise ValueError("Saved evaluation capture checksum mismatch")
+        for path, checksum in capture["provenance"]["sources"].items():
+            if hashlib.sha256(Path(path).read_bytes()).hexdigest() != checksum:
+                raise ValueError(f"Evaluation source changed since capture: {path}")
+    if not capture["validation"]["matched"]:
+        raise ValueError(f"Evaluation replay does not match original; retained evidence: {capture_path}")
+    rendered = {}
+    with np.load(arrays_path, allow_pickle=False) as arrays:
+        for key, episode in capture["episodes"].items():
+            gif_path = video_dir / f"{key}.gif"
+            poster_path = video_dir / f"{key}.png"
+            if gif_path.exists() or poster_path.exists():
+                raise FileExistsError(gif_path if gif_path.exists() else poster_path)
+            history = arrays[f"{key}_poses"]
+            metadata = {**episode, "terrain_grids": [
+                (arrays[f"{key}_height{i}"], tuple(arrays[f"{key}_extent{i}"]), tuple(arrays[f"{key}_range{i}"]))
+                for i in range(5)
+            ]}
+            count = _save_gif(history, [], [], gif_path, terrain_cfg=None, terrain_runtime=None,
+                footprint_radius=0., capture_interval=capture_interval, max_frames=max_frames,
+                duration_s=episode["dt"], upstream=metadata)
+            _draw_upstream_frame(history, len(history)-1, poster_path, metadata)
+            rendered[key] = dict(gif=str(gif_path), poster=str(poster_path), frames=count,
+                                 simulation_seconds=episode["steps"]*episode["dt"],
+                                 terminal_reason=episode["terminal_reason"])
+            print(f"Rendered {key}: {count} frames", flush=True)
+    links = []
+    for key, item in rendered.items():
+        links.append(f'<article><h2>{html.escape(key)}</h2><p>{item["simulation_seconds"]:.1f} s · '
+                     f'{html.escape(item["terminal_reason"])}</p><a href="{key}.gif">'
+                     f'<img loading="lazy" src="{key}.png" alt="{html.escape(key)}"></a>'
+                     f'<p><a href="{key}.gif">播放 GIF / Open animation</a></p></article>')
+    index = video_dir / "index.html"
+    index.write_text('<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
+        '<title>最终评测动画</title><style>body{font-family:sans-serif;margin:2rem;background:#f5f6f8}'
+        'main{display:grid;grid-template-columns:repeat(auto-fit,minmax(440px,1fr));gap:1rem}'
+        'article{padding:1rem;background:white;border-radius:8px}img{width:100%}h2{font-size:1rem}</style>'
+        '<h1>最终评测 · 16 局动画</h1><p>点击预览图播放。原 checkpoint / seed 重放，结果已与原评测核对。'
+        '全局图与四车局部图使用实际世界坐标；末帧停留 1 秒。Proxy，不是 Isaac / PhysX。</p>'
+        '<main>' + ''.join(links) + '</main></html>')
+    result = dict(status="ok", command=sys.argv, capture=str(capture_path), arrays=str(arrays_path),
+                  index=str(index), videos=rendered, validation=capture["validation"],
+                  replay_base_steps=capture["evaluation"]["actual_base_steps"],
+                  new_base_steps_this_command=0 if from_capture else capture["evaluation"]["actual_base_steps"],
+                  optimizer_updates=0)
+    metrics_path.write_text(json.dumps(event_data(result), indent=2, allow_nan=False) + "\n")
+    _merge_artifacts_into_manifest(run_dir, {
+        f"metrics_{stem}": _manifest_artifact_path(metrics_path),
+        f"videos_evaluation_{phase}": _manifest_artifact_path(index),
+        f"state_{stem}": _manifest_artifact_path(arrays_path),
+        f"metrics_{stem}_capture": _manifest_artifact_path(capture_path),
+    })
+    return result
 
 
 def render_rollout(
@@ -698,8 +889,10 @@ def render_rollout(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", required=True)
-    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--config")
+    parser.add_argument("--checkpoint")
+    parser.add_argument("--upstream-evaluation", choices=("final",), help="Replay saved upstream evaluation panels")
+    parser.add_argument("--from-capture", action="store_true", help="Render saved replay poses without new environment steps")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--steps", type=int, default=120)
     parser.add_argument("--seed", type=int, default=None)
@@ -710,6 +903,15 @@ def main() -> None:
     parser.add_argument("--capture-interval", type=int, default=2)
     parser.add_argument("--max-frames", type=int, default=80)
     args = parser.parse_args()
+    if args.upstream_evaluation:
+        if not args.run_dir:
+            parser.error("--upstream-evaluation requires --run-dir")
+        result = render_saved_evaluation(args.run_dir, args.upstream_evaluation,
+            capture_interval=args.capture_interval, max_frames=args.max_frames, from_capture=args.from_capture)
+        print(json.dumps(result, indent=2))
+        return
+    if not args.config or not args.checkpoint or args.from_capture:
+        parser.error("Legacy rollout requires --config and --checkpoint; --from-capture requires --upstream-evaluation")
     result = render_rollout(
         args.config,
         args.checkpoint,

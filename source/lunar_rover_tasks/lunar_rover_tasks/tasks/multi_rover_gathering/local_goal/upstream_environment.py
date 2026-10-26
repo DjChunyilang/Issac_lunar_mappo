@@ -8,6 +8,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
+from threading import local
 import math
 
 import numpy as np
@@ -17,7 +18,7 @@ from .contracts import PlannerFeedback,wrap
 from .upstream_communication import MESSAGE_V2,DistanceCommunicationCache,MotionBoundLedger,RoverBroadcast
 from .upstream_execution import terrain_gain_numpy,stop_envelope
 from .upstream_factory import UpstreamPlannerPool
-from .upstream_footprint import admit_control
+from .upstream_footprint import AdmissionDecision,admit_control
 from .upstream_gathering import LeaderSquareScript
 from .upstream_observation import ActorObservation,ObservationInput,UpstreamObservationEncoder,OBSERVATION_VERSION
 from .upstream_proxy import UpstreamActuatorProxy
@@ -28,10 +29,12 @@ from .upstream_sensing import DenseSensor,DenseTerrainMemory,world_to_odometry
 from .upstream_spec import UpstreamRuntimeConfig
 from .upstream_task import UpstreamTask
 from .upstream_planning import UpstreamIntent
+from .upstream_grid import GridMemory
+from .upstream_obstacle_spec import OBSERVATION_VERSION as GRID_OBSERVATION_VERSION
 
 ENVIRONMENT_VERSION='actual_loop_upstream_v1'
 ENVIRONMENT_V2='actual_loop_upstream_v2'
-REASON_CODE={'none':0,'success':1,'collision':2,'out_of_bounds':3,'task_deadline':4,'environment_invalid':5}
+REASON_CODE={'none':0,'success':1,'collision':2,'out_of_bounds':3,'task_deadline':4,'environment_invalid':5,'terrain_failure':6}
 
 
 @lru_cache(maxsize=4)
@@ -43,6 +46,19 @@ def _cpu_executor(workers):
 def _cpu_call(job):
     function, *arguments = job
     return function(*arguments)
+
+
+_grid_reviewers = local()
+
+
+def _grid_reviewer(spec, acceleration_version):
+    """Thread-owned disposable witness cache; never enters environment state."""
+    key=(spec.fingerprint,acceleration_version)
+    saved=getattr(_grid_reviewers,'reviewer',None)
+    if saved is None or saved[0]!=key:
+        from .upstream_flat_review import create_reviewer
+        saved=(key,create_reviewer(spec,acceleration_version));_grid_reviewers.reviewer=saved
+    return saved[1]
 
 
 @dataclass
@@ -71,11 +87,12 @@ class UpstreamEnvironment:
     def __init__(self,cfg,initial_poses,*,terrain_cfg=None,terrain_runtime=None,
                  map_identities=('flat_proxy',),planner_pool=None,reward_settings=None,cache_dir=None,initial_control=None,curriculum=None):
         if (type(cfg) is not UpstreamRuntimeConfig or cfg.environment_execution_version not in {ENVIRONMENT_VERSION,ENVIRONMENT_V2}
-                or cfg.observation_execution_version!=OBSERVATION_VERSION or cfg.timing_version!='actual_control_history_v1'
+                or cfg.observation_execution_version not in (OBSERVATION_VERSION,GRID_OBSERVATION_VERSION) or cfg.timing_version!='actual_control_history_v1'
                 or cfg.clock_mode!='offline_simulated_latency' or not cfg.valid_execution_role):
             raise ValueError('Environment requires explicit S03 observation/history/runtime role versions')
         self.curriculum=curriculum
         self.cfg=cfg;self.spec=cfg.spec;self.e=cfg.simulation.num_envs;self.a=4
+        self.graded_craters=cfg.obstacle_input is not None and cfg.obstacle_input.graded_craters
         self._initial=np.asarray(initial_poses,float).copy()
         self.core=UpstreamActuatorProxy(cfg,self._initial);self.anchors=self._initial.copy();self.anchors[...,2]=0.
         self._initial_control=None if initial_control is None else np.asarray(initial_control,float).copy()
@@ -87,7 +104,25 @@ class UpstreamEnvironment:
         self._terrain_cfg=deepcopy(terrain_cfg);self._terrain_runtime=terrain_runtime
         self.sensor=DenseSensor(self.spec,terrain_cfg,runtime=terrain_runtime,map_identities=map_identities)
         self.map_identities=tuple(map_identities)
-        self.memory=[[DenseTerrainMemory(self.spec) for _ in range(4)] for _ in range(self.e)]
+        self.obstacle_atlases=None
+        if cfg.obstacle_input is not None:
+            from ....terrain_data.obstacle_atlas import ObstacleAtlas
+            from ....terrain_data.scene_pack import file_hash
+            if terrain_runtime is None or terrain_runtime.scene_bank is None:
+                raise ValueError('Obstacle input requires explicit derived lunar atlases')
+            self.obstacle_atlases=[ObstacleAtlas(cfg.obstacle_input.atlas_root/file_hash(scene.path)/'obstacle.json',
+                cfg.obstacle_input,scene) for scene in terrain_runtime.scene_bank.scenes]
+            physical={'driving_slope':self.spec.terrain.driving_slope,'parking_slope':self.spec.terrain.parking_slope,
+                      'roughness_rms':self.spec.terrain.roughness_rms,'step_height':self.spec.terrain.step_height}
+            if any(atlas.meta['vehicle_terrain']!=physical for atlas in self.obstacle_atlases):
+                raise ValueError('Derived ground costs disagree with physical terrain thresholds')
+            if self.graded_craters:
+                ground=cfg.obstacle_input.data['ground']
+                if (ground['slope_score_scale']!=terrain_cfg.raster_risk_slope_scale
+                        or ground['rms_score_scale_m']!=terrain_cfg.raster_risk_rms_scale_m):
+                    raise ValueError('Derived driving surface disagrees with sensor score scales')
+        self.memory=[[(GridMemory(self.spec,cfg.obstacle_input) if cfg.obstacle_input is not None
+                       else DenseTerrainMemory(self.spec)) for _ in range(4)] for _ in range(self.e)]
         script_type=LeaderSquareScript
         if cfg.leader_execution_version=="leader_square_visibility_upstream_v2":
             from .upstream_visibility import LeaderSquareVisibilityScript
@@ -104,13 +139,18 @@ class UpstreamEnvironment:
         self.pool=planner_pool or UpstreamPlannerPool(cfg,cache_dir=cache_dir)
         self._pool_injected=planner_pool is not None;self.cache_dir=cache_dir
         from .upstream_flat_review import create_reviewer
-        self.reviewer=create_reviewer(self.spec,cfg.review_acceleration_version);self.encoder=UpstreamObservationEncoder(self.spec,spatial_scaling='linear' if curriculum is None else curriculum.config['observation_scaling'])
+        self.reviewer=create_reviewer(self.spec,cfg.review_acceleration_version);self.encoder=UpstreamObservationEncoder(self.spec,spatial_scaling='linear' if curriculum is None else curriculum.config['observation_scaling'],obstacle_input=cfg.obstacle_input)
+        self._physical_views=[[None]*4 for _ in range(self.e)]
+        self._driving_views=[[None]*4 for _ in range(self.e)]
+        self.physical_query_points=0
+        if cfg.obstacle_input is not None:self.sensor.prepare_birth(self.reviewer.points)
         self.safety=None;self.execution_predictions=[[None]*4 for _ in range(self.e)]
         if cfg.execution_safety_version!='projection_disabled':
             from .upstream_safety import UpstreamSafetyProjector
             self.safety=[[UpstreamSafetyProjector(self.spec,reviewer=create_reviewer(self.spec,cfg.review_acceleration_version)) for _ in range(4)] for _ in range(self.e)]
-        self.task=UpstreamTask(self.spec,self.e,cfg.simulation.episode_length_s if curriculum is None else curriculum.deadlines)
-        self.reward_tracker=UpstreamReward(self.spec,self.e,reward_settings)
+        self.task=UpstreamTask(self.spec,self.e,cfg.simulation.episode_length_s if curriculum is None else curriculum.deadlines,
+            terrain_failure_terminal=self.graded_craters or (curriculum is not None and curriculum.config.get('terrain_failure_semantics')=='known_terrain_terminal_v1'))
+        self.reward_tracker=UpstreamReward(self.spec,self.e,reward_settings,obstacle_input=cfg.obstacle_input)
         self.pending={};self.intents=[[None]*4 for _ in range(self.e)];self.plans=[[None]*4 for _ in range(self.e)]
         self.feedback=[[PlannerFeedback() for _ in range(4)] for _ in range(self.e)]
         self.bounds=[[None]*4 for _ in range(self.e)];self._ended=np.zeros(self.e,bool)
@@ -127,6 +167,9 @@ class UpstreamEnvironment:
             **({'initial_control':self._initial_control.tolist()} if self._initial_control is not None else {}),
             'contracts':self.cfg.metadata,'environment_version':self.cfg.environment_execution_version,'state_version':self.state_version,
             'map_identities':self.map_identities,'sensor_version':self.sensor.version,
+            **({'obstacle_atlases':[a.identity for a in self.obstacle_atlases],
+                'physical_measurement':('graded_craters_driving_original_parking_v2' if self.graded_craters else 'instantaneous_original_grid_footprint_subset_v1'),
+                'sensor_version':'incremental_fixed_semantic_grid_v1'} if self.obstacle_atlases is not None else {}),
             'queue_version':ACCEPTED_QUEUE_VERSION if self.cfg.environment_execution_version==ENVIRONMENT_V2 else QUEUE_VERSION,
             'reward':self.reward_tracker.metadata,'observation':self.encoder.metadata,
             'fixed_frame_version':'translated_world_axes_upstream_v1',
@@ -149,24 +192,48 @@ class UpstreamEnvironment:
         return list(_cpu_executor(self.cpu_workers).map(_cpu_call,jobs))
 
     def _refresh(self,active):
+        if self.obstacle_atlases is not None:
+            jobs=[];identities=[]
+            for e in np.flatnonzero(active):
+                for a in range(4):
+                    # Sensor counters and scene access retain their owner-thread
+                    # ordering. Jobs own distinct memories and physical views.
+                    identities.append((e,a));jobs.append((self._refresh_grid_rover,e,a,self._physical_view(e,a)))
+            for (e,a),(report,center) in zip(identities,self._cpu_map(jobs),strict=True):
+                self._pose_reports[e][a]=report;self._center_features[e][a]=center
+            return
         frames=self.sensor.sample(self.core.poses,self.anchors,self.core.times)
         self._cpu_map([(self.memory[e][a].observe,frames[e][a])
             for e in range(self.e) if active[e] for a in range(4)])
 
+    def _refresh_grid_rover(self,e,a,physical):
+        pose=self.local_pose(e,a);now=float(self.core.times[e])
+        index=int(self._terrain_runtime.scene_indices[e])
+        view=self.memory[e][a].update(self.core.poses[e,a],self.anchors[e,a],now,self.obstacle_atlases[index])
+        reviewer=_grid_reviewer(self.spec,self.cfg.review_acceleration_version)
+        driving=self._physical_view(e,a,driving=True) if self.graded_craters else physical
+        return ((view,pose.tobytes(),reviewer.pose(pose,physical,parking=True)),
+                (view,pose.tobytes(),driving.lookup(pose[:2])))
+
     def _observe_and_predict(self,e,a,frame,pose,now,peers):
         # Each job exclusively owns one rover's memory and safety projector.
         self.memory[e][a].observe(frame)
-        from .upstream_safety import SafetyContext
-        context=SafetyContext(pose,self.core.previous_control[e,a],self.memory[e][a].view(),peers,
-            now,np.asarray(self.workspace(e,a)).reshape(2,2),self.ledger.speed_cap(e,a,now))
-        prediction=self.safety[e][a].execution_prediction(context,self.core.previous_control[e,a])
+        prediction=None
+        if self.safety is not None:
+            from .upstream_safety import SafetyContext
+            context=SafetyContext(pose,self.core.previous_control[e,a],self.memory[e][a].view(),peers,
+                now,np.asarray(self.workspace(e,a)).reshape(2,2),self.ledger.speed_cap(e,a,now))
+            prediction=self.safety[e][a].execution_prediction(context,self.core.previous_control[e,a])
         view=self.memory[e][a].view()
         report=(view,pose.tobytes(),self.reviewer.pose(pose,view,parking=True))
         center=(view,pose.tobytes(),view.lookup(pose[:2]))
         return prediction,report,center
 
     def _refresh_and_predict(self,active):
-        if self.safety is None:
+        if self.obstacle_atlases is not None:
+            self._refresh(active)
+            return
+        if self.safety is None and self.cfg.predictive_footprint_checks:
             self._refresh(active)
             return
         frames=self.sensor.sample(self.core.poses,self.anchors,self.core.times)
@@ -176,7 +243,7 @@ class UpstreamEnvironment:
             for a in range(4):
                 pose=self.local_pose(e,a);now=float(self.core.times[e])
                 # Freeze messages before any publish, as in the two-barrier path.
-                peers=self.radio.snapshot(e,a,now,pose).predictions
+                peers=self.radio.snapshot(e,a,now,pose).predictions if self.safety is not None else ()
                 identities.append((e,a))
                 jobs.append((self._observe_and_predict,e,a,frames[e][a],pose,now,peers))
         for (e,a),prediction in zip(identities,self._cpu_map(jobs),strict=True):
@@ -185,18 +252,52 @@ class UpstreamEnvironment:
     def _center_lookup(self,e,a,pose):
         view=self.memory[e][a].view();saved=self._center_features[e][a]
         if saved is None or saved[0] is not view or saved[1]!=pose.tobytes():
-            saved=(view,pose.tobytes(),view.lookup(pose[:2]));self._center_features[e][a]=saved
+            source=self._physical_view(e,a,driving=self.graded_craters) if self.obstacle_atlases is not None else view
+            saved=(view,pose.tobytes(),source.lookup(pose[:2]));self._center_features[e][a]=saved
         return saved[2]
+
+    def _physical_view(self,e,a,*,driving=False):
+        from .upstream_footprint import FootprintTerrain
+        cache=self._driving_views if driving else self._physical_views
+        pose=self.core.poses[e,a];saved=cache[e][a]
+        key=(pose.tobytes(),self.anchors[e,a].tobytes())
+        if saved is None or saved[0]!=key:
+            atlas=None
+            if driving:
+                atlas=self.obstacle_atlases[int(self._terrain_runtime.scene_indices[e])]
+            xy,features=self.sensor._birth_arrays(pose,scene_index=e,driving_atlas=atlas)
+            # Preserve the original two translations and their rounding order.
+            xy=xy+pose[:2]-self.anchors[e,a,:2]
+            terrain=FootprintTerrain._from_owned_arrays(xy,features,
+                np.full(len(xy),float(self.core.times[e])),self.spec)
+            saved=(key,terrain);cache[e][a]=saved
+            self.physical_query_points+=len(self.sensor._birth_query)
+        return saved[1]
 
     def _reports(self,*,parking=True):
         from dataclasses import replace
+        if self.graded_craters and not parking:
+            result=[]
+            vehicle=self.spec.vehicle
+            for e in range(self.e):
+                atlas=self.obstacle_atlases[int(self._terrain_runtime.scene_indices[e])]
+                invaded=atlas.exact_large_crater_overlap(self.core.poses[e],vehicle.length,vehicle.width)
+                row=[]
+                for a in range(4):
+                    report=self.reviewer.pose(self.local_pose(e,a),self._physical_view(e,a,driving=True),parking=False)
+                    if invaded[a] and report.reason not in {'unknown_footprint','degenerate_contact_plane'}:
+                        report=replace(report,passed=False,reason='large_crater')
+                    row.append(report)
+                result.append(row)
+            return result
         result=[]
         for e in range(self.e):
             row=[]
             for a in range(4):
                 pose=self.local_pose(e,a);view=self.memory[e][a].view();saved=self._pose_reports[e][a]
                 if saved is None or saved[0] is not view or saved[1]!=pose.tobytes():
-                    saved=(view,pose.tobytes(),self.reviewer.pose(pose,view,parking=True));self._pose_reports[e][a]=saved
+                    source=self._physical_view(e,a) if self.obstacle_atlases is not None else view
+                    saved=(view,pose.tobytes(),self.reviewer.pose(pose,source,parking=True));self._pose_reports[e][a]=saved
                 report=saved[2]
                 if not parking and report.reason=='parking_slope':
                     limits=self.spec.terrain
@@ -213,7 +314,7 @@ class UpstreamEnvironment:
     def _initialize_leader(self,e):
         now=float(self.core.times[e]);p=self.local_pose(e,0)
         self.scripts[e][0].decide(p,self.core.actual_velocity[e,0],self.core.previous_control[e,0],
-            self.memory[e][0].view(),self.radio.snapshot(e,0,now,p),now,int(self.core.episodes[e]))
+            self._physical_view(e,0) if self.obstacle_atlases is not None else self.memory[e][0].view(),self.radio.snapshot(e,0,now,p),now,int(self.core.episodes[e]))
 
     def _publish(self):
         packets=[]
@@ -316,6 +417,9 @@ class UpstreamEnvironment:
             self._records.append({'event':'request_activation','env_id':e,'agent_id':a,
                 'original_intent':ticket,'active_intent':item.intent,'accepted':item.now<=ticket.expires_at+1e-10,
                 'primitive_id':self.pending[e,a].primitive_id})
+            if self.obstacle_atlases is not None:
+                self._records[-1].update(planner_cost_parts=output.diagnostics.get('selected_cost_parts',{}),
+                    planner_grid_upload_bytes=output.diagnostics.get('grid_upload_bytes',0))
             self.intents[e][a]=item.intent;self.plans[e][a]=output;self.feedback[e][a]=output.feedback
             del self.pending[e,a]
 
@@ -334,6 +438,9 @@ class UpstreamEnvironment:
     def _project_control(self,item):
         e,a,p,view,nominal,source,limited,peers=item
         safety_record={}
+        if not self.cfg.predictive_footprint_checks:
+            return AdmissionDecision(limited.copy(),False,'cost_reward_only','predictive_review_disabled',
+                self.ledger.speed_cap(e,a,float(self.core.times[e])),0.,None,0),safety_record
         if self.safety is None:
             decision=admit_control(limited,self.core.previous_control[e,a],p,view,self.spec,information_time=float(self.core.times[e]),
                 latency=0.,neighbors=peers,workspace=np.asarray(self.workspace(e,a)).reshape(2,2),reviewer=self.reviewer,
@@ -351,7 +458,11 @@ class UpstreamEnvironment:
 
     def tick(self):
         active=~self._ended;self._activate()
-        previous_reports=self._reports();count=np.zeros(self.e,np.int64) if self.last_task is None else self.last_task['hold_count']
+        obstacle_before=([[m.view() for m in row] for row in self.memory] if self.obstacle_atlases is not None else None)
+        if obstacle_before is not None:
+            previous_reads=sum(m.stats['atlas_cells_read'] for row in self.memory for m in row)
+            previous_physical=self.physical_query_points
+        previous_reports=self._reports(parking=not self.graded_craters);count=np.zeros(self.e,np.int64) if self.last_task is None else self.last_task['hold_count']
         before=actual_facts(self.spec,self.core.poses,self.core.actual_velocity,previous_reports,count)
         command=np.zeros((self.e,4,2));gains=np.ones((self.e,4));features=np.zeros((self.e,4,5));decisions=[];height_before=np.zeros((self.e,4));prepared=[]
         for e in range(self.e):
@@ -367,7 +478,7 @@ class UpstreamEnvironment:
         for (e,a,p,view,nominal,source,limited,peers),(decision,safety_record) in zip(prepared,results,strict=True):
             command[e,a]=self.ledger.limit(e,a,decision.control,self.core.previous_control[e,a],float(self.core.times[e]))
             verified=decision.verified;reason=decision.reason
-            if not np.allclose(command[e,a],decision.control,atol=1e-10,rtol=0):
+            if self.cfg.predictive_footprint_checks and not np.allclose(command[e,a],decision.control,atol=1e-10,rtol=0):
                 def gain(pose):
                     feature,supported=view.lookup(pose[:2])
                     return terrain_gain_numpy(pose,feature[0],self.spec) if supported[0] else .25
@@ -385,12 +496,30 @@ class UpstreamEnvironment:
         reports=self._reports();driving=self._reports(parking=False)
         valid=np.asarray([[r.reason not in {'unknown_footprint','degenerate_contact_plane','impassable_footprint','body_clearance','terrain_step','driving_slope','contact_roughness'}
                            for r in row] for row in driving]).all(-1)
+        terrain_failed = None
+        if self.task.terrain_failure_terminal:
+            # Known physical hazards are finite task outcomes, like collision.
+            # Missing support/degenerate geometry remain unusable learning data.
+            physical = {'impassable_footprint','body_clearance','terrain_step','driving_slope','contact_roughness','large_crater'}
+            terrain_failed = np.asarray([[r.reason in physical for r in row] for row in driving]).any(-1)
+            valid = np.asarray([[r.reason not in {'unknown_footprint','degenerate_contact_plane'}
+                                 for r in row] for row in driving]).all(-1)
         self._valid&=valid
         self.last_task=self.task.advance(self.core.poses,self.core.actual_velocity,reports,self.core.times,
-                                        active_envs=active,environment_valid=self._valid)
-        after=actual_facts(self.spec,self.core.poses,self.core.actual_velocity,reports,self.last_task['hold_count'])
+                                        active_envs=active,environment_valid=self._valid,terrain_failed=terrain_failed)
+        after=actual_facts(self.spec,self.core.poses,self.core.actual_velocity,driving if self.graded_craters else reports,self.last_task['hold_count'])
         height_after=np.array([[self._center_lookup(e,a,self.local_pose(e,a))[0][0,0] for a,m in enumerate(row)] for e,row in enumerate(self.memory)])
-        reward,terms=self.reward_tracker.advance(before,after,self.last_task,self.core.actual_velocity,features,gains,height_after-height_before)
+        obstacle_distances=obstacle_known=None
+        medium_crater_distances=None
+        if obstacle_before is not None:
+            measured=[[obstacle_before[e][a].obstacle_distance(self.local_pose(e,a)) for a in range(4)] for e in range(self.e)]
+            obstacle_distances=np.asarray([[item[0][0] for item in row] for row in measured])
+            obstacle_known=np.asarray([[item[1][0] for item in row] for row in measured])
+            if self.graded_craters:
+                medium_crater_distances=np.asarray([[obstacle_before[e][a].obstacle_distance(
+                    self.local_pose(e,a),kind='crater_medium')[0][0] for a in range(4)] for e in range(self.e)])
+        reward,terms=self.reward_tracker.advance(before,after,self.last_task,self.core.actual_velocity,features,gains,height_after-height_before,
+                                                obstacle_distances=obstacle_distances,medium_crater_distances=medium_crater_distances)
         for (e,a),item in list(self.pending.items()):
             if active[e]:item.append(self.spec,self.local_pose(e,a),self.core.previous_control[e,a],self.core.actual_velocity[e,a],float(self.core.times[e]))
         self._ended|=self.last_task['terminated'];self.last_terms=terms
@@ -399,12 +528,25 @@ class UpstreamEnvironment:
             self._episodes.append({**({'curriculum_level':int(self.curriculum.episode_levels[e])} if self.curriculum is not None else {}),'env_id':int(e),'episode':int(self.core.episodes[e]),'terminal_reason':self.last_task['terminal_reason'][e],
                 'raw_return':float(self.reward_tracker.raw_return[e]),'discounted_return':float(self.reward_tracker.discounted_return[e]),
                 'reward_components':{k:float(v[e]) for k,v in self.reward_tracker.component_returns.items()},
+                **({'terrain_failure_reasons':[r.reason for r in driving[e]]} if self.graded_craters else {}),
                 'steps':int(self.reward_tracker.steps[e]),'hold_count':int(self.last_task['hold_count'][e])})
         record={'execution':execution,'decisions':decisions,'task':deepcopy(self.last_task),'reward':reward.copy(),'reward_components':deepcopy(terms)}
+        if obstacle_before is not None:
+            record.update(obstacle_distance=obstacle_distances,obstacle_footprint_known=obstacle_known,
+                perception={'atlas_cells_read':sum(m.stats['atlas_cells_read'] for row in self.memory for m in row)-previous_reads,
+                            'physical_query_points':self.physical_query_points-previous_physical})
+        if self.graded_craters:
+            record.update(terrain_failure_reasons=[[r.reason for r in row] for row in driving],
+                          medium_crater_distance=medium_crater_distances)
         self._records.append(record)
         return reward,terms,record
 
     def step_intents(self,intents,*,max_steps=None):
+        facts=self._advance_intents(intents,max_steps=max_steps)
+        return self._transition_from_facts(facts,*self.observe())
+
+    def _advance_intents(self,intents,*,max_steps=None):
+        """Advance one planner slice; the decision boundary owns observation encoding."""
         steps=round(self.spec.grid.high_level_period/self.spec.grid.dt) if max_steps is None else max_steps
         if type(steps) is not int or steps<1 or steps>round(self.spec.grid.high_level_period/self.spec.grid.dt):raise ValueError('Invalid macro slice length')
         if intents is not None:self.enqueue(intents)
@@ -416,13 +558,19 @@ class UpstreamEnvironment:
             r,terms,_=self.tick();weight=self.reward_tracker.settings.gamma**duration
             reward+=weight*r;duration+=active;learning|=active
             for name,value in terms.items():parts.setdefault(name,np.zeros(self.e))[:]+=weight*value
-        self._activate();actor,critic=self.observe()
+        self._activate()
         learning&=self._valid&(duration>0);reward=np.where(learning,reward,0.)
         reason=np.zeros(self.e,np.int64) if self.last_task is None else np.asarray([REASON_CODE[x] for x in self.last_task['terminal_reason']],np.int64)
-        return UpstreamMacroTransition(torch.tensor(reward,dtype=torch.float32),torch.tensor(duration),torch.tensor(self._ended.copy()),
-            torch.zeros(self.e,dtype=torch.bool),actor.clone(),critic.clone(),actor,critic,deepcopy(self._episodes[start_episodes:]),
-            deepcopy(self._records[start_records:]),torch.tensor(reason),torch.tensor(~self._ended&learning),torch.tensor(learning),
-            {k:torch.tensor(np.where(learning,v,0.),dtype=torch.float32) for k,v in parts.items()})
+        return {'reward':torch.tensor(reward,dtype=torch.float32),'duration':torch.tensor(duration),
+            'terminated':torch.tensor(self._ended.copy()),'truncated':torch.zeros(self.e,dtype=torch.bool),
+            'episodes':deepcopy(self._episodes[start_episodes:]),'records':deepcopy(self._records[start_records:]),
+            'terminal_reason':torch.tensor(reason),'bootstrap_allowed':torch.tensor(~self._ended&learning),
+            'learning_valid':torch.tensor(learning),
+            'reward_components':{k:torch.tensor(np.where(learning,v,0.),dtype=torch.float32) for k,v in parts.items()}}
+
+    def _transition_from_facts(self,facts,actor,critic):
+        return UpstreamMacroTransition(**facts,terminal_actor=actor.clone(),terminal_critic=critic.clone(),
+                                       actor=actor,critic=critic)
 
     def reset(self,ids,poses=None):
         ids=np.asarray(ids)
@@ -440,6 +588,8 @@ class UpstreamEnvironment:
             for a in range(4):self.memory[e][a].reset();self.scripts[e][a].reset();self.intents[e][a]=None;self.plans[e][a]=None;self.feedback[e][a]=PlannerFeedback();self.bounds[e][a]=None
             for a in range(4):
                 self.execution_predictions[e][a]=None
+                self._physical_views[e][a]=None
+                self._driving_views[e][a]=None
                 if self.safety is not None:self.safety[e][a].reset()
             for key in [key for key in self.pending if key[0]==e]:del self.pending[key]
         self._ended[ids]=False;self._valid[ids]=True
@@ -476,6 +626,9 @@ class UpstreamEnvironment:
             trial.curriculum.load_state_dict(state['curriculum'])
             trial.task.deadlines[:]=trial.curriculum.deadlines
         trial.core.load_state_dict(state['core']);trial.anchors=np.asarray(state['anchors'],float).copy()
+        trial._physical_views=[[None]*4 for _ in range(self.e)]
+        trial._driving_views=[[None]*4 for _ in range(self.e)]
+        trial._pose_reports=[[None]*4 for _ in range(self.e)];trial._center_features=[[None]*4 for _ in range(self.e)]
         if trial.anchors.shape!=(self.e,4,3) or not np.isfinite(trial.anchors).all():raise ValueError('Invalid fixed frames')
         if (abs(trial.anchors[...,2])>1e-10).any():raise ValueError('Snapshot changed fixed odometry orientation')
         trial.task.load_state_dict(state['task']);trial.reward_tracker.load_state_dict(state['reward']);trial.pool.load_state_dict(state['planners'])
@@ -487,6 +640,12 @@ class UpstreamEnvironment:
         trial.radio.load_state_dict(state['radio'])
         for e in range(self.e):
             for a in range(4):trial.memory[e][a].load_state_dict(state['memory'][e][a]);trial.scripts[e][a].load_state_dict(state['scripts'][e][a])
+        if trial.obstacle_atlases is not None:
+            for e in range(self.e):
+                for a in range(4):
+                    memory=trial.memory[e][a]
+                    if not np.array_equal(memory.anchor,trial.anchors[e,a]) or memory.view().timestamp>trial.core.times[e]+1e-10:
+                        raise ValueError('Restored grid episode frame/time mismatch')
         ended=np.asarray(state['ended']);valid=np.asarray(state['valid'])
         if ended.shape!=(self.e,) or valid.shape!=ended.shape or ended.dtype!=bool or valid.dtype!=bool:raise ValueError('Invalid environment masks')
         pending={}

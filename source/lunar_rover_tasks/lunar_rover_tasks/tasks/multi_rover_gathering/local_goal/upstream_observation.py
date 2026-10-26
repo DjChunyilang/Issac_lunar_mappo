@@ -15,6 +15,8 @@ import torch
 from .contracts import PlannerFeedback,wrap
 from .upstream_communication import MESSAGE_V2,ReceivedMessage,ReceivedSnapshot,validate_actuator_state
 from .upstream_footprint import FootprintTerrain
+from .upstream_grid import GridTerrain
+from .upstream_obstacle_spec import OBSERVATION_VERSION as GRID_OBSERVATION_VERSION
 from .upstream_planning import UpstreamIntent
 from .upstream_spec import UpstreamSpec
 
@@ -67,7 +69,7 @@ class ObservationInput:
                 or type(self.agent_id) is not int or not 0<=self.agent_id<4 or type(self.episode) is not int or self.episode<0):
             raise ValueError("Observation identity/profile mismatch")
         if (not np.isfinite([self.now,self.episode_seconds]).all() or self.now<0 or self.episode_seconds<=0
-                or type(self.terrain) is not FootprintTerrain or self.terrain.profile_fingerprint!=self.spec.fingerprint
+                or type(self.terrain) not in (FootprintTerrain,GridTerrain) or self.terrain.profile_fingerprint!=self.spec.fingerprint
                 or type(self.snapshot) is not ReceivedSnapshot):
             raise ValueError("Observation requires current local terrain, legal messages and a finite task clock")
         for name,shape in [('ego_pose',(3,)),('actual_velocity',(2,)),('previous_control',(2,))]:
@@ -128,17 +130,22 @@ class ActorObservation:
     version: str = OBSERVATION_VERSION
 
     def __post_init__(self):
-        object.__setattr__(self,'values',_owned(self.values,(ACTOR_DIM,),np.float32))
+        dimension=523 if self.version==GRID_OBSERVATION_VERSION else ACTOR_DIM
+        object.__setattr__(self,'values',_owned(self.values,(dimension,),np.float32))
         object.__setattr__(self,'terrain_known',_owned(self.terrain_known,(112,),bool))
         object.__setattr__(self,'sender_indices',_owned(self.sender_indices,(3,),np.int64))
-        if self.version!=OBSERVATION_VERSION:raise ValueError("Unsupported Actor observation version")
+        if self.version not in (OBSERVATION_VERSION,GRID_OBSERVATION_VERSION):raise ValueError("Unsupported Actor observation version")
 
 
 class UpstreamObservationEncoder:
-    def __init__(self,spec,*,spatial_scaling="linear"):
+    def __init__(self,spec,*,spatial_scaling="linear",obstacle_input=None):
         if type(spec) is not UpstreamSpec:raise ValueError("Observation encoder requires a typed profile")
         if spatial_scaling not in ('linear', 'log1p'):raise ValueError('Unknown spatial normalization')
         self.spatial_scaling=spatial_scaling
+        self.obstacle_input=obstacle_input
+        self.channels=3 if obstacle_input is not None else 2
+        self.actor_dim=523 if obstacle_input is not None else ACTOR_DIM
+        self.critic_dim=1439 if obstacle_input is not None else CRITIC_DIM
         self.spec=spec;p=spec.perception;v=spec.vehicle
         length=math.ceil(v.length/2+v.clearance_margin);width=math.ceil(v.width/2+v.clearance_margin)
         patches=[(np.linspace(-length,length,7),np.linspace(-width,width,9)),
@@ -148,9 +155,21 @@ class UpstreamObservationEncoder:
         self._goal_points=np.stack(np.meshgrid(np.linspace(-spec.rho_max,spec.rho_max,5),
                                              np.linspace(-spec.rho_max,spec.rho_max,5),indexing='ij'),-1).reshape(-1,2)
         self._points.setflags(write=False);self._goal_points.setflags(write=False)
+        def regions(x,y):
+            xe=np.r_[x[0],(x[:-1]+x[1:])/2,x[-1]]
+            ye=np.r_[y[0],(y[:-1]+y[1:])/2,y[-1]]
+            return [(xe[i],xe[i+1],ye[j],ye[j+1]) for i in range(len(x)) for j in range(len(y))]
+        self._regions=sum([regions(x,y) for x,y in patches],[])
+        axis=np.linspace(-spec.rho_max,spec.rho_max,5)
+        self._goal_regions=regions(axis,axis)
 
     @property
     def metadata(self):
+        if self.obstacle_input is not None:
+            return {'observation_version':GRID_OBSERVATION_VERSION,'profile_fingerprint':self.spec.fingerprint,
+                    'actor_dim':self.actor_dim,'critic_dim':self.critic_dim,'terrain_channels':3,'terrain_points':112,
+                    'spatial_scaling':self.spatial_scaling,'obstacle_input':self.obstacle_input.metadata,
+                    'oracle_features':'nine_reserved_zeros','aggregation':'exact_cell_intersection_area_v1'}
         return {**({'spatial_scaling':self.spatial_scaling} if self.spatial_scaling!='linear' else {}),
                 'observation_version':OBSERVATION_VERSION,'profile_fingerprint':self.spec.fingerprint,
                 'actor_dim':ACTOR_DIM,'critic_dim':CRITIC_DIM,'terrain_channels':2,'terrain_points':112,
@@ -164,6 +183,11 @@ class UpstreamObservationEncoder:
         return np.sign(value) * np.log1p(np.abs(value) / self.spec.task.dmax) / np.log1p(self.spec.communication.full_radius / self.spec.task.dmax)
 
     def _terrain(self,item,points):
+        if self.obstacle_input is not None:
+            if type(item.terrain) is not GridTerrain:raise ValueError('Semantic encoder requires a private grid')
+            regions=self._regions if points is self._points else self._goal_regions
+            values=item.terrain.aggregate(item.ego_pose,regions,parking=points is self._goal_points)
+            return values[:,0],values[:,1],values[:,2]
         coordinates=_rotate(points,item.ego_pose[2])+item.ego_pose[:2]
         features,known=item.terrain.lookup(coordinates)
         center,supported=item.terrain.lookup(item.ego_pose[:2])
@@ -210,7 +234,8 @@ class UpstreamObservationEncoder:
                 for j,dt in enumerate((.4,1.)):
                     point=np.array([np.interp(item.now+dt,message.trajectory.times,message.trajectory.states[:,axis]) for axis in range(2)])
                     values[6+2*j:8+2*j]=self.relative_position(_rotate(point-pose[:2],-pose[2]))
-        height,risk,known=self._terrain(item,self._points);grids=np.stack([height,risk],-1)
+        height,risk,known=self._terrain(item,self._points)
+        grids=np.stack([height,risk,known],-1) if self.obstacle_input is not None else np.stack([height,risk],-1)
         visible=snapshot.state_valid;distances=np.linalg.norm(neighbors[:,:2],axis=-1)
         count=int(visible.sum());aggregation=np.zeros(5)
         if count:aggregation[:]=[count/3,distances[visible].mean(),distances[visible].max(),
@@ -223,8 +248,9 @@ class UpstreamObservationEncoder:
         extra[10:85]=np.stack([gh,gr,gk],-1).reshape(-1)
         clock=np.clip(1-item.now/item.episode_seconds,0.,1.)
         values=np.concatenate([ego,neighbors.reshape(-1),grids.reshape(-1),aggregation,extra,[clock]])
-        return ActorObservation(values,known,item.env_id,item.agent_id,item.episode,item.now,item.episode_seconds,
-                                spec.fingerprint,snapshot.sender_indices)
+        return ActorObservation(values,known>=1-1e-8,item.env_id,item.agent_id,item.episode,item.now,item.episode_seconds,
+                                spec.fingerprint,snapshot.sender_indices,
+                                version=GRID_OBSERVATION_VERSION if self.obstacle_input is not None else OBSERVATION_VERSION)
 
     def critic(self,poses_world,actual_velocity,observations,hold_counts,times,episode_seconds):
         poses=np.asarray(poses_world,float);speed=np.asarray(actual_velocity,float)
@@ -235,7 +261,7 @@ class UpstreamObservationEncoder:
                 or not np.isfinite(deadlines).all() or (deadlines<=0).any() or (now<0).any()
                 or len(observations)!=envs or any(len(row)!=4 for row in observations)):
             raise ValueError("Invalid centralized Critic facts")
-        actor=np.empty((envs,4,ACTOR_DIM),np.float32)
+        actor=np.empty((envs,4,self.actor_dim),np.float32)
         for e,row in enumerate(observations):
             for a,observation in enumerate(row):
                 if (type(observation) is not ActorObservation or observation.profile_fingerprint!=self.spec.fingerprint
@@ -254,16 +280,24 @@ class UpstreamObservationEncoder:
                        counts/(self.spec.task.hold_duration/self.spec.grid.dt)],-1)
         if self.spatial_scaling == 'log1p':
             team[:,[0,1,5]]=np.log1p(team[:,[0,1,5]])/np.log(2.)
-        grids=actor[:,:,66:290].reshape(envs,4,112,2);height=grids[...,0];risk=grids[...,1]
-        terrain=np.stack([abs(height).mean((1,2)),height.clip(min=0).max((1,2)),(-height).clip(min=0).max((1,2)),
-                          risk.mean((1,2)),risk.max((1,2))],-1)
+        end=66+112*self.channels
+        grids=actor[:,:,66:end].reshape(envs,4,112,self.channels)
+        if self.obstacle_input is not None:
+            mask=grids[...,2]>0;count=np.maximum(mask.sum((1,2)),1)
+            obstacle=np.where(mask,grids[...,0],0);ground=np.where(mask,grids[...,1],0)
+            terrain=np.stack([obstacle.sum((1,2))/count,obstacle.max((1,2)),ground.sum((1,2))/count,
+                              ground.max((1,2)),grids[...,2].mean((1,2))],-1)
+        else:
+            height=grids[...,0];risk=grids[...,1]
+            terrain=np.stack([abs(height).mean((1,2)),height.clip(min=0).max((1,2)),(-height).clip(min=0).max((1,2)),
+                              risk.mean((1,2)),risk.max((1,2))],-1)
         # Only centralized Critic receives actual team facts/hold count. Oracle
         # dimensions stay explicit reserved zeros; no Oracle API is accepted.
-        values=np.concatenate([body.reshape(envs,32),team,terrain,np.zeros((envs,9)),grids.reshape(envs,896),
-                               actor[:,:,295:305].reshape(envs,40),np.clip(1-now/deadlines,0.,1.)[:,None]],-1)
-        return _owned(values,(envs,CRITIC_DIM),np.float32)
+        values=np.concatenate([body.reshape(envs,32),team,terrain,np.zeros((envs,9)),grids.reshape(envs,4*112*self.channels),
+                               actor[:,:,end+5:end+15].reshape(envs,40),np.clip(1-now/deadlines,0.,1.)[:,None]],-1)
+        return _owned(values,(envs,self.critic_dim),np.float32)
 
     def actor_tensor(self,inputs,*,device='cpu'):
         observations=[self.actor(item) for item in inputs]
-        array=np.stack([o.values for o in observations]) if observations else np.empty((0,ACTOR_DIM),np.float32)
+        array=np.stack([o.values for o in observations]) if observations else np.empty((0,self.actor_dim),np.float32)
         return torch.tensor(array,dtype=torch.float32,device=device)

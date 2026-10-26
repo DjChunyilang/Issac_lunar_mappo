@@ -6,6 +6,8 @@ state and reward accumulators are independent of the training collector.
 from collections import Counter
 from copy import deepcopy
 import gc
+import json
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -77,8 +79,29 @@ def inward_flags(env, targets):
     return flags, eligible
 
 
+def bounded_outcome_metrics(elapsed_steps, ended, episodes, path_length_m, dt):
+    """Observed survival times include live cases, whose later outcome is censored.
+
+    Actual travel distance stays fixed after termination, unlike the archived
+    applied-control statistic. Dividing by each case's own active time therefore
+    excludes frozen velocities from already-ended environments.
+    """
+    elapsed = np.asarray(elapsed_steps) * dt
+    censored = ~np.asarray(ended, bool)
+    failures = Counter(e['terminal_reason'] for e in episodes if e['terminal_reason'] != 'success')
+    speed = np.divide(np.asarray(path_length_m).mean(-1), elapsed,
+                      out=np.zeros_like(elapsed, dtype=float), where=elapsed > 0)
+    return {'observed_seconds': elapsed, 'mean_observed_seconds': float(elapsed.mean()),
+            'censored': censored, 'censored_count': int(censored.sum()),
+            'window_failure_count': sum(failures.values()),
+            'window_failure_fraction': sum(failures.values()) / len(elapsed),
+            'window_failure_reasons': dict(failures), 'mean_actual_speed': speed,
+            'survival_scope': 'observed time to termination or window cut; live cases are censored, not successes'}
+
+
 @torch.no_grad()
-def panel(c, *, deterministic=False, intervention=None, seconds=20):
+def panel(c, *, deterministic=False, intervention=None, seconds=20, progress=None, capture=None,
+          bounded_metrics=False):
     env = c.env
     initial = geometry(env.core.poses)
     hidden = torch.zeros_like(c.hidden)
@@ -97,6 +120,8 @@ def panel(c, *, deterministic=False, intervention=None, seconds=20):
     step_seconds = c.learning_time.policy_decision_period_s if intervention is None else 1.
     scripted_targets = None
     for index in range(round(seconds/step_seconds)):
+        if progress is not None:
+            progress(elapsed)
         if env._ended.all():
             break
         renew_legal_bounds(env)
@@ -104,7 +129,7 @@ def panel(c, *, deterministic=False, intervention=None, seconds=20):
         if intervention is None:
             sample = c.policy.sample(obs, hidden, deterministic=deterministic)
             targets, _ = c.bridge.decode(sample.action)
-            probability = c.policy.hold_logit(sample.hidden).squeeze(-1).sigmoid().numpy()
+            probability = c.policy.action_distribution(sample.hidden, observation=obs).branch.probs.numpy()
             flags, legal = inward_flags(env, targets)
             transition = step_decision(c.bridge, sample.action, c.learning_time, renew_legal_bounds)
             hidden = torch.where(transition.terminated[:,None,None], 0., sample.hidden)
@@ -139,6 +164,8 @@ def panel(c, *, deterministic=False, intervention=None, seconds=20):
             if 'execution' not in record:
                 continue
             ex = record['execution']
+            if capture is not None:
+                capture(ex)
             path_length += np.linalg.norm(ex['after'][...,:2]-ex['before'][...,:2],axis=-1)
             speed_sum += np.abs(ex['applied_control'][...,0]).mean(1)
             overlap_steps += int(np.count_nonzero(ex['geometry_overlap']))
@@ -157,7 +184,9 @@ def panel(c, *, deterministic=False, intervention=None, seconds=20):
     if allowed.any():
         final_value[allowed] = c.policy.value(state[allowed]).numpy()
     final = geometry(env.core.poses)
-    return {'initial':initial,'final':final,'dmax_reduction':initial['dmax']-final['dmax'],
+    return {**(bounded_outcome_metrics(elapsed, env._ended, episodes, path_length, env.spec.grid.dt)
+               if bounded_metrics else {}),
+        'initial':initial,'final':final,'dmax_reduction':initial['dmax']-final['dmax'],
         'dispersion_reduction':initial['dispersion']-final['dispersion'],
         'hold_fraction':hold_weight/np.maximum(action_weight,1),
         'hold_probability':probability_weight/np.maximum(action_weight,1),
@@ -175,6 +204,200 @@ def panel(c, *, deterministic=False, intervention=None, seconds=20):
         'final_actual_stopped':env.last_task['actual_stopped'].copy(),
         'optimizer_updates':0,'trace':trace,
         'residual_scope':'finite-window critic residual; interventions are off-policy, never PPO samples'}
+
+
+class EvaluationPoseCapture:
+    """Keep actual world poses only while each independent episode is active."""
+
+    def __init__(self, initial_poses, dt):
+        self.dt = float(dt)
+        self.histories = [[pose.copy()] for pose in np.asarray(initial_poses)]
+
+    def __call__(self, execution):
+        for env_id in np.flatnonzero(execution['active_envs']):
+            history = self.histories[env_id]
+            if not np.array_equal(history[-1], execution['before'][env_id]):
+                raise ValueError('Evaluation capture lost an executed pose or crossed an episode reset')
+            history.append(execution['after'][env_id].copy())
+
+    def arrays(self):
+        return [np.stack(history) for history in self.histories]
+
+
+def _compare_evaluation_replay(expected, actual, *, atol=1e-6, rtol=1e-6):
+    """Compare recorded fields recursively, retaining useful mismatch evidence."""
+    mismatches = []
+    compared = 0
+    max_absolute_error = 0.
+
+    def compare(reference, replay, path):
+        nonlocal compared, max_absolute_error
+        if isinstance(reference, dict):
+            if not isinstance(replay, dict) or set(reference) != set(replay):
+                mismatches.append({'field': path, 'reason': 'keys'})
+                return
+            for key in reference:
+                compare(reference[key], replay[key], f'{path}.{key}')
+        elif isinstance(reference, list) and reference and isinstance(reference[0], dict):
+            if len(reference) != len(replay):
+                mismatches.append({'field': path, 'reason': 'length'})
+                return
+            for index, (left, right) in enumerate(zip(reference, replay)):
+                compare(left, right, f'{path}[{index}]')
+        elif isinstance(reference, (int, float, list, np.ndarray)) and not isinstance(reference, bool):
+            left, right = np.asarray(reference), np.asarray(replay)
+            compared += 1
+            if left.shape != right.shape:
+                mismatches.append({'field': path, 'reason': 'shape'})
+            elif left.dtype.kind in 'biu':
+                if not np.array_equal(left, right):
+                    mismatches.append({'field': path, 'reason': 'discrete_value'})
+            elif left.dtype.kind == 'f':
+                error = float(np.max(np.abs(left-right))) if left.size else 0.
+                max_absolute_error = max(max_absolute_error, error)
+                if not np.allclose(left, right, atol=atol, rtol=rtol):
+                    mismatches.append({'field': path, 'reason': 'numeric_value', 'max_abs_error': error})
+            elif not np.array_equal(left, right):
+                mismatches.append({'field': path, 'reason': 'value'})
+        else:
+            compared += 1
+            if reference != replay:
+                mismatches.append({'field': path, 'reason': 'value'})
+
+    compare(expected, actual, 'evaluation')
+    return {'matched': not mismatches, 'atol': atol, 'rtol': rtol,
+            'compared_fields': compared, 'max_abs_error': max_absolute_error,
+            'mismatches': mismatches}
+
+
+def replay_saved_evaluation(run_dir: Path, phase='final', *, progress=None):
+    """Replay the frozen fixed-lunar panels for the existing animation renderer.
+
+    No optimizer or original output is mutated. Returned ``panels`` contain
+    world-frame [time, rover, x/y/yaw] arrays including t=0 and the terminal
+    state, plus single-environment TerrainRuntime objects for terrain_viz.
+    Validation is returned even on a mismatch so the caller can save evidence
+    before refusing to label the render as the original evaluation.
+    """
+    from _common import ROOT
+    from planner_evidence import file_sha256
+    from upstream_curriculum_experiment import bounded_evaluation, evaluation_panels, is_fixed, timing_for
+    from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal.action_ablation import ActionContract, AblationPolicy
+    from lunar_rover_tasks.tasks.multi_rover_gathering.terrain_features import make_terrain_runtime
+
+    run_dir = Path(run_dir).resolve()
+    evaluation_path = run_dir/'metrics'/f'evaluation_{phase}.json'
+    original = json.loads(evaluation_path.read_text())
+    candidates = []
+    for header in sorted((run_dir/'checkpoints').glob('update_*.json')):
+        if not header.name.endswith('.learner.json'):
+            metadata = json.loads(header.read_text())
+            if metadata.get('actual_base_steps') == original['training_base_steps']:
+                candidates.append(header.with_suffix('.pt'))
+    if len(candidates) != 1:
+        raise ValueError('Evaluation replay requires one full checkpoint at the recorded training step')
+    checkpoint = candidates[0]
+    saved = read_checkpoint(checkpoint, learner_only=True)
+    central = saved['trainer']['collector']
+    config = deepcopy(saved['identity']['config'])
+    if not is_fixed(config):
+        raise ValueError('Saved animation replay currently requires the fixed lunar evaluation contract')
+    base = Path(saved['identity']['base_config'])
+    if file_sha256(base) != saved['identity']['base_config_sha256']:
+        raise ValueError('Evaluation base configuration has changed since the checkpoint')
+    policy_state = central['policy']
+    metadata = policy_state['metadata']
+    contract = ActionContract(**{key: metadata[key] for key in
+        ('representation', 'profile_fingerprint', 'rho_max', 'speed_cap_max', 'beta_max', 'request_seconds')})
+    timing = timing_for(config)
+    results, panels, checks, traces = {}, {}, {}, {}
+    old_threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        with torch.random.fork_rng(devices=[]):
+            policy = AblationPolicy(metadata['critic_dim'], contract, terrain_channels=metadata['terrain_channels'])
+            if 'value_normalization' in metadata:
+                policy.enable_value_normalization()
+            policy.load_diagnostic_state(policy_state)
+            policy.cpu().eval()
+            for prefix, level, seconds, complete in evaluation_panels(
+                    config, original['curriculum_level'], phase, final=phase == 'final',
+                    full=original['full_episode_evaluation']):
+                for deterministic in (False, True):
+                    name = f'{prefix}_{"mean" if deterministic else "sample"}'
+                    eval_config = deepcopy(config)
+                    seed, policy_seed = (130363, 130367) if prefix == 'unseen' else (104729, 104759)
+                    eval_config['scene_role'] = 'unseen' if prefix == 'unseen' else 'fixed_eval'
+                    # Match evaluate() exactly, including the second spawn draw
+                    # after make_collector's construction-time spawn.
+                    c = make_collector(base, 'A1', seed, samples=512, num_envs=4,
+                        episode_seconds=config['stages'][level]['deadline_s'],
+                        policy=deepcopy(policy), learning_time=timing, curriculum_config=eval_config)
+                    c.env.curriculum.set_level(level)
+                    poses = c.env.curriculum.sample(np.arange(4), replay=False)
+                    c.env.task.deadlines[:] = c.env.curriculum.deadlines
+                    c.env.reset(np.arange(4), poses)
+                    capture = EvaluationPoseCapture(c.env.core.poses, c.env.spec.grid.dt)
+                    torch.manual_seed(policy_seed)
+                    row = panel(c, deterministic=deterministic, seconds=seconds, capture=capture,
+                        progress=None if progress is None else lambda elapsed, name=name: progress(name, elapsed.copy()),
+                        **({'bounded_metrics': True} if bounded_evaluation(config) else {}))
+                    row['full_episode_evaluation'] = complete
+                    row['observation_seconds'] = seconds
+                    trace = row.pop('trace')
+                    trace_path = run_dir/'metrics'/f'trace_{phase}_{name}.json'
+                    trace_reference = json.loads(trace_path.read_text())
+                    histories = capture.arrays()
+                    ordered_episodes = sorted(row['episodes'], key=lambda episode: episode['env_id'])
+                    capture_steps = [len(history)-1 for history in histories]
+                    check = _compare_evaluation_replay(
+                        {'result': original['results'][name], 'trace': trace_reference},
+                        {'result': row, 'trace': trace})
+                    if bounded_evaluation(config):
+                        capture_matches = (np.array_equal(capture_steps, np.rint(np.asarray(row['observed_seconds']) / c.env.spec.grid.dt).astype(int))
+                            and all(capture_steps[e['env_id']] == e['steps'] for e in ordered_episodes)
+                            and sum(capture_steps) == row['actual_base_steps'])
+                    else:
+                        capture_matches = (len(ordered_episodes) == 4 and
+                            capture_steps == [episode['steps'] for episode in ordered_episodes] and
+                            sum(capture_steps) == row['actual_base_steps'])
+                    check.update(capture_matches=capture_matches, capture_steps=capture_steps,
+                                 matched=check['matched'] and capture_matches)
+                    runtime = c.env._terrain_runtime
+                    single_runtimes, scene_manifests = [], []
+                    for env_id in range(c.env.e):
+                        single = make_terrain_runtime(1, device='cpu', dtype=torch.float64)
+                        single.scene_bank = runtime.scene_bank
+                        single.scene_indices = runtime.scene_indices[env_id:env_id+1].clone()
+                        single_runtimes.append(single)
+                        scene_manifests.append(str(runtime.scene_bank.scenes[int(single.scene_indices[0])].path))
+                    panels[name] = {'dt': capture.dt, 'histories': histories,
+                        'times': [np.arange(len(history))*capture.dt for history in histories],
+                        'episodes': ordered_episodes, 'terrain_cfg': deepcopy(c.env._terrain_cfg),
+                        'terrain_runtimes': single_runtimes, 'scene_manifests': scene_manifests,
+                        'vehicle': {'length': c.env.spec.vehicle.length, 'width': c.env.spec.vehicle.width},
+                        'seed': seed, 'policy_seed': policy_seed, 'coordinate_frame': 'world_xy_m_yaw_rad'}
+                    results[name], traces[name], checks[name] = row, trace, check
+                    del c
+                    gc.collect()
+    finally:
+        torch.set_num_threads(old_threads)
+    actual = sum(row['actual_base_steps'] for row in results.values())
+    replay = {**original, 'results': results, 'actual_base_steps': actual, 'optimizer_updates': 0}
+    sources = [checkpoint, evaluation_path, base,
+               *(run_dir/'metrics'/f'trace_{phase}_{name}.json' for name in results)]
+    scenes = sorted({scene for panel_data in panels.values() for scene in panel_data['scene_manifests']})
+    return {'evaluation': replay, 'traces': traces, 'panels': panels,
+        'validation': {'matched': all(check['matched'] for check in checks.values()) and
+                       actual == original['actual_base_steps'], 'panels': checks,
+                       'original_actual_base_steps': original['actual_base_steps'],
+                       'replay_actual_base_steps': actual, 'atol': 1e-6, 'rtol': 1e-6},
+        'provenance': {'phase': phase, 'run_dir': str(run_dir), 'checkpoint': str(checkpoint),
+            'evaluation': str(evaluation_path), 'training_base_steps': central['base_steps'],
+            'additional_evaluation_base_steps': actual, 'optimizer_updates': 0,
+            'sources': {str(path): file_sha256(path) for path in sources},
+            'scenes': {scene: file_sha256(scene) for scene in scenes},
+            'replay_source_sha256': file_sha256(ROOT/'scripts/upstream_decision_evaluation.py')}}
 
 
 def evaluate_panels(base, checkpoint, policy, timing, *, final=False):

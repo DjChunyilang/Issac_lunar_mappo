@@ -27,7 +27,7 @@ class TeamModel(Model):
     def __init__(self,policy):
         device=next(policy.parameters()).device
         super().__init__(observation_space=gym.spaces.Box(-np.inf,np.inf,(4,policy.actor_dim),dtype=np.float32),
-            state_space=gym.spaces.Box(-np.inf,np.inf,(991,),dtype=np.float32),
+            state_space=gym.spaces.Box(-np.inf,np.inf,(policy.critic_dim,),dtype=np.float32),
             action_space=gym.spaces.Box(-np.inf,np.inf,(4,policy.contract.continuous_dim+2),dtype=np.float32),
             device=device)
         self.policy=policy

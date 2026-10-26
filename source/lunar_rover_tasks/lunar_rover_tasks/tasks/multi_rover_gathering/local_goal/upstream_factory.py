@@ -60,6 +60,7 @@ def create_upstream_adapter(cfg, *, kernel_cache=None, mppi_settings=None, cache
                 cfg.mppi_samples, cfg.mppi_iterations, cfg.planner_device):
             raise ValueError("MPPI settings disagree with resolved run configuration")
         key = digest({"profile": cfg.spec.fingerprint, "grid": asdict(cfg.spec.grid),
+                      **({'obstacle_input':cfg.obstacle_input.metadata} if cfg.obstacle_input is not None else {}),
                       "settings": asdict(settings), "execution": EXECUTION_VERSION,
                       "kernel": kernel_type.version, "cost": kernel_type.cost_version})
         kernel = None if kernel_cache is None else kernel_cache.get(key)
@@ -108,7 +109,7 @@ def _validate_pairs(planners, inputs):
     return contexts
 
 
-def plan_batch(planners, inputs):
+def plan_batch(planners, inputs, *, record_samples=True):
     """Restore caller order after true tensor batches grouped by kernel identity.
 
     Input validation precedes any planner state changes. NMPC/geometric planners
@@ -126,7 +127,7 @@ def plan_batch(planners, inputs):
             outputs[index] = planner.plan(inputs[index])
     for indices in groups.values():
         kernel = planners[indices[0]].batch_kernel
-        results = kernel.plan_batch([planners[i] for i in indices], [inputs[i] for i in indices])
+        results = kernel.plan_batch([planners[i] for i in indices], [inputs[i] for i in indices], record_samples=record_samples)
         for index, output in zip(indices, results, strict=True):
             outputs[index] = output
     return outputs
@@ -139,6 +140,8 @@ class UpstreamPlannerPool:
         self.cfg = _configuration(cfg)
         self.mppi_settings = mppi_settings
         self.cache_dir = cache_dir
+        # Diagnostic-only switch; never part of planner hot-state identity.
+        self.record_samples = True
         self._kernels = {}
         self._planners = {}
 
@@ -165,7 +168,7 @@ class UpstreamPlannerPool:
         planners = [self._planners[key] if key in self._planners else pending[key] for key in identities]
         _validate_pairs(planners, inputs)
         self._planners.update(pending)
-        return plan_batch(planners, inputs)
+        return plan_batch(planners, inputs, record_samples=self.record_samples)
 
     def reset(self, env_id=None):
         if env_id is not None and (isinstance(env_id, bool) or not isinstance(env_id, int)

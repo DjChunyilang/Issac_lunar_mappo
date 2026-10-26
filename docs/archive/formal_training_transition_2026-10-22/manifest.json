@@ -1,0 +1,78 @@
+{
+  "date": "2026-10-22",
+  "transformation": "Full body preserved; history banner added and relative Markdown links rebased. References within this snapshot set point to their archived peers.",
+  "files": [
+    {
+      "original": "README.md",
+      "snapshot": "project_README.md",
+      "original_sha256": "16720aa3a6cd98d10638e3f8340ec3b5e0e61e9ff1a8efdbc13ca989ede31c80",
+      "snapshot_sha256": "672691f0099509a6ed2fa4da2daeb4be7b486bd3ba8b63693419d88d71131fda"
+    },
+    {
+      "original": "AGENTS.md",
+      "snapshot": "AGENTS.md",
+      "original_sha256": "5efe689c0fd0857088d073c31c2ce4ad7baeb5edabb61948f489980cd8b51f36",
+      "snapshot_sha256": "3a7c9a057d065e0c582ca6de4467cfb11e668ccb23a66c24d8a2b27c0f6ea16d"
+    },
+    {
+      "original": "docs/README.md",
+      "snapshot": "docs/README.md",
+      "original_sha256": "fdc9e0588093f2de4b8c42f596c20ba6b1811cdcb36aa405620ba058e2fc4b25",
+      "snapshot_sha256": "bc953e649d501ca265df36e1068249a43223e0fc5e3a90e5d734da192916fe29"
+    },
+    {
+      "original": "docs/current_status.md",
+      "snapshot": "docs/current_status.md",
+      "original_sha256": "b14feb85276f92aaff2af9f302fdeabdb29df7dfb0e653a0bb28755cc0b70122",
+      "snapshot_sha256": "450de92c1ced3cf8da302660db50200f3aab5e6a03d77a721004b9cd3da9b4be"
+    },
+    {
+      "original": "docs/implementation_plan.md",
+      "snapshot": "docs/implementation_plan.md",
+      "original_sha256": "932a67f0683c180f20aafd1c434d31fc54c9c05ac00944431cd329c8a5e1eea4",
+      "snapshot_sha256": "d0938d423ca0de8eaf1c4b05943dec601e6591960e97f7459fadbdf6a8b5c121"
+    },
+    {
+      "original": "docs/roadmap.md",
+      "snapshot": "docs/roadmap.md",
+      "original_sha256": "3c47d76aa873631c6ce331c8684e00462e29cd74f847fffe1997bbc8d144f392",
+      "snapshot_sha256": "6cbf9b2127a5c30a2fef9e4f1af307a21319ae235685919cb9096a1a85a47b81"
+    },
+    {
+      "original": "docs/experiment_plan.md",
+      "snapshot": "docs/experiment_plan.md",
+      "original_sha256": "6decbbded9483b9d1b1543ca60d1423d3f1dd12b20e84ecb4c579c12cb34cf58",
+      "snapshot_sha256": "0af7d19ecda3994b3fdcffa1aaab01a78dbfc5dab7c7ad60d7d42ee2205089b3"
+    },
+    {
+      "original": "docs/technical_design.md",
+      "snapshot": "docs/technical_design.md",
+      "original_sha256": "8ca3c036d0c71ae9ca7fbd82af0abfab39105e54fbf4f2651ec052f3756c83fd",
+      "snapshot_sha256": "d9cf04c16815ef6fd95ceb637ef83fb2cb684d8edc2a6af01abd6469e1410d82"
+    },
+    {
+      "original": "docs/interface_spec.md",
+      "snapshot": "docs/interface_spec.md",
+      "original_sha256": "7adc62a3603a1d847e67d85f73314aac29bdf7833f39ebf9c2c2037bd5025434",
+      "snapshot_sha256": "86b1add42fba9ccbffba211e96c37963784eea170ce30bc5ed930ec74419b426"
+    },
+    {
+      "original": "docs/architecture/planning_pipeline.md",
+      "snapshot": "docs/architecture/planning_pipeline.md",
+      "original_sha256": "637fc1165866e208d4fde9cd42f5f9d415dac78a4477337ae337f98e7710f497",
+      "snapshot_sha256": "30ab6c41b25ffe6e0bde62d9fa640ae99fa7478d5b3e6205ec7c2eeec55e4491"
+    },
+    {
+      "original": "docs/t11_handoff_plan.md",
+      "snapshot": "docs/t11_handoff_plan.md",
+      "original_sha256": "2024b6fbb79edf7f3cbf200185405d6ce2d1e6b527fc73ff17360cc9d4395afa",
+      "snapshot_sha256": "d633c1ee5d576f47ce62972fd0db20cf582f31d185b8162ee64164ee6332a5e5"
+    },
+    {
+      "original": "docs/runbooks/train_proxy.md",
+      "snapshot": "docs/runbooks/train_proxy.md",
+      "original_sha256": "c554e0f302925862ad85091caea9783c68d357c6b8e3df4b36659b45a8d8d7c2",
+      "snapshot_sha256": "ba3e2d0da159b37c1318acb6d6cfe76b273666cf61861df1a912dd5adbf46094"
+    }
+  ]
+}

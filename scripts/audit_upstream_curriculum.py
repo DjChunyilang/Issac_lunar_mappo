@@ -11,17 +11,18 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal.upstream_curriculu
 )
 from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal.upstream_reward import (
     UpstreamReward,
-    UpstreamRewardSettings,
+    UpstreamRewardSettings, configured_reward_settings,
 )
 from planner_evidence import json_write, source_snapshot
 from run_upstream_t11 import make_collector
-from upstream_curriculum_experiment import load_curriculum, timing_for
+from upstream_curriculum_experiment import load_curriculum, timing_for, is_fixed, initialize_fresh_policy, evaluation_budget_upper_bound
 from upstream_decision_evaluation import panel
+from training_tensorboard import TrainingTensorBoard
 
 
-def reward_audit(spec, config):
+def reward_audit(spec, config, *, obstacle_input=None):
     g, l = timing_for(config).discounts(.2)
-    reward = UpstreamReward(spec, 1, UpstreamRewardSettings(gamma=g, lam=l, gather_scaling=config['reward_scaling']))
+    reward = UpstreamReward(spec, 1, configured_reward_settings(g,l,config), obstacle_input=obstacle_input)
     rows = []
     for radius in (7., 12., 30., 75., 150., 300.):
         def facts(r):
@@ -35,8 +36,13 @@ def reward_audit(spec, config):
             d, v = reward.gather_excess(after)
             returns[name] = float(g*reward.potentials(after)['gather'][0]-phi
                                  -reward.settings.distance_level*d[0]-reward.settings.dispersion_level*v[0])
+            if reward.settings.continuous_cost_scale != 1.:
+                returns[name] = float(g*reward.potentials(after)['gather'][0]-phi
+                    -reward.settings.continuous_cost_scale*(reward.settings.distance_level*d[0]
+                                                           +reward.settings.dispersion_level*v[0]))
         assert returns['toward'] > returns['hold'] > returns['away']
-        assert returns['hold'] < 0
+        if reward.settings.continuous_cost_scale == 1.:
+            assert returns['hold'] < 0
         # Discounted potential terms telescope, including a true terminal.
         states = [facts(radius-k*.1) for k in range(26)]
         potentials = [sum(reward.potentials(s).values())[0] for s in states]
@@ -73,18 +79,64 @@ def geometry_audit(spec, config):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True)
-    parser.add_argument('--curriculum-config', required=True)
+    parser.add_argument('--curriculum-config', '--training-config', dest='curriculum_config', required=True)
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
     torch.set_num_threads(1)
     path = Path(args.output)
     config = load_curriculum(args.curriculum_config)
-    spec = cfg_from_experiment(args.config).spec
+    runtime_cfg = cfg_from_experiment(args.config)
+    spec = runtime_cfg.spec
     json_write(path/'run_manifest.json', {'command': __import__('sys').argv, 'source_snapshot': source_snapshot(),
-        'scope': 'prelaunch_reward_geometry_parking_audit', 'maximum_physical_base_steps': 1800, 'optimizer_updates': 0})
+        'scope': 'prelaunch_fixed_lunar_runnable_audit' if is_fixed(config) else 'prelaunch_reward_geometry_parking_audit', 'maximum_physical_base_steps': 400 if is_fixed(config) else 1800, 'optimizer_updates': 0})
     json_write(path/'metrics/static_audit.json', {'curriculum_config': config,
                                                 'geometry': geometry_audit(spec, config),
-                                                'reward': reward_audit(spec, config)})
+                                                'reward': reward_audit(spec, config, obstacle_input=runtime_cfg.obstacle_input)})
+    if is_fixed(config):
+        # No optimizer and no success threshold: this checks runnable, legal
+        # starts and finite real transitions, not whether an untrained policy wins.
+        results = {}; steps = 0
+        tensorboard = TrainingTensorBoard(path)
+        for role in ('training', 'fixed_eval', 'unseen'):
+            seeds = (23,27) if role == 'training' else ((104729,) if role == 'fixed_eval' else (130363,))
+            for seed in seeds:
+                setup = dict(config, scene_role=role)
+                c = make_collector(args.config, 'A1', seed, samples=512, num_envs=1, episode_seconds=1500.,
+                    curriculum_config=setup, learning_time=timing_for(config))
+                initialize_fresh_policy(c.policy, config)
+                assert all(r.passed for row in c.env._reports(parking=False) for r in row)
+                assert np.all(c.env.task.deadlines == 1500.)
+                assert c.env.metadata['terrain_type'] == 'lunar_scene_pack'
+                actor, critic = c.env.observe()
+                assert torch.isfinite(actor).all() and torch.isfinite(critic).all()
+                batch, episodes, records = c.collect(1)
+                if not batch['learning_valid'][batch['duration'] > 0].all():
+                    json_write(path/'metrics'/f'invalid_{role}_{seed}.json', event_data({
+                        'actual_base_steps':c.base_steps,'episodes':episodes,'records':records,
+                        'reports':[[r.__dict__ for r in row] for row in c.env._reports(parking=False)]}))
+                    torch.save(c.env.state_dict(), path/f'invalid_{role}_{seed}.pt')
+                assert batch['learning_valid'][batch['duration'] > 0].all()
+                assert all(torch.isfinite(batch[k]).all() for k in ('obs','state','reward','value','next_value'))
+                steps += c.base_steps
+                tensorboard.writer.add_scalar('Audit/Base_steps', steps, steps)
+                tensorboard.writer.add_scalar('Audit/Reward', float(batch['reward'].mean()), steps)
+                tensorboard.writer.flush()
+                results[f'{role}_{seed}'] = {'actual_base_steps':c.base_steps,
+                    'duration':batch['duration'].tolist(), 'episodes':episodes,
+                    'spawn_attempts':c.env.curriculum.spawn_attempts,'spawn_rejections':c.env.curriculum.spawn_rejections,
+                    'map_identities':c.env.map_identities,'geometry':geometry_audit(spec,config),
+                    'reward':batch['reward'].tolist()}
+                json_write(path/'metrics'/f'{role}_{seed}.json',event_data(results[f'{role}_{seed}']))
+                del batch, records, c
+        assert steps <= 400
+        tensorboard.close()
+        expected_evaluation = (config['evaluation_max_base_steps']
+                              if config.get('evaluation_mode') == 'bounded_fixed_window_v1' else 360000)
+        assert evaluation_budget_upper_bound(config,2000000) == expected_evaluation
+        json_write(path/'metrics/summary.json',event_data({'passed':True,'actual_base_steps':steps,
+            'optimizer_updates':0,'scope':'fixed_lunar_finite_legal_transition_audit','maximum_physical_base_steps':400,
+            'results':results,'source_snapshot':source_snapshot()}))
+        return
     results = {}
     for level, interventions in ((0, ('hold',)), (3, ('hold', 'toward', 'away'))):
         for intervention in interventions:

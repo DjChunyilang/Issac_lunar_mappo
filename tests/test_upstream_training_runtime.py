@@ -15,9 +15,32 @@ from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal.upstream_training 
 BASE='configs/experiment/upstream_scale_s05_benchmark_cpu_review_v2.yaml'
 
 
+@pytest.mark.parametrize('name,iterations',[
+    ('upstream_1km_crater_classes_v1',2),
+    ('upstream_1km_mppi_body_geometry_v1',4),
+    ('upstream_1km_mppi_grid_sat_v1',3),
+])
+def test_training_and_evaluation_collector_honor_configured_iterations(monkeypatch,name,iterations):
+    import run_upstream_t11
+    from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal.upstream_factory import create_upstream_adapter
+    class CapturedConfiguration(Exception):pass
+    configs=[]
+    def capture(cfg,mode):
+        configs.append(session_configuration(cfg,mode))
+        raise CapturedConfiguration
+    monkeypatch.setattr(run_upstream_t11,'session_configuration',capture)
+    for mode in ['train','diagnostic']:
+        with pytest.raises(CapturedConfiguration):
+            make_collector('configs/experiment/'+name+'.yaml','A1',23,mode=mode)
+        cfg=configs[-1]
+        assert cfg.mppi_iterations==iterations
+        assert create_upstream_adapter(cfg).batch_kernel.settings.iterations==iterations
+
+
 def test_runtime_requires_explicit_matching_role_and_keeps_profile():
     cfg,data=runtime_config(BASE,name='runtime_role',seed=23,samples=16)
     assert session_configuration(cfg,'diagnostic') is cfg
+    assert cfg.mppi_iterations==2  # Historical local diagnostic default.
     assert 'training_session_version' not in cfg.metadata
     learning=session_configuration(cfg,'train')
     assert learning.learning_runtime and not learning.metadata['training_paused']

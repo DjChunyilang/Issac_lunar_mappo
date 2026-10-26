@@ -56,6 +56,13 @@ def _owner(pipe,options,cpu_workers,service=None):
                 result={k:v.numpy() if torch.is_tensor(v) else v for k,v in result.items()}
                 result['poses']=env.core.poses.copy();result['task']=env.last_task
             elif command=='gpu_stats':result=[getattr(kernel,'service_stats',{}) for kernel in env.pool._kernels.values()]
+            elif command=='perception_stats':
+                result={'terrain_query_points':env.sensor.queried_points,
+                        'physical_query_points':env.physical_query_points,
+                        'memory':[[getattr(m,'stats',{}) for m in row] for row in env.memory],
+                        'grid_upload_bytes':[getattr(k,'last_grid_upload_bytes',0) for k in env.pool._kernels.values()],
+                        'spawn_attempts':None if env.curriculum is None else env.curriculum.spawn_attempts,
+                        'poses':env.core.poses.copy()}
             elif command=='curriculum_level':env.curriculum.set_level(value);result=None
             elif command=='state':result=env.state_dict()
             elif command=='restore':env.load_state_dict(value);result=None
@@ -93,6 +100,9 @@ class ProcessUpstreamRollout(UpstreamAblationRollout):
         self.owner_options=[];self.gpu_service=gpu_service;self.service_process=None
         services=[None]*owners
         if gpu_service:
+            from _common import cfg_from_experiment
+            if cfg_from_experiment(base).obstacle_input is not None:
+                raise ValueError('Incremental grids use owner-local CUDA caches; shared point-service transport is unsupported')
             from upstream_gpu_service import serve
             pairs=[context.Pipe() for _ in range(owners)]
             services=[pair[0] for pair in pairs]
@@ -120,7 +130,7 @@ class ProcessUpstreamRollout(UpstreamAblationRollout):
             core=SimpleNamespace(poses=None),last_task=None)
         self.device=torch.device(device);self.envs_per_owner=envs_per_owner
         torch.manual_seed(seed)
-        self.policy=build_ablation_policies(991,cfg.spec)[representation].to(self.device)
+        self.policy=build_ablation_policies(cfg.critic_dim,cfg.spec,terrain_channels=cfg.terrain_channels)[representation].to(self.device)
         self.hidden=torch.zeros((self.env.e,4,128),device=self.device)
         self.agent_sampler=None;self.transitions=0
 

@@ -117,6 +117,7 @@ class DenseSensor:
         if not self._map_identities or any(not isinstance(x, str) or not x for x in self._map_identities):
             raise ValueError("Explicit sensor map identity required")
         self.device = torch.device(device)
+        self.queried_points = 0
         if self.device.type == "cuda" and not torch.cuda.is_available():
             raise RuntimeError("Requested sensor CUDA device unavailable")
         if self.device.type not in {"cpu", "cuda"}:
@@ -134,29 +135,25 @@ class DenseSensor:
         design = np.c_[dx.ravel() * p.spacing, dy.ravel() * p.spacing, np.ones(9)]
         self._detrend = torch.as_tensor(np.eye(9) - design @ np.linalg.pinv(design), dtype=torch.float64, device=self.device)
 
-    def sample(self, poses_world, odometry_frames, times):
-        poses = torch.as_tensor(poses_world, dtype=torch.float64, device=self.device)
-        frames = torch.as_tensor(odometry_frames, dtype=torch.float64, device=self.device)
-        now = torch.as_tensor(times, dtype=torch.float64, device=self.device)
-        if (poses.ndim != 3 or poses.shape[1:] != (4, 3) or frames.shape != poses.shape
-                or now.shape != (poses.shape[0],) or not torch.isfinite(poses).all()
-                or not torch.isfinite(frames).all() or not torch.isfinite(now).all() or (now < 0).any()):
-            raise ValueError("Dense sensor requires finite [E,4,3] poses/frames and [E] times")
-        if len(self._map_identities) not in (1, len(poses)):
-            raise ValueError("Sensor map identities do not match environments")
-        c, s = poses[..., 2].cos(), poses[..., 2].sin()
-        bx, by = self._body_points[:, 0], self._body_points[:, 1]
-        world = poses[..., None, :2] + torch.stack((c[..., None] * bx - s[..., None] * by,
-                                                   s[..., None] * bx + c[..., None] * by), -1)
+    def _sample_features(self, world, patch_indices, centers=None, scene_index=None, driving_atlas=None):
+        """Same direct measurements and 3x3 detrending for full/sparse grids."""
+        self.queried_points += world.numel() // 2
         cfg = self._terrain_cfg
-        if cfg is None or cfg.type == "flat_proxy":
+        if driving_atlas is not None:
+            # Environment-owned derived surface; keep the same sensor positions,
+            # support masks and 3x3 detrending as the original parking surface.
+            sampled, known = driving_atlas.lookup_driving(world.detach().cpu().numpy())
+            features = torch.as_tensor(sampled, dtype=torch.float64, device=self.device)
+            supported = torch.as_tensor(known, dtype=torch.bool, device=self.device)
+        elif cfg is None or cfg.type == "flat_proxy":
             features = torch.zeros((*world.shape[:-1], 5), dtype=torch.float64, device=self.device)
             features[..., 4] = 1.
             supported = torch.ones(world.shape[:-1], dtype=torch.bool, device=self.device)
         elif cfg.type == "lunar_scene_pack":
             if self._runtime is None or self._runtime.scene_bank is None or self._runtime.scene_indices is None:
                 raise ValueError("Raster sensing requires a versioned scene runtime")
-            query = self._runtime.scene_bank.query(world, self._runtime.scene_indices)
+            ids=self._runtime.scene_indices if scene_index is None else self._runtime.scene_indices[scene_index:scene_index+1]
+            query = self._runtime.scene_bank.query(world, ids)
             native = query.features.to(device=self.device, dtype=torch.float64)
             supported = query.metrics_valid.to(device=self.device, dtype=torch.bool)
             slope = native[..., 1:3].norm(dim=-1)
@@ -172,16 +169,71 @@ class DenseSensor:
         supported &= ((world[..., 0].abs() <= self.spec.world_width / 2)
                       & (world[..., 1].abs() <= self.spec.world_height / 2))
         height = torch.where(supported, features[..., 0], 0.)
-        roughness_known = supported[..., self._patch_indices].all(-1)
+        roughness_known = supported[..., patch_indices].all(-1)
+        if centers is not None:
+            features = features[..., centers, :]
+            supported = supported[..., centers]
         if cfg is None or cfg.type == "flat_proxy":
-            roughness = torch.zeros_like(height)
+            roughness = torch.zeros_like(features[..., 0])
         else:
-            patches = height[..., self._patch_indices]
+            patches = height[..., patch_indices]
             residual = patches @ self._detrend.T
             roughness = residual.square().mean(-1).sqrt()
         # A finite backend placeholder does not certify its slope/RMS support.
         valid = supported & roughness_known
         features = features.clone(); features[..., 3] = roughness
+        return features, valid
+
+    def prepare_birth(self, footprint_points):
+        """Retain every original sensor point that can support the birth footprint.
+
+        The extra numerical margin only adds queried grid points, never support.
+        Original source order and all roughness neighbors remain unchanged.
+        """
+        body = self._body_points.cpu().numpy()
+        tree = cKDTree(body)
+        nearby = tree.query_ball_point(footprint_points, self.spec.perception.support_radius + 1e-7)
+        selected = np.unique(np.concatenate(nearby).astype(np.int64))
+        patches = self._patch_indices.cpu().numpy()[selected]
+        query = np.union1d(selected, patches.ravel())
+        self._birth_query = torch.as_tensor(query, device=self.device)
+        self._birth_centers = torch.as_tensor(np.searchsorted(query, selected), device=self.device)
+        self._birth_patches = torch.as_tensor(np.searchsorted(query, patches), device=self.device)
+
+    def _birth_arrays(self, pose_world, *, scene_index=None, driving_atlas=None):
+        """Owned sparse measurements before their final odometry frame/index."""
+        pose = torch.as_tensor(pose_world, dtype=torch.float64, device=self.device)
+        points = self._body_points[self._birth_query]
+        c, s = pose[2].cos(), pose[2].sin()
+        world = pose[:2] + torch.stack((c * points[:, 0] - s * points[:, 1],
+                                        s * points[:, 0] + c * points[:, 1]), -1)
+        features, valid = self._sample_features(world[None, None], self._birth_patches, self._birth_centers,scene_index,
+                                               driving_atlas=driving_atlas)
+        # Birth odometry origins coincide with each rover and have zero yaw.
+        xy = world[self._birth_centers].cpu().numpy() - np.asarray(pose_world)[:2]
+        good = valid[0, 0].cpu().numpy()
+        return xy[good].copy(), features[0, 0].cpu().numpy()[good].copy()
+
+    def birth_terrain(self, pose_world, *, scene_index=None, driving_atlas=None):
+        """Fresh sensor-only candidate view, retaining original source order."""
+        xy, features = self._birth_arrays(pose_world, scene_index=scene_index,driving_atlas=driving_atlas)
+        return FootprintTerrain._from_owned_arrays(xy, features, np.zeros(len(xy)), self.spec)
+
+    def sample(self, poses_world, odometry_frames, times):
+        poses = torch.as_tensor(poses_world, dtype=torch.float64, device=self.device)
+        frames = torch.as_tensor(odometry_frames, dtype=torch.float64, device=self.device)
+        now = torch.as_tensor(times, dtype=torch.float64, device=self.device)
+        if (poses.ndim != 3 or poses.shape[1:] != (4, 3) or frames.shape != poses.shape
+                or now.shape != (poses.shape[0],) or not torch.isfinite(poses).all()
+                or not torch.isfinite(frames).all() or not torch.isfinite(now).all() or (now < 0).any()):
+            raise ValueError("Dense sensor requires finite [E,4,3] poses/frames and [E] times")
+        if len(self._map_identities) not in (1, len(poses)):
+            raise ValueError("Sensor map identities do not match environments")
+        c, s = poses[..., 2].cos(), poses[..., 2].sin()
+        bx, by = self._body_points[:, 0], self._body_points[:, 1]
+        world = poses[..., None, :2] + torch.stack((c[..., None] * bx - s[..., None] * by,
+                                                   s[..., None] * bx + c[..., None] * by), -1)
+        features, valid = self._sample_features(world, self._patch_indices)
         fc, fs = frames[..., 2].cos(), frames[..., 2].sin()
         delta = world - frames[..., None, :2]
         odom = torch.stack((fc[..., None] * delta[..., 0] + fs[..., None] * delta[..., 1],

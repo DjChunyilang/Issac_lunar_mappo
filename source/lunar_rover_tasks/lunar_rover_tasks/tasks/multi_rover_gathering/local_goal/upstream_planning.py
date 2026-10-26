@@ -18,6 +18,7 @@ from .upstream_execution import (
     stop_envelope, terrain_gain_numpy,
 )
 from .upstream_footprint import FootprintNeighbor, FootprintReviewer, FootprintTerrain, QUERY_V2, REVIEW_V2
+from .upstream_grid import GridTerrain
 from .upstream_spec import UpstreamRuntimeConfig, UpstreamSpec
 from .upstream_timing import ActualControlHistory, HELD_TIMING_VERSION, HISTORY_TIMING_VERSION, review_history_reserve
 
@@ -86,7 +87,7 @@ class UpstreamPlannerInput:
             raise ValueError("Unsupported upstream planner protocol version")
         if type(self.spec) is not UpstreamSpec or self.spec.grid.steps != 40 or self.spec.grid.dt != .2:
             raise ValueError("Upstream planner requires the explicit 40 x 0.2 s grid")
-        if type(self.intent) is not UpstreamIntent or type(self.terrain) is not FootprintTerrain:
+        if type(self.intent) is not UpstreamIntent or type(self.terrain) not in (FootprintTerrain,GridTerrain):
             raise ValueError("Planner accepts only detached local terrain and a typed intent")
         for name, shape in (("ego_pose", (3,)), ("ego_velocity", (2,)), ("previous_control", (2,)), ("times", (41,))):
             object.__setattr__(self, name, _array(getattr(self, name), shape, name))
@@ -196,7 +197,10 @@ class PlanningAdapter:
             raise ValueError("Unsupported upstream timing version")
         self.cfg = self.config = cfg
         self.spec = cfg.spec
-        if cfg.review_acceleration_version == "flat_grid_pose_cache_v2":
+        if cfg.review_acceleration_version == "cuda_sweep_pose_v1":
+            from .upstream_flat_review import CudaSweepReviewer
+            self.reviewer = CudaSweepReviewer(self.spec, version=REVIEW_V2)
+        elif cfg.review_acceleration_version == "flat_grid_pose_cache_v2":
             from .upstream_flat_review import FlatGridPoseReviewer
             self.reviewer = FlatGridPoseReviewer(self.spec, version=REVIEW_V2)
         elif cfg.review_acceleration_version == "flat_frame_pose_cache_v3":
@@ -233,8 +237,11 @@ class PlanningAdapter:
             raise ValueError("Expected UpstreamPlannerInput")
         # Revalidate caller-owned mutable view metadata before touching state.
         item.__post_init__()
-        if item.spec.fingerprint != self.spec.fingerprint or item.terrain.query_version != QUERY_V2:
+        expected_query=GridTerrain.query_version if self.cfg.obstacle_input is not None else QUERY_V2
+        if item.spec.fingerprint != self.spec.fingerprint or item.terrain.query_version != expected_query:
             raise ValueError("Planner input profile/query version mismatch")
+        if self.cfg.obstacle_input is not None and item.terrain.settings.metadata!=self.cfg.obstacle_input.metadata:
+            raise ValueError('Planner grid input configuration mismatch')
         identity = (item.env_id, item.agent_id)
         if self._identity is not None and identity != self._identity:
             raise ValueError("Planner state belongs to another environment/vehicle")
@@ -326,12 +333,21 @@ class PlanningAdapter:
             limit = np.maximum(item.intent.speed_cap, np.pad(abs(brake[:, 0]), (0, max(0, 40 - len(brake))))[:40])
             if (abs(trajectory.controls[:, 0]) > limit + 1e-8).any():
                 return "intent_speed_cap"
+        if self.cfg.obstacle_input is not None and self.cfg.obstacle_input.graded_craters:
+            # This hard check consumes only distance/sign. Known-footprint
+            # certification, when enabled, belongs to the full reviewer below.
+            distance,_=item.terrain.obstacle_distance(trajectory.states,kind='crater_large',include_known=False)
+            if (distance<0).any():return "large_crater"
+        if not self.cfg.predictive_footprint_checks:
+            return ""
         workspace = None if item.workspace is None else np.asarray(item.workspace).reshape(2, 2)
         report = self.reviewer.trajectory(trajectory, item.previous_control, item.terrain, neighbors=item.neighbors,
                                           workspace=workspace, require_stop=True)
         return report.reason if not report.passed else ""
 
     def _reserve(self, item, first_control):
+        if not self.cfg.predictive_footprint_checks:
+            return "", {'information_reserve_verified': False, 'reserve_review_performed': False}
         if self.cfg.timing_version == HISTORY_TIMING_VERSION:
             return review_history_reserve(item,first_control,self.reviewer,self._gain(item))
         if self.cfg.simulated_latency > 0 and item.information_pose is None:
@@ -353,18 +369,30 @@ class PlanningAdapter:
         return ("" if report.passed else "stop_reserve:" + report.reason), detail
 
     def _output(self, item, trajectory, valid, reason, source, diagnostics, *, prefix=0):
+        if not self.cfg.predictive_footprint_checks:
+            diagnostics = dict(diagnostics, execution_review_passed=False,
+                execution_review_performed=False, information_reserve_verified=False,
+                unverified_brake=source in {'hold','brake'},
+                hazard_response_version=self.cfg.hazard_response_version)
         feedback = PlannerFeedback(status=source if valid else "emergency_brake", reason=reason,
                                    used_previous=source == "previous_plan", emergency_brake=not valid,
                                    prefix_steps=prefix, candidate_rejection=diagnostics.get("candidate_rejection", ""))
-        cost = self.score_trajectory(item, trajectory) if valid else None
+        deferred=getattr(self,'_defer_output_scoring',False)
+        cost = self.score_trajectory(item, trajectory) if valid and not deferred else None
+        if self.cfg.obstacle_input is not None:
+            diagnostics=dict(diagnostics,selected_cost_parts=(dict(self.selected_cost_parts) if valid else {}))
         if cost is not None and not np.isfinite(cost):
             raise ValueError("Final trajectory cost must be finite or None")
-        self._last_time = item.now
-        if valid:
-            self._previous_trajectory = deepcopy(trajectory)
-        return UpstreamPlannerOutput(trajectory, feedback, valid, reason, cost,
+        output=UpstreamPlannerOutput(trajectory, feedback, valid, reason, cost,
                                      {**diagnostics, "selected_source": source, "protocol_version": PROTOCOL_VERSION,
                                       "adapter_id": self.adapter_id, "control_activation_time": item.now})
+        if not deferred:self._commit_output(item,output)
+        return output
+
+    def _commit_output(self,item,output):
+        """Commit only a completed output; grid MPPI scores its batch first."""
+        self._last_time=item.now
+        if output.valid:self._previous_trajectory=deepcopy(output.trajectory)
 
     def _brake(self, item, reason, *, allow_valid=False, diagnostics=None):
         controls = np.zeros((40, 2))
@@ -409,6 +437,10 @@ class PlanningAdapter:
                 return self._output(item, trajectory, True, "", candidate.source, details, prefix=prefix)
             details["candidate_rejections"].append({"source": candidate.source, "reason": reason})
         details["candidate_rejection"] = details["candidate_rejections"][0]["reason"] if details["candidate_rejections"] else (details.get("failure_reason") or "no_candidate")
+        if not self.cfg.predictive_footprint_checks:
+            # Without the final reviewer, an old/prefixed plan has no current
+            # MPPI feasibility mask. Do not silently treat it as admissible.
+            return self._brake(item, details["candidate_rejection"], diagnostics=details)
         # A small deterministic fallback panel has its own recorded review
         # budget; every prefix includes a complete rate-limited static tail.
         if first is not None:

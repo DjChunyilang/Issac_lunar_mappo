@@ -227,6 +227,11 @@ def terrain_gain_torch(pose, features, spec):
         raise ValueError("Terrain features require finite [...,5]")
     if pose.dtype != features.dtype or pose.device != features.device:
         raise ValueError("Terrain feature device/dtype mismatch")
+    return _terrain_gain_torch_values(pose, features, spec)
+
+
+def _terrain_gain_torch_values(pose, features, spec):
+    """Internal arithmetic shared with the checked public entry point."""
     along = features[..., 1] * pose[..., 2].cos() + features[..., 2] * pose[..., 2].sin()
     return (features[..., 4] * torch.exp(-along.abs() * spec.terrain.slope_speed_scale)).clamp(.25, 1.)
 
@@ -239,6 +244,11 @@ def midpoint_torch(pose, control, spec, *, gain=None):
     gain = torch.ones_like(control[..., 0]) if gain is None else gain
     if gain.shape != control.shape[:-1] or gain.dtype != pose.dtype or gain.device != pose.device or not torch.isfinite(gain).all() or ((gain < .25) | (gain > 1)).any():
         raise ValueError("Invalid terrain velocity gains")
+    return _midpoint_torch_values(pose, control, spec, gain)
+
+
+def _midpoint_torch_values(pose, control, spec, gain):
+    """Internal arithmetic; callers retain finite/range validation ownership."""
     actual = control * gain[..., None]
     mid = pose[..., 2] + .5 * spec.grid.dt * actual[..., 1]
     delta = torch.stack([actual[..., 0] * mid.cos(), actual[..., 0] * mid.sin(), actual[..., 1]], dim=-1)

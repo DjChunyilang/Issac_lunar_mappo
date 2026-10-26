@@ -98,6 +98,14 @@ def parameters(spec):
 
 
 def project_cuda(desired, previous, spec):
+    result = _project_cuda_unchecked(desired, previous, spec)
+    if not torch.isfinite(result).all():
+        raise ValueError('Invalid previous command or empty physical actuator feasible set')
+    return result
+
+
+def _project_cuda_unchecked(desired, previous, spec):
+    """Internal FP64 launch; the owning rollout must check all output values."""
     desired, previous = desired.contiguous(), previous.contiguous()
     result = torch.empty_like(desired)
     status = library().project_cuda(desired.data_ptr(), previous.data_ptr(), result.data_ptr(),
@@ -105,8 +113,6 @@ def project_cuda(desired, previous, spec):
                                     torch.cuda.current_stream(desired.device).cuda_stream)
     if status:
         raise RuntimeError(f'Native actuator CUDA launch failed: {status}')
-    if not torch.isfinite(result).all():
-        raise ValueError('Invalid previous command or empty physical actuator feasible set')
     return result
 
 

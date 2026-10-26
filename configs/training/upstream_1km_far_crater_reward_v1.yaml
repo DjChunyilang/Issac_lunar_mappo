@@ -1,0 +1,53 @@
+# New short-learning run; preserve the earlier reward and checkpoint identities.
+version: rendezvous_fixed_lunar_1km_v1
+terrain: lunar_scene_pack
+terrain_failure_semantics: known_terrain_terminal_v1
+initial_level: 0
+policy_decision_period_s: 5.0
+discount_reference_period_s: 1.0
+gamma: 0.9975992791345717
+lambda: 0.99
+reward_scaling: log1p
+observation_scaling: log1p
+value_normalization: running
+rollout_decisions: 32
+ppo_epochs: 5
+initial_continuous_std_scale: 0.25
+initial_hold_probability: 0.35
+easy_replay_fraction: 0.0
+curriculum_enabled: false
+promotion_enabled: false
+maximum_stage_base_steps: null
+evaluation_mode: bounded_fixed_window_v1
+evaluation_window_seconds: 60.0
+evaluation_every_base_steps: 500000
+full_evaluation_at_base_steps:
+- 500000
+- 1000000
+- 1500000
+- 2000000
+evaluation_max_base_steps: 4800
+final_evaluation_reservation: 2400
+checkpoint_every_updates: 1
+maximum_spawn_attempts: 4096
+scene_manifests:
+  training:
+  - outputs/runs/lunar_terrain_validation/npb_1km_fixed_20261021_01/scenes/train_0/scene.json
+  - outputs/runs/lunar_terrain_validation/npb_1km_fixed_20261021_01/scenes/train_1/scene.json
+  fixed_eval:
+  - outputs/runs/lunar_terrain_validation/npb_1km_fixed_20261021_01/scenes/fixed_eval/scene.json
+  unseen:
+  - outputs/runs/lunar_terrain_validation/npb_1km_fixed_20261021_01/scenes/unseen/scene.json
+terrain_storage: mmap
+stages:
+- name: far
+  radius_m:
+  - 200.0
+  - 300.0
+  deadline_s: 1500.0
+  heading_noise_deg: 180.0
+reward_overrides:
+  terrain_weight: 0.5
+  hazard_cost: 0.05
+  failure_penalty: 100.0
+  continuous_cost_scale: 0.02

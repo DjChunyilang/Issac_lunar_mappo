@@ -240,6 +240,12 @@ class AblationPolicy(RecurrentPolicy):
             raise ValueError('Value normalization is already configured')
         self.value_normalizer = RunningValueNormalization().to(next(self.parameters()).device)
 
+    def set_parking_exploration(self, settings):
+        from .upstream_parking_exploration import ParkingExploration
+        if self.contract.representation != 'A1' or type(settings) is not ParkingExploration:
+            raise ValueError('Parking exploration requires A1 and explicit typed settings')
+        self.parking_exploration = settings
+
     def value(self, state):
         value = super().value(state)
         if hasattr(self, 'value_normalizer'):
@@ -250,9 +256,13 @@ class AblationPolicy(RecurrentPolicy):
         if (obs.shape[-1] != self.actor_dim or hidden.shape != (*obs.shape[:-1], 128)
                 or not torch.isfinite(obs).all() or not torch.isfinite(hidden).all()):
             raise ValueError("Invalid T11 synthetic observation/hidden state")
+        if hasattr(self, 'parking_exploration'):
+            following = self.gru(self.encode(obs).reshape(-1, 128),
+                                 hidden.reshape(-1, 128)).reshape_as(hidden)
+            return self.action_distribution(following, observation=obs), following
         return super().distribution(obs, hidden)
 
-    def action_distribution(self, hidden):
+    def action_distribution(self, hidden, *, observation=None):
         if hidden.shape[-1] != 128 or not torch.isfinite(hidden).all():
             raise ValueError("Invalid T11 action-head hidden state")
         rep = self.contract.representation
@@ -260,7 +270,12 @@ class AblationPolicy(RecurrentPolicy):
             return Categorical(logits=self.primitive_logits(hidden))
         mean, std = self.mean(hidden), self.log_std.clamp(-5, 1).exp()
         if rep == "A1":
-            return PolarHoldDistribution(mean, std, self.hold_logit(hidden).squeeze(-1),
+            logits = self.hold_logit(hidden).squeeze(-1)
+            if hasattr(self, 'parking_exploration'):
+                if observation is None or observation.shape != (*hidden.shape[:-1], self.actor_dim):
+                    raise ValueError('Parking exploration sampling/replay requires the original observation')
+                logits = logits + self.parking_exploration.logit_bias(observation)
+            return PolarHoldDistribution(mean, std, logits,
                                          self.contract.rho_max, self.contract.beta_max)
         return BoundedMoveDistribution(mean, std, self.contract)
 
@@ -285,14 +300,14 @@ class AblationPolicy(RecurrentPolicy):
                                            primitive_fingerprint() if native else None),
                               latent, log, following)
 
-    def evaluate_sample(self, hidden, sample):
+    def evaluate_sample(self, hidden, sample, *, observation=None):
         if sample.rollout_version != ROLLOUT_VERSION:
             raise ValueError("T11 rollout version mismatch")
         sample.action.validate(self.contract, hidden.shape[:-1])
         if (sample.latent.shape != (*hidden.shape[:-1], self.contract.continuous_dim)
                 or not torch.isfinite(sample.latent).all()):
             raise ValueError("T11 original latent shape/value mismatch")
-        distribution = self.action_distribution(hidden)
+        distribution = self.action_distribution(hidden, observation=observation)
         if self.contract.representation == "A3":
             return distribution.log_prob(sample.action.primitive_id), distribution.entropy()
         expected = distribution.transform(sample.latent)
@@ -316,6 +331,8 @@ class AblationPolicy(RecurrentPolicy):
         if hasattr(self, 'value_normalizer'):
             from .upstream_value_normalization import VALUE_NORMALIZATION_VERSION
             result['value_normalization'] = VALUE_NORMALIZATION_VERSION
+        if hasattr(self, 'parking_exploration'):
+            result['parking_exploration'] = self.parking_exploration.metadata
         return result
 
     def export_diagnostic_state(self):
@@ -380,7 +397,7 @@ def replay_action_sequence(policy, observations, initial_hidden, samples, learni
                                       sample.log_prob[valid].detach(), sample.hidden[valid].detach(),
                                       sample.rollout_version)
             _, next_hidden = policy.distribution(obs[valid], hidden[valid])
-            new_log, current_entropy = policy.evaluate_sample(next_hidden, selected)
+            new_log, current_entropy = policy.evaluate_sample(next_hidden, selected, observation=obs[valid])
             if selected.log_prob.shape != new_log.shape or not torch.isfinite(selected.log_prob).all():
                 raise ValueError("Invalid original log probability")
             log[valid], entropy[valid] = new_log, current_entropy

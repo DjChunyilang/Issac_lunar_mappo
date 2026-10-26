@@ -17,7 +17,7 @@ ROLLOUT_COLLECTOR_VERSION='actual_recurrent_upstream_v1'
 class UpstreamRollout:
     def __init__(self,env,policy):
         if (type(policy) is not RecurrentPolicy or not policy.hybrid or policy.rho_max!=env.spec.rho_max
-                or policy.critic[0].in_features!=991):raise ValueError('Collector requires the matching A1 backbone and action scale')
+                or policy.critic[0].in_features!=env.cfg.critic_dim):raise ValueError('Collector requires the matching A1 backbone and action scale')
         self.env,self.policy=env,policy
         self.device=next(policy.parameters()).device
         self.hidden=torch.zeros((env.e,4,128),device=self.device)
@@ -27,7 +27,7 @@ class UpstreamRollout:
     def metadata(self):
         return {'collector_version':ROLLOUT_COLLECTOR_VERSION,'environment':self.env.metadata,
             'action_version':self.policy.action_version,'rollout_version':ROLLOUT_VERSION,
-            'actor_dim':411,'critic_dim':991,'rho_max':self.policy.rho_max,'beta_max':self.policy.beta_max}
+            'actor_dim':self.env.cfg.actor_dim,'critic_dim':self.env.cfg.critic_dim,'rho_max':self.policy.rho_max,'beta_max':self.policy.beta_max}
 
     @torch.no_grad()
     def collect(self,length,*,deterministic=False):

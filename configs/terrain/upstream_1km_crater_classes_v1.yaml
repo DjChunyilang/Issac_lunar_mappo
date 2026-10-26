@@ -1,0 +1,50 @@
+# Proxy task assumptions, not measured vehicle traversability limits.
+version: local_obstacle_input_v2
+atlas_root: outputs/runs/local_obstacle_input/crater_classes_atlas_20261023_01
+crater_classes:
+  semantics: wheel_radius_proxy_no_dynamics_v1
+  thresholds:
+    small_below_m: 0.5
+    large_from_m: 1.8
+  medium_risk: 0.1
+  medium_cost_per_s: 0.5
+  medium_reward_per_s: 0.05
+  medium_reward_cap: 2.0
+  driving_surface: base_rocks_fractal_without_craters
+  parking_surface: original_terrain
+labels:
+  resolution_m: 0.2
+  crater_region: mouth_disk
+  rock_region: projected_disk
+  rasterization: any_intersection
+ground:
+  resolution_m: 0.8
+  aggregation: conservative_native_max_v1
+  slope_score_scale: 0.6
+  rms_score_scale_m: 0.05
+perception:
+  forward_m: 15.0
+  reverse_m: 15.0
+  lateral_m: 8.0
+  update_period_s: 0.2
+  reveal_rule: full_cell_in_fov
+memory:
+  tile_cells: 32
+  capacity_cells: 65536
+  eviction: oldest_unseen_tile
+observation:
+  version: obstacle_ground_known_actor_v1
+  aggregation: region_conservative
+geometry:
+  distance: oriented_rectangle_cover_disks_v1
+  cover_spacing_m: 0.8
+cost:
+  soft_band_m: 1.0
+  near_weight_per_s: 3.0
+  overlap_weight_per_s: 20.0
+  hard_obstacle_rejection: false
+reward:
+  near_weight_per_s: 0.2
+  overlap_weight_per_s: 2.0
+  team_reduce: mean
+  observation_time: pre_step

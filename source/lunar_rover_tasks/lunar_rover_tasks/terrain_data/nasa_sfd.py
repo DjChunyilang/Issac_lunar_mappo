@@ -58,6 +58,14 @@ def eligible_centres(valid, spacing, support_m):
     dx, dy = spacing
     if min(dx, dy) <= 0 or support_m < 0:
         raise ValueError("Invalid support/grid spacing")
+    if valid.all():
+        # Exact EDT of a fully valid rectangle padded with one invalid cell.
+        # Avoid scipy's full coordinate workspace for 1 km / 0.1 m maps.
+        h, w = valid.shape
+        rows = np.minimum(np.arange(h) + 1, h - np.arange(h)) * dy
+        cols = np.minimum(np.arange(w) + 1, w - np.arange(w)) * dx
+        threshold = support_m + np.hypot(dx, dy)
+        return (rows[:, None] > threshold) & (cols[None, :] > threshold)
     distance = distance_transform_edt(np.pad(valid, 1), sampling=(dy, dx))[1:-1, 1:-1]
     # Two half-diagonals account for centre jitter and the closest invalid cell.
     return valid & (distance > support_m + np.hypot(dx, dy))
@@ -98,6 +106,7 @@ def background_probability(shape, mask, seed):
     else:
         noise = OpenSimplex(seed).noise2array(np.arange(shape[1]), np.arange(shape[0]))
         weights = (noise + 1) / 2
+        del noise
         weights[weights <= 0.5] = 0
     return normalize_probability(weights, mask, fallback=True)
 

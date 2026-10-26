@@ -23,6 +23,7 @@ os.environ["MKL_NUM_THREADS"] = "1"
 import numpy as np
 import torch
 import yaml
+from torch.utils.tensorboard import SummaryWriter
 from _common import ROOT, cfg_from_experiment, load_yaml
 from generate_exp156_scenario_manifest import DISTANCES, TOPOLOGIES, scenario_snapshot
 from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal import VERSION
@@ -483,130 +484,137 @@ def main():
         torch.set_rng_state(saved_training_rng)
         if saved_cuda_rng is not None:
             torch.cuda.set_rng_state_all(saved_cuda_rng)
-    training_start = time.monotonic()
-    deadline = training_start + max(0, args.max_seconds - elapsed)
-    starting_interactions = interactions
-    episodes = []
-    feedback = []
-    while interactions + env.e <= args.max_interactions and time.monotonic() < deadline:
-        buffer = []
-        for _ in range(32):
-            remaining = args.max_interactions - interactions
-            if remaining < env.e or time.monotonic() >= deadline:
-                break
-            with torch.no_grad():
-                action, following_hidden, sampled_fields = sample_for_rollout(policy, obs, hidden)
-                value = policy.value(state)
-            step = env.step(
-                action,
-                max_low_steps=min(5, remaining // env.e),
-                deadline=deadline,
-            )
-            with torch.no_grad():
-                terminal_value = bootstrap_values(
-                    policy, step.terminal_critic, step.bootstrap_allowed & step.learning_valid
+    with SummaryWriter(str(run / "tensorboard"), purge_step=interactions + 1, flush_secs=10) as writer:
+        writer.add_text("run/config", yaml.safe_dump(raw), interactions)
+        writer.add_text("run/step_unit", "actual low-level environment steps, not rover steps", interactions)
+        training_start = time.monotonic()
+        deadline = training_start + max(0, args.max_seconds - elapsed)
+        starting_interactions = interactions
+        episodes = []
+        feedback = []
+        while interactions + env.e <= args.max_interactions and time.monotonic() < deadline:
+            buffer = []
+            for _ in range(32):
+                remaining = args.max_interactions - interactions
+                if remaining < env.e or time.monotonic() >= deadline:
+                    break
+                with torch.no_grad():
+                    action, following_hidden, sampled_fields = sample_for_rollout(policy, obs, hidden)
+                    value = policy.value(state)
+                step = env.step(
+                    action,
+                    max_low_steps=min(5, remaining // env.e),
+                    deadline=deadline,
                 )
-            buffer.append(
-                {
-                    "obs": obs,
-                    "state": state,
-                    "hidden": hidden,
-                    **sampled_fields,
-                    "value": value,
-                    "next_value": terminal_value,
-                    "reward": step.reward,
-                    "duration": step.duration,
-                    "terminated": step.terminated,
-                    "truncated": step.truncated,
-                    "terminal_reason": step.terminal_reason,
-                    "bootstrap_allowed": step.bootstrap_allowed,
-                    "learning_valid": step.learning_valid,
-                }
+                with torch.no_grad():
+                    terminal_value = bootstrap_values(
+                        policy, step.terminal_critic, step.bootstrap_allowed & step.learning_valid
+                    )
+                buffer.append(
+                    {
+                        "obs": obs,
+                        "state": state,
+                        "hidden": hidden,
+                        **sampled_fields,
+                        "value": value,
+                        "next_value": terminal_value,
+                        "reward": step.reward,
+                        "duration": step.duration,
+                        "terminated": step.terminated,
+                        "truncated": step.truncated,
+                        "terminal_reason": step.terminal_reason,
+                        "bootstrap_allowed": step.bootstrap_allowed,
+                        "learning_valid": step.learning_valid,
+                    }
+                )
+                hidden = following_hidden
+                hidden[step.terminated | step.truncated] = 0
+                obs, state = step.actor, step.critic
+                interactions += int(step.duration.sum())
+                episodes.extend(step.episodes)
+                # Keep one rollout's full request / trajectory / actual-control trace.
+                if updates == 0:
+                    with gzip.open(run / "metrics" / "training_first_rollout.jsonl.gz", "at") as stream:
+                        for record in step.records:
+                            stream.write(json.dumps(record) + "\n")
+            if not buffer:
+                break
+            batch = stack_rollout(buffer, policy)
+            losses = ppo_update(
+                policy,
+                optimizer,
+                batch,
+                epochs=raw["algorithm"]["ppo_epochs"],
+                clip=raw["algorithm"]["clip_epsilon"],
+                entropy_weight=raw["algorithm"]["entropy_loss_scale"],
             )
-            hidden = following_hidden
-            hidden[step.terminated | step.truncated] = 0
-            obs, state = step.actor, step.critic
-            interactions += int(step.duration.sum())
-            episodes.extend(step.episodes)
-            # Keep one rollout's full request / trajectory / actual-control trace.
-            if updates == 0:
-                with gzip.open(run / "metrics" / "training_first_rollout.jsonl.gz", "at") as stream:
-                    for record in step.records:
-                        stream.write(json.dumps(record) + "\n")
-        if not buffer:
-            break
-        batch = stack_rollout(buffer, policy)
-        losses = ppo_update(
-            policy,
-            optimizer,
-            batch,
-            epochs=raw["algorithm"]["ppo_epochs"],
-            clip=raw["algorithm"]["clip_epsilon"],
-            entropy_weight=raw["algorithm"]["entropy_loss_scale"],
+            scheduler.step()
+            updates += 1
+            feedback.extend(env.metrics)
+            env.metrics.clear()
+            consumed = elapsed + time.monotonic() - training_start
+            checkpoint = {
+                "contracts": env.contracts,
+                "version": VERSION,
+                "implementation_sha256": code_hash,
+                "config": raw,
+                "policy": policy.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "interactions": interactions,
+                "elapsed": consumed,
+                "updates": updates,
+                "environment": env.state_dict(),
+                "hidden": hidden,
+                "torch_rng": torch.get_rng_state(),
+                "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+                "numpy_rng": np.random.get_state(),
+                "python_rng": random.getstate(),
+                "budget_interactions": args.max_interactions,
+                "budget_seconds": args.max_seconds,
+            }
+            torch.save(checkpoint, run / "checkpoints" / "latest.tmp")
+            (run / "checkpoints" / "latest.tmp").replace(run / "checkpoints" / "latest.pt")
+            row = {
+                "update": updates,
+                "interactions": interactions,
+                "training_seconds": consumed,
+                **losses,
+            }
+            with (run / "metrics" / "train_metrics.jsonl").open("a") as stream:
+                stream.write(json.dumps(row) + "\n")
+            for key, value in row.items():
+                if isinstance(value, (int, float)):
+                    writer.add_scalar("train/" + key, value, interactions)
+            writer.flush()
+            print(json.dumps(row), flush=True)
+            write_json(
+                run / "metrics" / "summary.json",
+                {
+                    **row,
+                    "episodes": episodes,
+                    "planner": planner_statistics(feedback),
+                    "env_interactions_per_second": (interactions - starting_interactions)
+                    / max(time.monotonic() - training_start, 1e-6),
+                    "peak_rss_mib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
+                    "stop_reason": "running",
+                    "formal_convergence_claim": False,
+                },
+            )
+        env.close()
+        summary_path = run / "metrics" / "summary.json"
+        if summary_path.exists():
+            summary = json.loads(summary_path.read_text())
+            summary["stop_reason"] = (
+                "interaction_budget" if interactions + env.e > args.max_interactions else "wall_budget"
+            )
+            write_json(summary_path, summary)
+        if not args.skip_eval:
+            evaluate(policy, raw, run, cache, "after", args.eval_episodes)
+        manifest["status"] = (
+            "complete_smoke" if args.skip_eval or args.eval_episodes != 16 else "complete_pilot"
         )
-        scheduler.step()
-        updates += 1
-        feedback.extend(env.metrics)
-        env.metrics.clear()
-        consumed = elapsed + time.monotonic() - training_start
-        checkpoint = {
-            "contracts": env.contracts,
-            "version": VERSION,
-            "implementation_sha256": code_hash,
-            "config": raw,
-            "policy": policy.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "scheduler": scheduler.state_dict(),
-            "interactions": interactions,
-            "elapsed": consumed,
-            "updates": updates,
-            "environment": env.state_dict(),
-            "hidden": hidden,
-            "torch_rng": torch.get_rng_state(),
-            "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-            "numpy_rng": np.random.get_state(),
-            "python_rng": random.getstate(),
-            "budget_interactions": args.max_interactions,
-            "budget_seconds": args.max_seconds,
-        }
-        torch.save(checkpoint, run / "checkpoints" / "latest.tmp")
-        (run / "checkpoints" / "latest.tmp").replace(run / "checkpoints" / "latest.pt")
-        row = {
-            "update": updates,
-            "interactions": interactions,
-            "training_seconds": consumed,
-            **losses,
-        }
-        with (run / "metrics" / "train_metrics.jsonl").open("a") as stream:
-            stream.write(json.dumps(row) + "\n")
-        print(json.dumps(row), flush=True)
-        write_json(
-            run / "metrics" / "summary.json",
-            {
-                **row,
-                "episodes": episodes,
-                "planner": planner_statistics(feedback),
-                "env_interactions_per_second": (interactions - starting_interactions)
-                / max(time.monotonic() - training_start, 1e-6),
-                "peak_rss_mib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
-                "stop_reason": "running",
-                "formal_convergence_claim": False,
-            },
-        )
-    env.close()
-    summary_path = run / "metrics" / "summary.json"
-    if summary_path.exists():
-        summary = json.loads(summary_path.read_text())
-        summary["stop_reason"] = (
-            "interaction_budget" if interactions + env.e > args.max_interactions else "wall_budget"
-        )
-        write_json(summary_path, summary)
-    if not args.skip_eval:
-        evaluate(policy, raw, run, cache, "after", args.eval_episodes)
-    manifest["status"] = (
-        "complete_smoke" if args.skip_eval or args.eval_episodes != 16 else "complete_pilot"
-    )
-    write_json(run / "run_manifest.json", manifest)
+        write_json(run / "run_manifest.json", manifest)
 
 
 if __name__ == "__main__":

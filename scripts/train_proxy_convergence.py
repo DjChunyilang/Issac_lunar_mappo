@@ -972,17 +972,12 @@ def main() -> None:
     if not checkpoint_path.is_absolute():
         checkpoint_path = ROOT / checkpoint_path
     tensorboard_setting = args.tensorboard or str(raw_cfg.get("logging", {}).get("tensorboard", "auto")).lower()
-    writer = None
-    if tensorboard_setting != "off":
-        if SummaryWriter is not None:
-            writer = SummaryWriter(str(tensorboard_dir))
-            _write_custom_scalar_layout(writer)
-        elif tensorboard_setting == "on":
-            tensorboard_dir.mkdir(parents=True, exist_ok=True)
-            (tensorboard_dir / "tensorboard_unavailable.txt").write_text(
-                "torch.utils.tensorboard could not be imported in this environment.\n",
-                encoding="utf-8",
-            )
+    if tensorboard_setting == "off":
+        raise ValueError("All subsequent training requires TensorBoard; --tensorboard off is no longer allowed")
+    if SummaryWriter is None:
+        raise RuntimeError("TensorBoard is required before training: install tensorboard in this interpreter")
+    writer = SummaryWriter(str(tensorboard_dir), flush_secs=10)
+    _write_custom_scalar_layout(writer)
 
     total_env_steps = int(args.total_env_steps or exp.get("total_env_steps", 1_000_000))
     rollout_steps = int(exp.get("rollout_steps", 128))

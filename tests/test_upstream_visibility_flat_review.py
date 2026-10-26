@@ -65,3 +65,39 @@ def test_visibility_progresses_around_large_known_body_and_binds_sender_identity
         if np.linalg.norm(position-goal)<1e-8:break
     assert np.linalg.norm(position-goal)<1e-8
     assert visibility_waypoint([0.,0.],goal,circles)[0] is None
+
+
+@pytest.mark.parametrize('case',['clear','growing_peer','workspace','unknown','hazard','parking_slope'])
+def test_nonflat_stationary_review_preserves_every_failure_and_sweep_count(case):
+    from dataclasses import replace
+    from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal.upstream_execution import rollout_numpy
+    from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal.upstream_footprint import FootprintNeighbor
+    s=spec();snapshot=field(s).snapshot();xy=snapshot.xy;features=snapshot.features.copy()
+    slope=np.tan(np.deg2rad(7.)) if case=='parking_slope' else .03
+    features[:,0]=xy[:,0]*slope;features[:,1]=slope;features[:,4]=.8
+    if case=='hazard':features[np.linalg.norm(xy,axis=-1)<.3,0]+=.8
+    if case=='unknown':
+        keep=np.linalg.norm(xy-[1.35,.9],axis=-1)>.45
+        xy,features=xy[keep],features[keep]
+    terrain=FootprintTerrain(TerrainSnapshot(xy,features,np.zeros(len(xy)),snapshot.support_radius),s)
+    trajectory=rollout_numpy([0.,0.,0.],np.zeros((40,2)),s)
+    kwargs={'require_stop':True,'parking_end':case=='parking_slope'}
+    if case=='workspace':kwargs['workspace']=[[-1.,-1.],[1.,1.]]
+    if case=='growing_peer':kwargs['neighbors']=[FootprintNeighbor.for_spec(1,[0.,8.],[[10.,0.]]*2,[2*s.vehicle.effective_radius,11.],s)]
+    reference=FootprintReviewer(s).trajectory(trajectory,[0.,0.],terrain,**kwargs)
+    reviewer=FlatGridPoseReviewer(s)
+    assert reviewer.trajectory(trajectory,[0.,0.],terrain,**kwargs)==reference
+    # Reuse the same static cache with new times/neighbors; no stale acceptance.
+    assert reviewer.trajectory(trajectory,[0.,0.],terrain,**kwargs)==reference
+
+
+def test_nonflat_cache_keeps_parking_threshold_and_new_geometry_separate():
+    from dataclasses import replace
+    s=spec();snapshot=field(s).snapshot();features=snapshot.features.copy()
+    features[:,1]=np.tan(np.deg2rad(7.));features[:,0]=snapshot.xy[:,0]*features[:,1]
+    terrain=FootprintTerrain(replace(snapshot,features=features),s);reviewer=FlatGridPoseReviewer(s)
+    assert reviewer.pose([0.,0.,0.],terrain).passed
+    assert reviewer.pose([0.,0.,0.],terrain,parking=True).reason=='parking_slope'
+    features[:,4]=0.
+    changed=FootprintTerrain(replace(snapshot,features=features),s)
+    assert reviewer.pose([0.,0.,0.],changed).reason=='impassable_footprint'

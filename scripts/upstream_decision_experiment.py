@@ -19,6 +19,7 @@ import torch
 from _common import ROOT
 from diagnose_upstream_environment import event_data
 from planner_evidence import file_sha256, json_write, source_snapshot
+from training_tensorboard import TrainingTensorBoard, TENSORBOARD_METADATA
 from upstream_checkpoint import read_checkpoint, save_checkpoint
 from upstream_run_state import save_state
 from upstream_process_rollout import ProcessUpstreamRollout
@@ -141,10 +142,11 @@ def run_arm(args, *, repair_validation=False):
             raise ValueError('Cannot resume into a new run')
         for name in ('config','metrics','logs','state','checkpoints'):
             (path/name).mkdir(parents=True,exist_ok=True)
-        json_write(path/'run_manifest.json',{'identity':identity,'command':sys.argv,
+        json_write(path/'run_manifest.json',{'identity':identity,'command':sys.argv,'tensorboard':TENSORBOARD_METADATA,
             'formal_training':False,'bounded_research_learning':True,'system_acceptance_complete':False})
     run=SimpleNamespace(path=path)
     collector=None;trainer=None;updates=0;start=time.perf_counter();last_checkpoint=None;phase='initializing'
+    tensorboard=TrainingTensorBoard(path)
     try:
         collector=ProcessUpstreamRollout(args.config,'A1',23,owners=4,envs_per_owner=4,
             samples=512,mode='signal',cpu_workers=2,device='cpu',learning_time=timing,
@@ -190,9 +192,11 @@ def run_arm(args, *, repair_validation=False):
             raise ValueError('Interrupted sampling has an uncertain physical-step count; reconcile before resuming')
         existing_summary=path/'metrics'/f'summary_{updates:06d}.json'
         if existing_summary.exists() and json.loads(existing_summary.read_text())['budget_complete']:
+            tensorboard.sync()
             return json.loads(existing_summary.read_text()),json.loads((path/'metrics/evaluation_final.json').read_text())
         phase='evaluation'
         initial_evaluation=_evaluation(path,'initial',collector,args,repair_validation=repair_validation)
+        tensorboard.sync()
         if repair_validation and args.comparison_run:
             from upstream_learning_validation import check_initial_reference
             check_initial_reference(initial_evaluation['results'],reference)
@@ -213,6 +217,7 @@ def run_arm(args, *, repair_validation=False):
                         'valid_transitions':collector.transitions,'episodes':episodes,
                         'finite_observations':bool(torch.isfinite(batch['obs']).all()),
                         'finite_log_prob':all(bool(torch.isfinite(s.log_prob).all()) for s in batch['samples'])}))
+                tensorboard.sync()
             phase='sampling'
             batch,episodes,records=trainer.collect(count,on_chunk=on_chunk)
             phase='updating'
@@ -240,6 +245,7 @@ def run_arm(args, *, repair_validation=False):
                 'ineffective_terminal_decisions':int(((~batch['action_effective']) & (duration>0)).sum()),
                 'collection_seconds':collect_seconds,'update_seconds':time.perf_counter()-started,
                 'wall_seconds':time.perf_counter()-start}))
+            tensorboard.sync()
             del batch,episodes,records
             trainer.release_rollout();gc.collect()
             phase='checkpoint'
@@ -250,6 +256,7 @@ def run_arm(args, *, repair_validation=False):
             if not repair_validation and collector.base_steps>=100000:
                 phase='evaluation'
                 _evaluation(path,'midpoint',collector,args)
+                tensorboard.sync()
             if args.updates_this_invocation is not None and updates-initial_updates>=args.updates_this_invocation:
                 break
         complete=remaining_decisions(budget,collector.base_steps,16,decision_steps,1)==0
@@ -265,6 +272,7 @@ def run_arm(args, *, repair_validation=False):
                 for p in (path/'metrics').glob('evaluation_*_reservation.json')),
             'full_gathering_acceptance':False,'physx_acceptance':False}
         json_write(path/'metrics'/f'summary_{updates:06d}.json',summary)
+        tensorboard.sync()
         return summary,final
     except BaseException as error:
         json_write(path/'metrics'/f'failure_{time.time_ns()}.json',{
@@ -274,6 +282,7 @@ def run_arm(args, *, repair_validation=False):
             'automatic_retry':False})
         raise
     finally:
+        tensorboard.close()
         if collector is not None:
             collector.close()
 

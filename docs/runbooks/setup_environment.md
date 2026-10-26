@@ -1,5 +1,7 @@
 # 环境搭建与工程闭环验收
 
+2026-10-26更新：Windows目标机（12400F／16GB／RTX4060Ti8GB）的当前部署入口见[WSL2交接文档](windows_wsl2_deployment_handoff_2026-10-23.md)。其中包含最新SAT三轮工作区、四图／atlas、用户停止时的完整checkpoint、局域网传输及目标机验收；下文历史安装命令不应自动作为该部署的默认流程。
+
 ## RTX 2060本机：仅安装代理训练环境
 
 2026-09-14起，本机优先恢复proxy训练。`.venv_isaaclab`仍沿用历史路径名，但本机不安装Isaac Sim/Isaac Lab；下面的完整栈安装与PhysX命令不属于本机已验证能力。

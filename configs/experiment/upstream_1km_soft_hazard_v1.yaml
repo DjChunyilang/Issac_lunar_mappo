@@ -1,0 +1,12 @@
+# User-authorized ablation: no predictive footprint interception.
+extends: upstream_1km_curriculum_v1.yaml
+experiment:
+  name: upstream_1km_soft_hazard_v1
+  episode_length_s: 1500.0
+  training_paused: true
+upstream_scale:
+  hazard_response_version: cost_reward_only_v1
+  execution_safety_version: projection_disabled
+  review_acceleration_version: flat_frame_pose_cache_v3
+  mppi_parameters:
+    terrain_scale: 3.0

@@ -1,7 +1,7 @@
 """Independent 40-step, asymmetric-vehicle MPPI with local-only tensor inputs."""
 
 from copy import deepcopy
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import hashlib
 import math
 import time
@@ -79,6 +79,12 @@ class UpstreamMPPIKernel:
 
     def pack(self, requests):
         views = [r.terrain for r in requests]
+        if self.cfg.obstacle_input is not None:
+            from .upstream_grid import GridTerrainBatch
+            terrain=GridTerrainBatch(views,self.device,getattr(self,'_grid_tile_cache',None),max_owners=self.cfg.simulation.num_envs*4)
+            self._grid_tile_cache=terrain.cache
+            self.last_grid_upload_bytes=terrain.upload_bytes
+            return terrain,LocalNeighborBatch(requests,device=self.device)
         cached = getattr(self, '_packed_terrain', None)
         if (cached is not None and len(cached._views) == len(views)
                 and all(a._xy is b._xy and a._features is b._features for a,b in zip(cached._views, views))):
@@ -161,12 +167,31 @@ class UpstreamMPPIKernel:
         return (torch.stack(states, 2), torch.stack(controls, 2), torch.stack(velocities, 2),
                 numeric, torch.stack(known_nodes, 2))
 
-    def cost(self, requests, states, controls, terrain, neighbors):
-        s, u = states.double(), controls.double()
+    def _cost_constants(self, requests):
+        """Keep only the current request group; never retain old terrain history."""
+        previous=getattr(self,'_cost_requests',())
+        if previous and len(previous)==len(requests) and all(a is b for a,b in zip(previous,requests)):
+            return self._cost_values
         def exact(value):
             return torch.as_tensor(value, device=self.device, dtype=torch.float64)
-        start = exact(np.stack([r.ego_pose[:2] for r in requests]))
-        goals = exact(np.stack([r.intent.goal_xy for r in requests]))
+        values=dict(poses=exact(np.stack([r.ego_pose for r in requests])),
+            start=exact(np.stack([r.ego_pose[:2] for r in requests])),
+            goals=exact(np.stack([r.intent.goal_xy for r in requests])),
+            previous=exact(np.stack([r.previous_control for r in requests])),
+            stop=torch.as_tensor([r.intent.stop_at_goal for r in requests],device=self.device),
+            yaw=exact([r.ego_pose[2] if r.intent.terminal_yaw is None else r.intent.terminal_yaw for r in requests]),
+            yaw_active=torch.as_tensor([r.intent.terminal_yaw is not None for r in requests],device=self.device),
+            workspace=exact([r.workspace if r.workspace is not None else (-1e12,-1e12,1e12,1e12) for r in requests]),
+            limits=exact([self.spec.vehicle.forward_limit,self.spec.vehicle.yaw_limit]),
+            slew=exact([self.spec.vehicle.linear_acceleration,self.spec.vehicle.angular_acceleration])*self.spec.grid.dt,
+            control_weight=exact([.05,.03]),smooth_weight=exact([.5,.2]))
+        self._cost_requests=tuple(requests);self._cost_values=values
+        return values
+
+    def cost(self, requests, states, controls, terrain, neighbors):
+        s, u = states.double(), controls.double()
+        constants=self._cost_constants(requests)
+        start,goals=constants['start'],constants['goals']
         vector = goals - start
         length = vector.norm(dim=-1)
         direction = vector / length.clamp_min(1e-12)[:, None]
@@ -174,30 +199,40 @@ class UpstreamMPPIKernel:
         progress = (offset * direction[:, None, None]).sum(-1)
         lateral = offset - progress[..., None] * direction[:, None, None]
         rolling_error = (length[:, None, None] - progress).clamp_min(0).square() + lateral.square().sum(-1)
-        stop = torch.as_tensor([r.intent.stop_at_goal for r in requests], device=self.device) | (length < 1e-8)
+        stop = constants['stop'] | (length < 1e-8)
         euclidean = (s[:, :, 1:, :2] - goals[:, None, None]).square().sum(-1)
         error = torch.where(stop[:, None, None], euclidean, rolling_error) / self.spec.rho_max**2
         goal = 2 * error.sum(-1) + 12 * error[..., -1]
-        yaw = exact([r.ego_pose[2] if r.intent.terminal_yaw is None else r.intent.terminal_yaw for r in requests])
-        yaw_active = torch.as_tensor([r.intent.terminal_yaw is not None for r in requests], device=self.device)
+        yaw,yaw_active=constants['yaw'],constants['yaw_active']
         goal += yaw_active[:, None] * 2 * (1 - (s[:, :, -1, 2] - yaw[:, None]).cos())
-        previous = exact(np.stack([r.previous_control for r in requests]))
+        previous = constants['previous']
         change = torch.diff(torch.cat((previous[:, None, None].expand(-1, u.shape[1], 1, -1), u), 2), dim=2)
-        limits = u.new_tensor([self.spec.vehicle.forward_limit, self.spec.vehicle.yaw_limit])
-        slew = u.new_tensor([self.spec.vehicle.linear_acceleration, self.spec.vehicle.angular_acceleration]) * self.spec.grid.dt
+        limits,slew=constants['limits'],constants['slew']
         parts = {"goal": goal,
-                 "control": ((u / limits).square() * u.new_tensor([.05, .03])).sum((-1, -2)),
-                 "smooth": ((change / slew).square() * u.new_tensor([.5, .2])).sum((-1, -2)),
+                 "control": ((u / limits).square() * constants['control_weight']).sum((-1, -2)),
+                 "smooth": ((change / slew).square() * constants['smooth_weight']).sum((-1, -2)),
                  "reverse": .2 * (u[..., 0].clamp_max(0) / self.spec.vehicle.reverse_limit).square().sum(-1)}
-        features, known = terrain.lookup(s[..., :2])
+        if self.cfg.obstacle_input is not None:
+            features,known,ground=terrain.lookup_ground(s[...,:2])
+        else:
+            features,known=terrain.lookup(s[...,:2])
         f = features.double()
-        risk = (f[..., 1:3].norm(dim=-1) / self.spec.terrain.driving_slope).square() + ((1 - f[..., 4]) / .75).square()
+        if self.cfg.obstacle_input is not None:
+            risk=ground.double()
+        else:
+            risk=(f[...,1:3].norm(dim=-1)/self.spec.terrain.driving_slope).square()+((1-f[...,4])/.75).square()
+        if self.cfg.obstacle_input is None and not self.cfg.predictive_footprint_checks:
+            # Reuse the center query; no contact grids or swept-pose queries.
+            rough = (f[..., 3] / self.spec.terrain.roughness_rms).clamp(0, 10)
+            step = torch.diff(f[..., 0], dim=-1, prepend=f[..., :1, 0]).abs()
+            step = (step / self.spec.terrain.step_height).clamp_max(10)
+            risk = risk + rough.square() + step.square()
         parts["terrain"] = 2 * torch.where(known, risk, 0.).sum(-1)
         parts["unknown"] = 20 * (~known).double().sum(-1)
         parts["neighbor"], neighbor_safe = neighbors.risk_and_safe(s)
         terrain_safe = known & (f[..., 4] >= self.spec.terrain.minimum_traversability) & (f[..., 1:3].norm(dim=-1) <= self.spec.terrain.driving_slope + 1e-8)
         safe = terrain_safe.all(-1) & neighbor_safe & (u[..., -1, :].abs().amax(-1) <= 1e-7)
-        workspace = exact([r.workspace if r.workspace is not None else (-1e12, -1e12, 1e12, 1e12) for r in requests])
+        workspace = constants['workspace']
         radius = self.spec.vehicle.effective_radius
         safe &= ((s[..., :2] - radius >= workspace[:, None, None, :2])
                  & (s[..., :2] + radius <= workspace[:, None, None, 2:])).all((-1, -2))
@@ -224,7 +259,52 @@ class UpstreamMPPIKernel:
                                       "cost_s": 0. if events else time.perf_counter() - predicted}
         return states, controls, velocities, cost, numeric, prescreen & numeric, parts
 
-    def plan_batch(self, planners, inputs, *, noise=None, clock=time.monotonic):
+    def plan_batch(self, planners, inputs, *, noise=None, clock=time.monotonic, record_samples=True):
+        # Selection uses review order, never the final physical cost. Keep the
+        # resulting drafts private until all actual NumPy trajectories have
+        # been scored together and the original timeout rule has run.
+        deferred=self.cfg.obstacle_input is not None
+        if deferred:
+            for planner in planners:planner._defer_output_scoring=True
+        try:
+            return self._plan_batch(planners,inputs,noise=noise,clock=clock,record_samples=record_samples)
+        finally:
+            if deferred:
+                for planner in planners:planner.__dict__.pop('_defer_output_scoring',None)
+            self.__dict__.pop('_cost_requests',None)
+            self.__dict__.pop('_cost_values',None)
+
+    def _score_output_batch(self,planners,requests,outputs,packed):
+        if self.cfg.obstacle_input is None:return
+        indices=[i for i,output in enumerate(outputs) if output.valid]
+        if not indices:return
+        items=[requests[i] for i in indices]
+        trajectories=[outputs[i].trajectory for i in indices]
+        states=torch.as_tensor(np.stack([t.states for t in trajectories]),device=self.device,dtype=torch.float64)[:,None]
+        controls=torch.as_tensor(np.stack([t.controls for t in trajectories]),device=self.device,dtype=torch.float64)[:,None]
+        terrain,neighbors=(value.select(indices) for value in packed)
+        parts,_=self.cost(items,states,controls,terrain,neighbors)
+        names=list(parts)
+        # A single D2H transfer replaces one Python scalar sync per component.
+        values=torch.stack([parts[name][:,0] for name in names],-1).cpu().tolist()
+        costs=[sum(row) for row in values]
+        if not all(map(math.isfinite,costs)):
+            raise ValueError('Final trajectory cost must be finite or None')
+        for index,row,cost in zip(indices,values,costs):
+            selected=dict(zip(names,row))
+            outputs[index]=replace(outputs[index],total_cost=cost)
+            outputs[index].diagnostics['selected_cost_parts']=dict(selected)
+
+    def _commit_output_batch(self,planners,requests,outputs):
+        if self.cfg.obstacle_input is not None:
+            for planner,item,output in zip(planners,requests,outputs):
+                planner._commit_output(item,output)
+                planner.warm=(output.trajectory.controls.copy() if output.valid
+                              and not output.diagnostics.get('parking_branch',False) else None)
+                if output.valid:planner.selected_cost_parts=dict(output.diagnostics['selected_cost_parts'])
+                planner.last_diagnostics=dict(output.diagnostics)
+
+    def _plan_batch(self, planners, inputs, *, noise=None, clock=time.monotonic, record_samples=True):
         if len(planners) != len(inputs) or len({id(p) for p in planners}) != len(planners):
             raise ValueError("One independent MPPI handle per batch input")
         if not inputs:
@@ -256,15 +336,19 @@ class UpstreamMPPIKernel:
             if outputs[i] is None:
                 active.append(i)
             else:
-                planner.warm = None
+                if self.cfg.obstacle_input is None:planner.warm = None
                 planner.last_samples = None
-                planner.last_diagnostics = {**outputs[i].diagnostics, "samples": 0, "parking_branch": True,
+                details = {**outputs[i].diagnostics, "samples": 0, "parking_branch": True,
                     "selected_cost_parts": dict(planner.selected_cost_parts) if outputs[i].valid else {}}
-                outputs[i].diagnostics.update(planner.last_diagnostics)
+                outputs[i].diagnostics.update(details)
+                if self.cfg.obstacle_input is None:planner.last_diagnostics=details
         if not active:
+            self._score_output_batch(planners,inputs,outputs,all_packed)
+            self._commit_output_batch(planners,inputs,outputs)
             elapsed = clock() - started_batch
             for output in outputs:
                 output.diagnostics["end_to_end_s"] = elapsed
+            for planner,output in zip(planners,outputs):planner.last_diagnostics=dict(output.diagnostics)
             return outputs
         self.batch_calls += 1
         requests, handles = [inputs[i] for i in active], [planners[i] for i in active]
@@ -323,12 +407,19 @@ class UpstreamMPPIKernel:
             evaluated,weights,score,usable,eps,raw_controls,proposal_mean=last
             states,controls,velocities,cost,numeric,pre,parts=evaluated
             rank=torch.argsort(torch.where(pre,cost,torch.inf),dim=-1,stable=True)
-            payload=dict(states=states,controls=controls,cost=cost,numeric=numeric,pre=pre,
-                weights=weights,usable=usable,eps=eps,raw_controls=raw_controls,proposal_mean=proposal_mean,
-                correction=score-cost,rank=rank,updated_controls=updated[1],updated_numeric=updated[4],
+            selected=rank[:,:self.settings.candidate_limit]
+            selected_controls=torch.gather(controls,1,selected[:,:,None,None].expand(-1,-1,40,2))
+            payload=dict(selected_indices=selected,selected_valid=torch.gather(pre,1,selected),
+                selected_controls=selected_controls,usable_any=usable.any(-1),
+                correction=score-cost,updated_controls=updated[1],updated_numeric=updated[4],
+                **({'updated_prescreen':updated[5]} if not self.cfg.predictive_footprint_checks else {}),
                 numeric_fraction=numeric.double().mean(-1),pre_fraction=pre.double().mean(-1),
-                pre_count=pre.sum(-1),effective=1/weights.square().sum(-1),
-                **{'part_'+k:v for k,v in parts.items()})
+                pre_count=pre.sum(-1),effective=1/weights.square().sum(-1))
+            if record_samples:
+                payload.update(states=states,controls=controls,cost=cost,numeric=numeric,pre=pre,
+                    weights=weights,eps=eps,raw_controls=raw_controls,proposal_mean=proposal_mean,
+                    **{'part_'+k:v for k,v in parts.items()})
+            transfer_bytes=sum(v.numel()*v.element_size() for v in payload.values())
             host={}
             for dtype in {v.dtype for v in payload.values()}:
                 group=[(k,v) for k,v in payload.items() if v.dtype==dtype]
@@ -336,9 +427,10 @@ class UpstreamMPPIKernel:
                 offset=0
                 for key,value in group:
                     host[key]=slab[offset:offset+value.numel()].view(value.shape);offset+=value.numel()
-            states,controls,cost,numeric,pre,weights,usable,eps,raw_controls,proposal_mean=[host[k] for k in
-                ('states','controls','cost','numeric','pre','weights','usable','eps','raw_controls','proposal_mean')]
-            parts={k:host['part_'+k] for k in parts}
+            if record_samples:
+                states,controls,cost,numeric,pre,weights,eps,raw_controls,proposal_mean=[host[k] for k in
+                    ('states','controls','cost','numeric','pre','weights','eps','raw_controls','proposal_mean')]
+                parts={k:host['part_'+k] for k in parts}
         for events in evaluation_events:
             events[-1].synchronize()
             stages['prediction_s']+=events[0].elapsed_time(events[1])/1000
@@ -358,20 +450,23 @@ class UpstreamMPPIKernel:
                        "numerical_valid_fraction": 0., "prescreen_fraction": 0.,
                        "prescreen_count": 0, "sample_review_limit": self.settings.candidate_limit,
                        "full_review_passed": False, "sampling": "raw_gaussian_importance_v1"}
+            if self.cfg.obstacle_input is not None:
+                details['grid_upload_bytes']=packed[0].upload_bytes
             if complete:
                 details.update(numerical_valid_fraction=float(host['numeric_fraction'][b]),
                                prescreen_fraction=float(host['pre_fraction'][b]),
                                prescreen_count=int(host['pre_count'][b]),
-                               effective_samples=float(host['effective'][b]) if bool(usable[b].any()) else 0.,
+                               effective_samples=float(host['effective'][b]) if bool(host['usable_any'][b]) else 0.,
+                               full_samples_recorded=record_samples,host_transfer_bytes=transfer_bytes,
                                importance_correction=[value if math.isfinite(value) else None
                                    for value in host['correction'][b].tolist()])
-                if bool(usable[b].any()) and bool(host['updated_numeric'][b, 0]):
+                if (bool(host['usable_any'][b]) and bool(host['updated_numeric'][b, 0])
+                        and (self.cfg.predictive_footprint_checks or bool(host['updated_prescreen'][b,0]))):
                     candidates.append(Candidate(host['updated_controls'][b,0].numpy(), "updated_mean"))
-                indices = host['rank'][b]
-                indices = indices[pre[b, indices]][:self.settings.candidate_limit]
-                for index in indices.tolist():
-                    candidates.append(Candidate(controls[b, index].detach().cpu().numpy(), "sample",
-                                                diagnostics={"sample_index": index}))
+                for slot,index in enumerate(host['selected_indices'][b].tolist()):
+                    if bool(host['selected_valid'][b,slot]):
+                        candidates.append(Candidate(host['selected_controls'][b,slot].numpy(), "sample",
+                                                    diagnostics={"sample_index": index}))
                 planner.last_samples = {"recorded_iteration": complete - 1, "total_iterations": self.settings.iterations,
                                         "proposal_mean": proposal_mean[b].detach().cpu().clone(),
                                         "raw_controls": raw_controls[b].detach().cpu().clone(),
@@ -380,8 +475,8 @@ class UpstreamMPPIKernel:
                                         "cost": cost[b].detach().cpu().clone(), "numerical_valid": numeric[b].cpu().clone(),
                                         "prescreen": pre[b].cpu().clone(), "raw_noise": eps[b].detach().cpu().clone(),
                                         "weights": weights[b].detach().cpu().clone(),
-                                        "physical_cost_parts": {name: value[b].detach().cpu().clone() for name, value in parts.items()}}
-                if not bool(usable[b].any()):
+                                        "physical_cost_parts": {name: value[b].detach().cpu().clone() for name, value in parts.items()}} if record_samples else None
+                if not bool(host['usable_any'][b]):
                     details["failure_reason"] = "all_samples_numerically_invalid"
                     candidates = []
             else:
@@ -391,11 +486,13 @@ class UpstreamMPPIKernel:
                 candidates = []
                 details["failure_reason"] = "planner_timeout"
             output = planner.finish(request, candidates, diagnostics=details)
-            planner.warm = output.trajectory.controls.copy() if output.valid else None
-            planner.last_diagnostics = {**output.diagnostics, "full_review_passed": output.valid,
+            if self.cfg.obstacle_input is None:planner.warm = output.trajectory.controls.copy() if output.valid else None
+            details = {**output.diagnostics, "full_review_passed": output.valid and self.cfg.predictive_footprint_checks,
                                          "selected_cost_parts": dict(planner.selected_cost_parts) if output.valid else {}}
-            output.diagnostics.update(planner.last_diagnostics)
+            output.diagnostics.update(details)
+            if self.cfg.obstacle_input is None:planner.last_diagnostics=details
             outputs[active[b]] = output
+        self._score_output_batch(planners,inputs,outputs,all_packed)
         # The receiver cannot use any output before all full reviews finish.
         elapsed = clock() - started_batch
         if self.settings.deadline_s is not None and elapsed > self.settings.deadline_s and not timed_out:
@@ -417,6 +514,7 @@ class UpstreamMPPIKernel:
                          and d.get("selected_source") not in ("sample", "updated_mean")))
             output.feedback.solve_seconds = elapsed
             planner.last_diagnostics = dict(d)
+        self._commit_output_batch(planners,inputs,outputs)
         stages["full_review_and_scoring_s"] = time.perf_counter() - review_start
         for planner, output in zip(planners, outputs):
             output.diagnostics["batch_stage_times"] = dict(stages)

@@ -1,5 +1,7 @@
 # 归档文档
 
+[2026-10-22 正式训练主线切换前完整快照](formal_training_transition_2026-10-22/README.md)保留原状态、阶段计划、接口、架构、导航和训练手册；当前工作顺序改为正式训练优先、消融延后、T15 持续治理，见[现行计划](../implementation_plan.md)。
+
 [2026-10-16矩阵续跑前完整状态](current_status_snapshot_2026-10-16_before_matrix_continuation.md)保留10月15日快照及追加准备；最新进度见[当前状态](../current_status.md)。
 
 [2026-10-14校准更新前完整状态](current_status_snapshot_2026-10-14_before_calibration.md)保留当时的逐阶段进展；最新状态回到[当前入口](../current_status.md)。

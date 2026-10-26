@@ -23,6 +23,7 @@ from diagnose_upstream_environment import event_data
 from diagnose_upstream_planners import archive_inputs
 from evaluate_upstream_gathering import terrain_for
 from planner_evidence import file_sha256, json_write, source_snapshot
+from training_tensorboard import TrainingTensorBoard, TENSORBOARD_METADATA
 from upstream_local_closure import runtime_config
 from upstream_run_state import save_state, restore_state
 from upstream_checkpoint import save_checkpoint, read_checkpoint
@@ -121,11 +122,11 @@ def make_collector(base, representation, seed, *, samples=512, num_envs=2,
     native=representation=='A3'
     cfg,_=runtime_config(base,name='upstream_t11_'+representation.lower(),seed=seed,
         adapter='primitive47_upstream_v1' if native else None,
-        device='cpu' if native else None,samples=samples,num_envs=num_envs,
+        device='cpu' if native else None,samples=samples,iterations=None,num_envs=num_envs,
         episode_seconds=episode_seconds,safety=True)
     cfg=session_configuration(cfg,mode)
     torch.manual_seed(seed)
-    if policy is None:policy=build_ablation_policies(991,cfg.spec)[representation]
+    if policy is None:policy=build_ablation_policies(cfg.critic_dim,cfg.spec,terrain_channels=cfg.terrain_channels)[representation]
     poses=np.stack([gathering_scene(replace(cfg,simulation=replace(cfg.simulation,num_envs=1)),family,seed+i)[0]
                     for i in range(num_envs)])
     terrain,runtime,maps=terrain_for(family,seed,num_envs)
@@ -141,14 +142,48 @@ def make_collector(base, representation, seed, *, samples=512, num_envs=2,
     curriculum=None
     if curriculum_config is not None:
         if initial_cohort is not None or family!='compact' or learning_time is None:
-            raise ValueError('Curriculum requires its own flat spawn sampler and explicit learning time')
+            raise ValueError('Configured spawning requires its own sampler and explicit learning time')
         from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal.upstream_curriculum import SpawnCurriculum
         curriculum=SpawnCurriculum(cfg.spec,curriculum_config,seed,num_envs)
+        if curriculum.fixed:
+            from types import SimpleNamespace
+            from lunar_rover_tasks.terrain_data.batched import SceneBank
+            from lunar_rover_tasks.tasks.multi_rover_gathering.gathering_env_cfg import TerrainCfg
+            from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal.upstream_sensing import DenseSensor
+            from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal.upstream_flat_review import create_reviewer
+            role=curriculum_config.get('scene_role','training')
+            paths=curriculum_config['scene_manifests'][role]
+            selected=paths[((seed-23)//4)%len(paths)] if role=='training' else paths[0]
+            ground=None if cfg.obstacle_input is None else cfg.obstacle_input.data['ground']
+            terrain=TerrainCfg(type='lunar_scene_pack',
+                raster_risk_slope_scale=.6 if ground is None else ground['slope_score_scale'],
+                raster_risk_rms_scale_m=.05 if ground is None else ground['rms_score_scale_m'])
+            terrain.scene_manifests=[selected]
+            bank=SceneBank([selected],storage='mmap')
+            if bank.scenes[0].meta['extent_xy_m'] != [1000.,1000.]:
+                raise ValueError('Fixed far training requires a full 1 km lunar map')
+            bank.prefetch([0])
+            runtime=SimpleNamespace(scene_bank=bank,scene_indices=torch.zeros(num_envs,dtype=torch.long))
+            maps=(bank.scenes[0].checkpoint_contract()['scene_manifest_sha256'],)
+            birth_runtime=SimpleNamespace(scene_bank=bank,scene_indices=torch.zeros(1,dtype=torch.long))
+            birth_atlas=None
+            if cfg.obstacle_input is not None and cfg.obstacle_input.graded_craters:
+                from lunar_rover_tasks.terrain_data.obstacle_atlas import ObstacleAtlas
+                from lunar_rover_tasks.terrain_data.scene_pack import file_hash
+                scene=bank.scenes[0]
+                birth_atlas=ObstacleAtlas(cfg.obstacle_input.atlas_root/file_hash(scene.path)/'obstacle.json',
+                                         cfg.obstacle_input,scene)
+            curriculum.bind_terrain(DenseSensor(cfg.spec,terrain,runtime=birth_runtime,map_identities=maps),
+                                    create_reviewer(cfg.spec,cfg.review_acceleration_version),driving_atlas=birth_atlas)
         poses=curriculum.sample(range(num_envs))
         initial_control=np.zeros((num_envs,4,2));initial_control[...,0]=.1
-        rewards=replace(rewards,gather_scaling=curriculum_config['reward_scaling'])
+        from lunar_rover_tasks.tasks.multi_rover_gathering.local_goal.upstream_reward import configured_reward_settings
+        rewards=configured_reward_settings(g,l,curriculum_config)
     env=UpstreamEnvironment(cfg,poses,terrain_cfg=terrain,terrain_runtime=runtime,
                            map_identities=maps,cache_dir=cache_dir,reward_settings=rewards,initial_control=initial_control,curriculum=curriculum)
+    # Full candidate tensors are opt-in diagnostics, not learning inputs.
+    # Standalone planner/diagnostic entry points retain full recording by default.
+    env.pool.record_samples=False
     return UpstreamAblationRollout(env,policy,learning_time)
 
 
@@ -184,7 +219,7 @@ def main():
     parser.add_argument('--seed',type=int,default=23);parser.add_argument('--rollout-steps',type=int,default=128)
     parser.add_argument('--samples',type=int,default=512);parser.add_argument('--num-envs',type=int,default=2)
     parser.add_argument('--diagnostic-updates',type=int,choices=(1,2),default=1)
-    parser.add_argument('--budget',type=int,choices=(20000,100000,200000,500000,1000000,2000000),default=100000)
+    parser.add_argument('--budget',type=int,default=100000)
     parser.add_argument('--evaluate-every',type=int,default=10)
     parser.add_argument('--updates-this-invocation',type=int,help='Stop at a saved update boundary for controlled resume')
     parser.add_argument('--readiness');parser.add_argument('--release-training-pause',action='store_true')
@@ -210,8 +245,10 @@ def main():
     parser.add_argument('--comparison-run',help='Completed original combo run reused by the value-normalization candidate')
     parser.add_argument('--far-checkpoint',help='Historical A1 owner-0 state for the frozen evaluation panel')
     parser.add_argument('--describe-decision-credit',action='store_true',help='Print bounded experiment specification without allocating environments or training')
-    parser.add_argument('--curriculum-config',help='Explicit isolated 1km long-learning curriculum YAML')
+    parser.add_argument('--curriculum-config','--training-config',dest='curriculum_config',help='Explicit isolated 1km curriculum or fixed-distribution training YAML')
     args=parser.parse_args();torch.set_num_threads(1)
+    if not args.curriculum_config and args.budget not in (20000,100000,200000,500000,1000000,2000000):
+        parser.error('Legacy entry budget must be 20000, 100000, 200000, 500000, 1000000 or 2000000')
     if args.curriculum_config:
         from upstream_curriculum_experiment import run_experiment
         run_experiment(args)
@@ -252,7 +289,7 @@ def main():
         raise ValueError('Signal learning requires explicit100k authorization')
     # Check authorization/evidence before allocating the full execution stack.
     cfg,_=runtime_config(args.config,name='upstream_t11_'+args.representation.lower(),seed=args.seed,
-                        samples=args.samples,num_envs=args.num_envs,safety=True,episode_seconds=360.,
+                        samples=args.samples,iterations=None,num_envs=args.num_envs,safety=True,episode_seconds=360.,
                         adapter='primitive47_upstream_v1' if args.representation=='A3' else None,
                         device='cpu' if args.representation=='A3' else None)
     audit=(readiness(args.readiness,cfg,scope='signal100k',budget=args.budget,
@@ -277,7 +314,7 @@ def main():
             raise ValueError('Session exists or resume identity changed')
     else:
         for name in ('config','metrics','logs','state','checkpoints'):(path/name).mkdir(parents=True,exist_ok=True)
-        json_write(manifest,{'identity':identity,'formal_training':args.mode=='train',
+        json_write(manifest,{'identity':identity,'tensorboard':TENSORBOARD_METADATA,'formal_training':args.mode=='train',
                             'signal_learning':args.mode=='signal','system_acceptance_complete':args.mode=='train',
                             'readiness':None if audit is None else {'path':args.readiness,'sha256':file_sha256(args.readiness)}})
     run=SimpleNamespace(path=path,identity=identity,planner_device=cfg.planner_device)
@@ -329,87 +366,97 @@ def main():
         if saved['identity']!=identity:raise ValueError('Session snapshot identity mismatch')
         trainer.load_state_dict(saved['trainer']);updates=saved['session_updates']
         del saved
-    initial_updates=updates
-    while ((updates<args.diagnostic_updates) if args.mode=='diagnostic' else (collector.transitions<args.budget)):
-        length=args.rollout_steps if args.mode=='diagnostic' else remaining_rollout_steps(
-            args.budget,collector.transitions,args.num_envs,args.rollout_steps)
-        if length==0:break
-        phase_start=time.perf_counter()
-        def on_chunk(part,ends,trace,remaining):
-            if args.mode!='signal':return
-            applied=[r['execution']['applied_control'] for r in trace if 'execution' in r]
-            commands=np.asarray(applied)
-            valid=part['learning_valid']
-            holds=torch.stack([s.action.hold for s in part['samples']])
-            sample={'update':updates+1,'remaining_macro_steps':remaining,
-                'team_transitions':collector.transitions,'valid_transitions':int(valid.sum()),
-                'total_transitions':valid.numel(),'reward_mean':float(part['reward'][valid].mean()) if valid.any() else None,
-                'hold_fraction':float(holds.float().mean()),'episodes':ends,
-                'maximum_applied_speed':float(np.abs(commands[...,0]).max()) if commands.size else None,
-                'maximum_applied_yaw_rate':float(np.abs(commands[...,1]).max()) if commands.size else None,
-                'finite_observations':bool(torch.isfinite(part['obs']).all()),
-                'finite_log_prob':all(bool(torch.isfinite(s.log_prob).all()) for s in part['samples']),
-                'poses':collector.env.core.poses,'task':collector.env.last_task,
-                'wall_seconds':time.perf_counter()-start}
-            json_write(path/'metrics'/f'collection_{updates+1:06d}_{length-remaining:03d}.json',event_data(sample))
-            print(json.dumps({'event':'collection','update':updates+1,'team_transitions':collector.transitions,
-                'valid_transitions':int(valid.sum()),'remaining_macro_steps':remaining}),flush=True)
-        batch,episodes,records=trainer.collect(length,on_chunk=on_chunk if args.mode=='signal' else None)
-        collect_seconds=time.perf_counter()-phase_start;phase_start=time.perf_counter()
-        result=(trainer.diagnostic_update(batch) if args.mode=='diagnostic' else
-                trainer.update(batch,readiness=audit,training_authorized=True))
-        update_seconds=time.perf_counter()-phase_start;updates+=1
-        payload={'update':updates,'team_transitions':collector.transitions,'episodes':episodes,'learning':result,
-                 'wall_seconds':time.perf_counter()-start,'formal_training':args.mode=='train','signal_learning':args.mode=='signal',
-                 'phase_seconds':{'collect':collect_seconds,'ppo_update':update_seconds}}
-        json_write(path/'metrics'/f'update_{updates:06d}.json',event_data(payload))
-        # Preserve actual original actions/probabilities and execution feedback.
-        phase_start=time.perf_counter()
-        save_state(run,f'interactions_{updates:06d}',{'samples':batch['samples'],'execution':records,
-                   'duration':batch['duration'].cpu(),'learning_valid':batch['learning_valid'].cpu(),
-                   'learning':{k:batch[k].cpu() for k in ('reward','value','next_value','terminated','truncated',
-                       'bootstrap_allowed','terminal_reason')}})
-        interaction_save_seconds=time.perf_counter()-phase_start
-        del batch,episodes,records,payload
-        trainer.release_rollout()
-        gc.collect()
-        evaluation_seconds=0.;state_save_seconds=0.
-        stop_requested=args.updates_this_invocation is not None and updates-initial_updates>=args.updates_this_invocation
-        if args.mode!='signal' and (args.mode=='diagnostic' or updates%args.evaluate_every==0 or collector.transitions>=args.budget or stop_requested):
+        # Legacy collectors did not serialize physical-step counters. New runs
+        # retain them in the immutable update record at the restored boundary.
+        previous_metrics=path/'metrics'/f'update_{updates:06d}.json'
+        if previous_metrics.exists():
+            collector.base_steps=json.loads(previous_metrics.read_text()).get('actual_base_steps',0)
+    with TrainingTensorBoard(path) as tensorboard:
+        initial_updates=updates
+        while ((updates<args.diagnostic_updates) if args.mode=='diagnostic' else (collector.transitions<args.budget)):
+            length=args.rollout_steps if args.mode=='diagnostic' else remaining_rollout_steps(
+                args.budget,collector.transitions,args.num_envs,args.rollout_steps)
+            if length==0:break
             phase_start=time.perf_counter()
-            rows=evaluate(collector,args.config,args.representation,
-                          max_macro_steps=1 if args.mode=='diagnostic' else None,samples=args.samples)
-            json_write(path/'metrics'/f'evaluation_{updates:06d}.json',event_data({'scope':'bounded_entry_check' if args.mode=='diagnostic' else 'independent18', 'cases':rows}))
-            evaluation_seconds=time.perf_counter()-phase_start;phase_start=time.perf_counter()
-            if args.mode=='diagnostic':
-                saved={'identity':identity,'trainer':trainer.state_dict(),'session_updates':updates}
-                save_state(run,f'diagnostic_session_{updates:06d}',saved)
-                del saved
-            else:
+            def on_chunk(part,ends,trace,remaining):
+                if args.mode!='signal':return
+                applied=[r['execution']['applied_control'] for r in trace if 'execution' in r]
+                commands=np.asarray(applied)
+                valid=part['learning_valid']
+                holds=torch.stack([s.action.hold for s in part['samples']])
+                sample={'update':updates+1,'remaining_macro_steps':remaining,'actual_base_steps':collector.base_steps,
+                    'team_transitions':collector.transitions,'valid_transitions':int(valid.sum()),
+                    'total_transitions':valid.numel(),'reward_mean':float(part['reward'][valid].mean()) if valid.any() else None,
+                    'hold_fraction':float(holds.float().mean()),'episodes':ends,
+                    'maximum_applied_speed':float(np.abs(commands[...,0]).max()) if commands.size else None,
+                    'maximum_applied_yaw_rate':float(np.abs(commands[...,1]).max()) if commands.size else None,
+                    'finite_observations':bool(torch.isfinite(part['obs']).all()),
+                    'finite_log_prob':all(bool(torch.isfinite(s.log_prob).all()) for s in part['samples']),
+                    'poses':collector.env.core.poses,'task':collector.env.last_task,
+                    'wall_seconds':time.perf_counter()-start}
+                json_write(path/'metrics'/f'collection_{updates+1:06d}_{length-remaining:03d}.json',event_data(sample))
+                tensorboard.sync()
+                print(json.dumps({'event':'collection','update':updates+1,'team_transitions':collector.transitions,
+                    'valid_transitions':int(valid.sum()),'remaining_macro_steps':remaining}),flush=True)
+            batch,episodes,records=trainer.collect(length,on_chunk=on_chunk if args.mode=='signal' else None)
+            collect_seconds=time.perf_counter()-phase_start;phase_start=time.perf_counter()
+            result=(trainer.diagnostic_update(batch) if args.mode=='diagnostic' else
+                    trainer.update(batch,readiness=audit,training_authorized=True))
+            update_seconds=time.perf_counter()-phase_start;updates+=1
+            payload={'update':updates,'actual_base_steps':collector.base_steps,'team_transitions':collector.transitions,'episodes':episodes,'learning':result,
+                     'wall_seconds':time.perf_counter()-start,'formal_training':args.mode=='train','signal_learning':args.mode=='signal',
+                     'phase_seconds':{'collect':collect_seconds,'ppo_update':update_seconds}}
+            json_write(path/'metrics'/f'update_{updates:06d}.json',event_data(payload))
+            tensorboard.sync()
+            # Preserve actual original actions/probabilities and execution feedback.
+            phase_start=time.perf_counter()
+            save_state(run,f'interactions_{updates:06d}',{'samples':batch['samples'],'execution':records,
+                       'duration':batch['duration'].cpu(),'learning_valid':batch['learning_valid'].cpu(),
+                       'learning':{k:batch[k].cpu() for k in ('reward','value','next_value','terminated','truncated',
+                           'bootstrap_allowed','terminal_reason')}})
+            interaction_save_seconds=time.perf_counter()-phase_start
+            del batch,episodes,records,payload
+            trainer.release_rollout()
+            gc.collect()
+            evaluation_seconds=0.;state_save_seconds=0.
+            stop_requested=args.updates_this_invocation is not None and updates-initial_updates>=args.updates_this_invocation
+            if args.mode!='signal' and (args.mode=='diagnostic' or updates%args.evaluate_every==0 or collector.transitions>=args.budget or stop_requested):
+                phase_start=time.perf_counter()
+                rows=evaluate(collector,args.config,args.representation,
+                              max_macro_steps=1 if args.mode=='diagnostic' else None,samples=args.samples)
+                json_write(path/'metrics'/f'evaluation_{updates:06d}.json',event_data({'scope':'bounded_entry_check' if args.mode=='diagnostic' else 'independent18', 'cases':rows,'training_base_steps':collector.base_steps}))
+                tensorboard.sync()
+                evaluation_seconds=time.perf_counter()-phase_start;phase_start=time.perf_counter()
+                if args.mode=='diagnostic':
+                    saved={'identity':identity,'trainer':trainer.state_dict(),'session_updates':updates}
+                    save_state(run,f'diagnostic_session_{updates:06d}',saved)
+                    del saved
+                else:
+                    target=path/'checkpoints'/f'update_{updates:06d}.pt'
+                    save_checkpoint(trainer,identity,updates,target,scope='train')
+                state_save_seconds=time.perf_counter()-phase_start
+            if args.mode=='signal':
+                # Save every actual update before continuing. Full18-case evaluation
+                # remains separate from this bounded learning-signal experiment.
+                phase_start=time.perf_counter()
                 target=path/'checkpoints'/f'update_{updates:06d}.pt'
-                save_checkpoint(trainer,identity,updates,target,scope='train')
-            state_save_seconds=time.perf_counter()-phase_start
-        if args.mode=='signal':
-            # Save every actual update before continuing. Full18-case evaluation
-            # remains separate from this bounded learning-signal experiment.
-            phase_start=time.perf_counter()
-            target=path/'checkpoints'/f'update_{updates:06d}.pt'
-            save_checkpoint(trainer,identity,updates,target,scope='signal100k')
-            state_save_seconds=time.perf_counter()-phase_start
-        json_write(path/'metrics'/f'timing_{updates:06d}.json',{'version':'t11_session_timing_v1',
-            'collect_s':collect_seconds,'ppo_update_s':update_seconds,'interaction_save_s':interaction_save_seconds,
-            'evaluation_s':evaluation_seconds,'state_save_s':state_save_seconds,
-            'scope':'host elapsed phases; not GPU kernel time; setup and report writes excluded'})
-        print(json.dumps({'updates':updates,'transitions':collector.transitions,'mode':args.mode}),flush=True)
-        if stop_requested:break
-    if args.env_owners:collector.close()
-    json_write(path/'metrics'/f'session_summary_{updates:06d}.json',{'mode':args.mode,'updates':updates,
-        'actual_team_transitions':collector.transitions,'formal_training_interactions':collector.transitions if args.mode=='train' else 0,
-        'signal_learning_interactions':collector.transitions if args.mode=='signal' else 0,
-        'wall_seconds':time.perf_counter()-start,'formal_training_ready':args.mode=='train',
-        'signal_budget_complete':args.mode=='signal' and 0<=args.budget-collector.transitions<args.num_envs,
-        'unused_budget':None if args.mode=='diagnostic' else args.budget-collector.transitions,
-        'gate_c_passed':False,'training_checkpoint_created':args.mode!='diagnostic'})
+                save_checkpoint(trainer,identity,updates,target,scope='signal100k')
+                state_save_seconds=time.perf_counter()-phase_start
+            json_write(path/'metrics'/f'timing_{updates:06d}.json',{'version':'t11_session_timing_v1',
+                'collect_s':collect_seconds,'ppo_update_s':update_seconds,'interaction_save_s':interaction_save_seconds,
+                'evaluation_s':evaluation_seconds,'state_save_s':state_save_seconds,
+                'scope':'host elapsed phases; not GPU kernel time; setup and report writes excluded'})
+            print(json.dumps({'updates':updates,'transitions':collector.transitions,'mode':args.mode}),flush=True)
+            if stop_requested:break
+        if args.env_owners:collector.close()
+        json_write(path/'metrics'/f'session_summary_{updates:06d}.json',{'mode':args.mode,'updates':updates,'actual_base_steps':collector.base_steps,
+            'actual_team_transitions':collector.transitions,'formal_training_interactions':collector.transitions if args.mode=='train' else 0,
+            'signal_learning_interactions':collector.transitions if args.mode=='signal' else 0,
+            'wall_seconds':time.perf_counter()-start,'formal_training_ready':args.mode=='train',
+            'signal_budget_complete':args.mode=='signal' and 0<=args.budget-collector.transitions<args.num_envs,
+            'unused_budget':None if args.mode=='diagnostic' else args.budget-collector.transitions,
+            'gate_c_passed':False,'training_checkpoint_created':args.mode!='diagnostic'})
+        tensorboard.sync()
 
 
 if __name__=='__main__':main()

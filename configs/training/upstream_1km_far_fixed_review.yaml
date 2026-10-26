@@ -1,0 +1,266 @@
+# Historical review proposal; executable authorized settings are in upstream_1km_far_fixed_v1.yaml.
+# 参数审计提案，不是训练入口配置。当前 runner 不接受此 schema。
+# 用户审定后在现有 T11 入口接通固定分布和完整评估；不得直接按课程 YAML 启动。
+schema_version: upstream_fixed_far_parameter_review_v1
+status: pending_user_parameter_audit
+training_paused: true
+executable_by_current_entry: false
+purpose: far_spawn_to_joint_park_complete_episode
+
+base:
+  experiment: configs/experiment/upstream_1km_curriculum_v1.yaml
+  physical_profile: configs/design/upstream_vehicle_proxy_1km_v1.yaml
+  physical_profile_sha256: c84cac9e5a765bbc64fd325695f922225461e7c65478c82411c964ce44087b83
+  terrain: lunar_scene_pack
+  world_size_m: [1000.0, 1000.0]
+
+lunar_terrain:
+  classification: real_plus_hypothesis
+  source_id: pgda78_npb
+  source_dtm: outputs/runs/lunar_terrain_validation/_suite/data/nasa_lola_v1/npb/dtm.tif
+  source_dtm_sha256: 43e250222a3dd0aeee24b3a8a3fcb2303f5c51ad5655cc41590c95b929b342b8
+  source_height_error: outputs/runs/lunar_terrain_validation/_suite/data/nasa_lola_v1/npb/height_error.tif
+  source_sample_count: outputs/runs/lunar_terrain_validation/_suite/data/nasa_lola_v1/npb/sample_count.tif
+  native_spacing_m: 5.0
+  processing_spacing_m: 0.1
+  metric_baseline_m: 0.8
+  source_half_width: 2
+  # 坐标顺序 [col,row,width,height]；地理划分先于增强，均为同一 NPB 区域内划分。
+  training_windows: [[400, 2400, 200, 200], [400, 2800, 200, 200]]
+  fixed_evaluation_window: [800, 2400, 200, 200]
+  final_unseen_window: [800, 2800, 200, 200]
+  training_enhancement_seeds: [23, 24]
+  fixed_evaluation_enhancement_seed: 104729
+  final_unseen_enhancement_seed: 130363
+  enhancement_config: configs/terrain/nasa_sfd_v2.yaml
+  enhancement_overrides:
+    # 扩大资源上限以容纳 1 km 面积，不降低坑石密度或改变尺寸分布。
+    max_features: 50000
+  raster_risk_slope_scale: 0.6
+  raster_risk_rms_scale_m: 0.05
+  preserve_native_horizontal_and_vertical_scale: true
+  fill_missing_as_flat: false
+  actor_access: legal_local_sensor_and_communication_only
+  scene_manifests: [] # 1 km 包尚未生成；不得回退到 200 m 样例或平地。
+  runtime_status: pending_1km_scene_build_and_bounded_existing_scene_bank
+  spawn_terrain_check: four_vehicle_driving_footprints_only
+  select_births_by_eventual_task_success: false
+
+spawn:
+  distribution: stationary_far_only
+  # 与既有最远组的生成规则一致；逐车实际半径为 R*u_i，即 180–300 m。
+  base_radius_m: [200.0, 300.0]
+  per_vehicle_radius_multiplier: [0.9, 1.0]
+  bearings: rotated_four_quadrants
+  global_rotation_deg: [-180.0, 180.0]
+  heading_noise_about_inward_deg: 180.0
+  random_vehicle_permutation: true
+  center_translation: uniform_with_sensor_and_body_boundary_margin
+  additional_boundary_margin_m: 5.0
+  initial_forward_speed_mps: 0.1
+  initial_yaw_rate_radps: 0.0
+  episode_seconds: 3600.0 # 月面远距审计候选；尚未实测证明充分。
+  resample_on_episode_reset: true
+  curriculum_enabled: false
+  easy_replay_fraction: 0.0
+  promotion_enabled: false
+  stage_budget_base_steps: null
+
+execution:
+  representation: A1
+  planner_adapter: mppi_upstream_v4
+  control_period_s: 0.2
+  replan_period_s: 1.0
+  policy_decision_period_s: 5.0
+  request_validity_s: 1.0
+  simulated_latency_s: 0.5
+  delay_rounding: ceil_latency_over_control_period
+  move_radius_m: [0.0, 4.0]
+  move_bearing_rad: [-3.141592653589793, 3.141592653589793]
+  target_frame: fixed_odometry_at_decision_start
+  gru_updates_per_decision: 1
+  safety: footprint_discrete_cbf_upstream_v1
+  motion_lease: braking_clearance_lease_v3
+  full_communication_radius_m: 300.0
+  sparse_communication_radius_m: 600.0
+  full_communication_period_s: 0.2
+  sparse_communication_period_s: 1.0
+  state_validity_s: 1.0
+  trajectory_validity_s: 0.6
+
+learning:
+  seed: 23
+  initialization: fresh_actor_critic_and_adam
+  inherit_checkpoint: null
+  initial_hold_probability: 0.35
+  initial_continuous_std_scale: 0.25
+  latent_log_std_before_scale: -0.5
+  latent_log_std_clamp: [-5.0, 1.0]
+  discount_reference_period_s: 1.0
+  gamma: 0.997
+  lambda: 0.99
+  # 未自动调奖励/折扣；3600 s 下终端折扣很弱，须与回合时限一起重新审定。
+  discount_review_required: true
+  observation_scaling: log1p
+  value_normalization: running
+  value_std_floor: 0.1
+  rollout_decisions_per_env: 32
+  ppo_epochs: 5
+  minibatches: 1
+  learning_rate: 0.0001
+  lr_scheduler: null
+  adam_betas: [0.9, 0.999]
+  adam_eps: 0.00000001
+  adam_weight_decay: 0.0
+  adam_amsgrad: false
+  ppo_clip: 0.15
+  entropy_weight: 0.0009
+  value_weight: 0.5
+  gradient_clipping: actor_critic
+  gradient_limit_each: 1.0
+  terminal_actor_credit: effective
+  advantage_normalization: valid_effective_team_samples_per_rollout
+  advantage_std_floor: 0.000001
+  critic_loss: mse
+  value_clipping: false
+  target_kl_stop: null
+  reward_clipping: false
+  direction_auxiliary: false
+  parking_exploration_bias: false
+  offline_pretraining: false
+
+reward:
+  gather_scaling: log1p
+  distance_progress: 9.5
+  dispersion_progress: 6.0
+  distance_level: 0.13
+  dispersion_level: 0.04
+  flatness_progress: 2.0
+  flatness_excess: 0.02
+  hold_potential: 12.0
+  energy_weight: 0.003
+  distance_cost: 0.02
+  turn_cost: 0.007
+  terrain_weight: 0.1
+  roughness_cost: 0.15
+  traversability_cost: 0.15
+  speed_loss_cost: 0.14
+  height_change_cost: 0.09
+  collision_cost: 100.0
+  clearance_cost: 2.4
+  success_bonus: 130.0
+  failure_penalty: 55.0
+  timeout_penalty: 80.0
+  coefficient_time_unit: environment_control_step_0p2s
+  terminal_successor_potential: 0.0
+  terminal_bootstrap: 0.0
+  nonterminal_rollout_cut_bootstrap: true
+
+network:
+  actor_shared_between_rovers: true
+  actor_observation_dim: 411
+  critic_state_dim: 991
+  terrain_channels: 2
+  terrain_grid_shapes: [[7, 9], [3, 7], [4, 7]]
+  terrain_conv_channels: [16, 32]
+  terrain_conv_kernel: 3
+  terrain_conv_padding: 1
+  terrain_pool_shape: [3, 3]
+  terrain_projection: [864, 64]
+  ego_projection: [15, 32]
+  neighbors_projection: [51, 48]
+  aggregation_projection: [5, 16]
+  feedback_projection: [116, 64]
+  fusion_projection: [224, 128]
+  gru_input_and_hidden: [128, 128]
+  move_head: [128, 2]
+  hold_head: [128, 1]
+  output_head_orthogonal_gain: 0.01
+  critic_layers: [991, 256, 128, 1]
+  hidden_activation: ELU
+  dropout: false
+  layer_norm: false
+  batch_norm: false
+
+mppi:
+  samples: 512
+  iterations: 2
+  device: cuda
+  dtype: float32
+  horizon_s: 8.0
+  horizon_steps: 40
+  actuator_and_review_precision: float64
+  noise_v: 0.375
+  noise_w: 0.15
+  temperature: 0.5
+  goal_scale: 2.0
+  terrain_scale: 0.5
+  neighbor_scale: 0.5
+  smooth_scale: 0.5
+  query_chunk: 256
+  query_memory_bytes: 67108864
+  rollout_chunk: 4096
+  candidate_limit: 16
+  deadline_s: null
+
+runtime:
+  trainer_backend: skrl
+  objective: duration_gae_shared_team_recurrent_v1
+  env_owners: 4
+  envs_per_owner: 4
+  rovers_per_env: 4
+  owner_cpu_workers: 2
+  torch_threads: 1
+  omp_threads: 1
+  mkl_threads: 1
+  openblas_threads: 1
+  policy_device: cpu
+  environment_device: cpu
+  centralized_gpu_service: false
+  owner_seeds: [23, 27, 31, 35]
+  # 新预算提案，必须由用户本轮审定；不是恢复历史 2M 授权。
+  training_budget_base_steps: 2000000
+  budget_unit: actual_environment_control_steps_excluding_rover_multiplier
+  checkpoint_every_updates: 5
+  checkpoint_on_initial_first_two_eval_stop: true
+  stop_on_low_success: false
+  stop_on_invalid_learning_data: true
+  automatic_retry: false
+  resume: same_run_complete_checkpoint_and_semantics_only
+
+evaluation:
+  full_episode: true
+  episode_seconds: 3600.0
+  spawn_distribution: same_far_distribution_as_training
+  modes: [sample, mean]
+  fixed_cases_per_mode: 4
+  fixed_environment_seed: 104729
+  fixed_policy_seed: 104759
+  checkpoints_base_steps: [0, 500000, 1000000, 1500000, 2000000]
+  evaluate_at_completed_update_boundary: true
+  deduplicate_final_boundary: true
+  final_additional_unseen_cases_per_mode: 4
+  final_unseen_environment_seed: 130363
+  final_unseen_policy_seed: 130367
+  # 原五个固定检查点加最终留出组的最坏用量为 864,000 步；新额度仅为待审提案。
+  max_base_steps: 900000
+  final_reservation_base_steps: 288000
+  primary_metric: far_spawn_full_task_success_fraction
+  screening_min_successes_per_fixed_panel: 3
+  screening_consecutive_checkpoints: 3
+  screening_min_successes_final_unseen: 3
+  diagnostics: [time_to_success, terminal_reason, dmax, dispersion, hold_probability, move_persistence, target_jumps, reward_components, raw_value_error, legal_neighbor_coverage]
+  enter_ppo: false
+
+tensorboard:
+  required: true
+  live_service_required: true
+  host: 127.0.0.1
+  port: 6006
+  event_subdirectory: tensorboard
+  x_axis: actual_training_base_steps
+  evaluation_steps_separately_accounted: true
+  sync_at: [collection_chunk, ppo_update, evaluation, stop]
+  flush_seconds: 10
+  # 新正式 run 的短名映射待接线；不改变历史短训曲线的定义。
+  pinned_tags: [Main/SR_S, Main/SR_M, Main/Train_SR, Main/Return, Main/Value_EV, Main/KL, Main/Clip, Main/Entropy, Main/HOLD, Main/Dmax_S]

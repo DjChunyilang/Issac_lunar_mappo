@@ -378,6 +378,24 @@ class UpstreamRuntimeConfig:
     leader_execution_version: str = "leader_square_upstream_v1"
     training_session_version: str = ""
     motion_lease_version: str = "clearance_horizon_lease_v2"
+    hazard_response_version: str = "strict_footprint_v1"
+    obstacle_input: object = None
+
+    @property
+    def terrain_channels(self):
+        return 3 if self.obstacle_input is not None else 2
+
+    @property
+    def actor_dim(self):
+        return 523 if self.obstacle_input is not None else 411
+
+    @property
+    def critic_dim(self):
+        return 1439 if self.obstacle_input is not None else 991
+
+    @property
+    def predictive_footprint_checks(self):
+        return self.hazard_response_version == "strict_footprint_v1"
 
     @property
     def learning_runtime(self):
@@ -446,6 +464,15 @@ class UpstreamRuntimeConfig:
             metadata["training_session_version"] = self.training_session_version
         if self.motion_lease_version != "clearance_horizon_lease_v2":
             metadata["motion_lease_version"] = self.motion_lease_version
+        if not self.predictive_footprint_checks:
+            metadata['hazard_response_version'] = self.hazard_response_version
+            metadata['solver_cache_key'] = digest({'base': metadata['solver_cache_key'],
+                'hazard_response': self.hazard_response_version})
+        if self.obstacle_input is not None:
+            metadata['obstacle_input'] = self.obstacle_input.metadata
+            metadata['mppi_cost_version'] = 'upstream_grid_obstacle_soft_cost_v1'
+            metadata['solver_cache_key'] = digest({'base': metadata['solver_cache_key'],
+                'obstacle_input': self.obstacle_input.fingerprint})
         return metadata
 
     def validate_state_identity(self, state):
@@ -470,7 +497,7 @@ def parse_upstream_experiment(data, root):
     allowed = {"schema_version", "design_profile", "design_profile_sha256", "planner_adapter",
                "planner_device", "mppi_samples", "mppi_iterations", "clock_mode", "simulated_latency_s",
                "execution_review_version", "terrain_query_version", "planner_execution_version", "timing_version",
-               "review_acceleration_version", "observation_execution_version", "environment_execution_version", "execution_safety_version", "mppi_parameters", "leader_execution_version", "training_session_version", "motion_lease_version"}
+               "review_acceleration_version", "observation_execution_version", "environment_execution_version", "execution_safety_version", "mppi_parameters", "leader_execution_version", "training_session_version", "motion_lease_version", "hazard_response_version", "obstacle_input_config"}
     if set(u) - allowed or set(e) - {"name", "seed", "num_envs", "device", "episode_length_s", "training_paused"}:
         raise ValueError("Unsupported upstream configuration keys")
     path = (Path(root) / u.get("design_profile", "")).resolve()
@@ -489,11 +516,17 @@ def parse_upstream_experiment(data, root):
     leader=u.get("leader_execution_version","leader_square_upstream_v1")
     if leader not in {"leader_square_upstream_v1","leader_square_visibility_upstream_v2","leader_square_visibility_upstream_v3","leader_square_visibility_upstream_v4"}:raise ValueError("Unsupported leader execution version")
     parameters=u.get('mppi_parameters',{})
-    if (not isinstance(parameters,dict) or set(parameters)-{'goal_scale','terrain_scale','neighbor_scale','smooth_scale','noise_v','noise_w','temperature'}
+    if (not isinstance(parameters,dict) or set(parameters)-{'goal_scale','terrain_scale','neighbor_scale','smooth_scale','noise_v','noise_w','temperature','footprint_margin_m','footprint_cover_spacing_m','large_crater_query'}
             or (parameters and adapter not in {'mppi_upstream_v3','mppi_upstream_v4'})):raise ValueError('Cost calibration requires explicit MPPI v3/v4 parameters')
-    for value in parameters.values():
-        if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or value<=0:
-            raise ValueError('MPPI calibration parameters must be positive finite scalars')
+    for name,value in parameters.items():
+        if name=='large_crater_query':
+            if value!='observed_grid_sat_v1' or adapter!='mppi_upstream_v4' or not u.get('obstacle_input_config'):
+                raise ValueError('Observed-grid SAT requires v4 local obstacle grid input')
+            continue
+        if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or value<0 or (value==0 and name!='footprint_margin_m'):
+            raise ValueError('MPPI calibration parameters must be finite positive scalars (footprint margin may be zero)')
+    if any(name in parameters for name in ('footprint_margin_m','footprint_cover_spacing_m')) and (adapter!='mppi_upstream_v4' or not u.get('obstacle_input_config')):
+        raise ValueError('MPPI footprint tuning requires v4 local obstacle grid input')
     device = u.get("planner_device")
     if device not in {"cpu", "cuda"} or e.get("device") != "cpu":
         raise ValueError("Upstream host must be CPU; planner device must be explicit")
@@ -524,28 +557,42 @@ def parse_upstream_experiment(data, root):
     if timing == "actual_control_history_v1" and (execution != "upstream_planning_v1" or review != "footprint_review_v2"):
         raise ValueError("Actual control history requires the strict planning execution contract")
     acceleration=u.get("review_acceleration_version","disabled")
-    if acceleration not in {"disabled","pose_scope_cache_v1","flat_grid_pose_cache_v2","flat_frame_pose_cache_v3"}:
+    if acceleration not in {"disabled","pose_scope_cache_v1","flat_grid_pose_cache_v2","flat_frame_pose_cache_v3","cuda_sweep_pose_v1"}:
         raise ValueError("Unsupported footprint review acceleration version")
     if acceleration != "disabled" and review != "footprint_review_v2":
         raise ValueError("Exact pose cache requires strict footprint review v2")
     observation=u.get("observation_execution_version","not_connected")
-    if observation not in {"not_connected","dense_actor_clock_upstream_v1"}:
+    if observation not in {"not_connected","dense_actor_clock_upstream_v1","obstacle_ground_known_actor_v1"}:
         raise ValueError("Unsupported upstream observation execution version")
     if observation != "not_connected" and timing != "actual_control_history_v1":
         raise ValueError("Dense actor observation requires explicit actual control history")
     environment=u.get("environment_execution_version","not_connected")
     if environment not in {"not_connected","actual_loop_upstream_v1","actual_loop_upstream_v2"}:raise ValueError("Unsupported upstream environment execution version")
-    if environment != "not_connected" and observation != "dense_actor_clock_upstream_v1":
+    if environment != "not_connected" and observation not in {"dense_actor_clock_upstream_v1","obstacle_ground_known_actor_v1"}:
         raise ValueError("Actual environment requires explicit dense observation")
     safety=u.get('execution_safety_version','projection_disabled')
+    hazard=u.get('hazard_response_version','strict_footprint_v1')
+    if hazard not in {'strict_footprint_v1','cost_reward_only_v1'}:
+        raise ValueError('Unsupported hazard response version')
+    if hazard=='cost_reward_only_v1' and (safety!='projection_disabled' or adapter!='mppi_upstream_v4'):
+        raise ValueError('Cost/reward-only experiment requires MPPI v4 and disabled projection')
     if safety not in {'projection_disabled','footprint_discrete_cbf_upstream_v1'}:raise ValueError('Unsupported upstream safety version')
     if safety!='projection_disabled' and environment=='not_connected':raise ValueError('Safety requires the actual environment')
     lease=u.get('motion_lease_version','clearance_horizon_lease_v2')
     if lease not in {'clearance_horizon_lease_v2','braking_clearance_lease_v3'}:raise ValueError('Unsupported motion lease policy')
+    obstacle_input = None
+    if 'obstacle_input_config' in u:
+        from .upstream_obstacle_spec import ObstacleInputSpec
+        obstacle_input = ObstacleInputSpec.load(Path(root)/u['obstacle_input_config'], root, spec)
+        if observation != 'obstacle_ground_known_actor_v1' or hazard != 'cost_reward_only_v1':
+            raise ValueError('Incremental obstacle input requires its observation and soft hazard contracts')
+    elif observation == 'obstacle_ground_known_actor_v1':
+        raise ValueError('Obstacle observations require an explicit input configuration')
     return UpstreamRuntimeConfig(spec, SimulationSettings(num_envs, "cpu", duration, spec.grid.dt),
         seed, adapter, device, samples, iterations, u["clock_mode"], latency, canonical(data),
         execution_review_version=review, terrain_query_version=query,
         planner_execution_version=execution, timing_version=timing, review_acceleration_version=acceleration,
         observation_execution_version=observation,environment_execution_version=environment,execution_safety_version=safety,
         mppi_parameter_overrides=canonical(parameters),leader_execution_version=leader,
-        training_paused=paused,training_session_version=session,motion_lease_version=lease)
+        training_paused=paused,training_session_version=session,motion_lease_version=lease,hazard_response_version=hazard,
+        obstacle_input=obstacle_input)

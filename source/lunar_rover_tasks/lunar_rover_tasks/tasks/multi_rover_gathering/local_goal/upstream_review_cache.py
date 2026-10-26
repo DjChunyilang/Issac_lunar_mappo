@@ -20,6 +20,13 @@ class PoseCachedReviewer(FootprintReviewer):
         super().__init__(spec,**kwargs)
         self._scope=ContextVar(f'pose_review_{id(self)}',default=None)
 
+    def __deepcopy__(self,memo):
+        # Reviewer caches are disposable; ContextVar cannot be pickled. A
+        # restored spawn sampler needs a fresh reviewer with the same contract.
+        result=type(self)(self.spec,version=self.version)
+        memo[id(self)]=result
+        return result
+
     def pose(self,pose,terrain,*,parking=False):
         scope=self._scope.get()
         array=np.asarray(pose,dtype=float)

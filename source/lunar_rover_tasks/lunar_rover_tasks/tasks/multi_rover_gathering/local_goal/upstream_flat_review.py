@@ -1,6 +1,8 @@
 """Exact regular-flat local support witness; all dynamic gates remain active."""
+import math
 import numpy as np
 
+from .contracts import wrap
 from .upstream_footprint import FootprintTerrain,FootprintReviewer,FootprintReport,QUERY_V2
 from .upstream_review_cache import PoseCachedReviewer
 from .upstream_execution import control_error,midpoint_numpy
@@ -135,9 +137,10 @@ class FlatGridPoseReviewer(PoseCachedReviewer):
     def _stationary_trajectory(self,trajectory,previous,terrain,neighbors,workspace,parking_end):
         """Batch every original future sweep sample of an exactly stopped path.
 
-        Static geometry is proved once; growing neighbor uncertainty is still
-        checked at every original time. Unknown terrain, motion, numerical
-        boundaries and unsupported forecasts use the general reviewer.
+        The actual static footprint is proved once, including nonflat terrain;
+        growing neighbor uncertainty is checked at every original time.
+        Unknown terrain, motion, numerical boundaries and unsupported forecasts
+        use the general reviewer.
         """
         if (self.version!='footprint_review_v2' or np.any(trajectory.controls)
                 or np.any(trajectory.velocities)
@@ -146,15 +149,9 @@ class FlatGridPoseReviewer(PoseCachedReviewer):
         pose=trajectory.states[0]
         expected,_=midpoint_numpy(pose,trajectory.controls[0],self.spec)
         if not np.array_equal(expected,pose):return None
-        self._ensure_witness(terrain)
-        if self._witness is None:return None
-        origin,basis,bounds,reports=self._witness
-        if not reports[False].passed:return None
-        c,s=np.cos(pose[2]),np.sin(pose[2])
-        local=(self._corners@np.array([[c,s],[-s,c]])+pose[:2]-origin)@basis
-        if not ((local>=bounds[0]+1e-9).all() and (local<=bounds[1]-1e-9).all()):return None
         # Match the center-support/dynamics check before the first swept pose.
         if not terrain.lookup(pose[:2])[1][0]:return None
+        if not self.pose(pose,terrain).passed:return None
         radius=self.spec.vehicle.effective_radius
         count=len(trajectory.controls);relative=np.zeros(count)
         for peer in neighbors:
@@ -235,7 +232,16 @@ class FlatGridPoseReviewer(PoseCachedReviewer):
             corners=self._corners@np.array([[c,s],[-s,c]])+pose[:2]
             local=(corners-origin)@basis
             if (local>=bounds[0]).all() and (local<=bounds[1]).all():return reports[bool(parking)]
-        return super().pose(pose,terrain,parking=parking)
+        # This snapshot owns immutable geometry and features. Reuse only the
+        # static footprint report across candidate trajectories; time-dependent
+        # neighbors, dynamics, workspace and controls are still checked above.
+        cache=terrain._review_witnesses.setdefault(('exact_pose_reports',self._fingerprint,self.version),{})
+        key=(pose.tobytes(),bool(parking))
+        if key not in cache:
+            report=super().pose(pose,terrain,parking=parking)
+            if len(cache)>=4096:cache.pop(next(iter(cache)),None)
+            cache[key]=report
+        return cache[key]
 
 
 class FlatFramePoseReviewer(FlatGridPoseReviewer):
@@ -257,7 +263,162 @@ class FlatFramePoseReviewer(FlatGridPoseReviewer):
         return self._grid_witness(terrain,xy)
 
 
+class CudaSweepReviewer(FlatFramePoseReviewer):
+    """Batch the original nonflat swept footprints on the existing local index.
+
+    GPU arithmetic proves only strictly interior passes. Failed/near-threshold
+    poses retain the reference report, including first-failure ordering. Small
+    control/dynamics checks and standalone parking reports remain authoritative
+    CPU operations. No global map or unobserved sample enters this path.
+    """
+    acceleration_version='cuda_sweep_pose_v1'
+    pose_chunk=128
+    batch_center_lookup=True
+
+    def __init__(self,spec,**kwargs):
+        super().__init__(spec,**kwargs)
+        import torch
+        if not torch.cuda.is_available():raise RuntimeError('CUDA footprint review requires CUDA')
+        self._cuda_constants=None
+
+    def _flat_trajectory(self,trajectory,previous,terrain,neighbors,workspace,require_stop,parking_end):
+        result=super()._flat_trajectory(trajectory,previous,terrain,neighbors,workspace,require_stop,parking_end)
+        if result is not None:return result
+        if self.version!='footprint_review_v2' or terrain.query_version!=QUERY_V2:return None
+        # Warm only static proofs; the reference loop below still checks every
+        # control, state, workspace and peer in its original failure order.
+        # Already invalid starting footprints should not schedule a full batch.
+        if not self.pose(trajectory.states[0],terrain).passed:return None
+        if any(trajectory.times[0]<p.times[0]-1e-9 or trajectory.times[-1]>p.times[-1]+1e-9
+               for p in neighbors):return None
+        sweeps=[];size=0
+        for i in range(len(trajectory.controls)):
+            delta=trajectory.states[i+1]-trajectory.states[i];delta[2]=wrap(delta[2])
+            displacement=np.linalg.norm(delta[:2])+self.sweep_radius*abs(delta[2])
+            relative=0.
+            for peer in neighbors:
+                p0,r0=peer.at(trajectory.times[i]);p1,r1=peer.at(trajectory.times[i+1])
+                relative=max(relative,np.linalg.norm(p1-p0)+abs(r1-r0))
+            intervals=max(8,math.ceil(displacement/self.spec.vehicle.sweep_spacing),
+                          math.ceil((displacement+relative)/self.spec.vehicle.sweep_spacing))
+            # Bound speculative work for unusually dense peer sweeps. The
+            # remainder uses the existing segment path, with no omitted poses.
+            if size+intervals+1>512:break
+            alphas=np.linspace(0.,1.,intervals+1)
+            sweeps.append(trajectory.states[i]+alphas[:,None]*delta);size+=intervals+1
+        if sweeps:self._strict_static_passes(np.concatenate(sweeps),terrain)
+        return None
+
+    def _strict_static_passes(self,poses,terrain):
+        # Candidate trajectories share exact poses and long stationary tails.
+        # Preserve that reuse before scheduling device work, not after it.
+        key=('cuda_static_passes_v1',self._fingerprint,self.version)
+        cache=terrain._review_witnesses.setdefault(key,{})
+        keys=[p.tobytes() for p in poses]
+        missing={k:p for k,p in zip(keys,poses) if k not in cache}
+        values={k:cache[k] for k in keys if k in cache}
+        if missing:
+            points=np.stack(list(missing.values()))
+            # A one-pose GPU launch loses to the existing CPU pose cache.
+            safe=(np.array([self.pose(p,terrain).passed for p in points]) if len(points)<8
+                  else self._uncached_static_passes(points,terrain))
+            values.update(zip(missing,safe))
+            for k,value in zip(missing,safe):
+                if len(cache)>=4096:cache.pop(next(iter(cache)),None)
+                cache[k]=bool(value)
+        return np.array([values[k] for k in keys],dtype=bool)
+
+    def _uncached_static_passes(self,poses,terrain):
+        import torch
+        from .upstream_tensor_views import LocalTerrainBatch
+        key=('cuda_sweep_index_v1',self._fingerprint)
+        if key not in terrain._review_witnesses:
+            # CPU tie correction needs the immutable arrays/tree, not the
+            # owning snapshot's caches. Otherwise terrain -> index -> terrain
+            # retains device allocations until Python's cyclic GC happens.
+            from copy import copy
+            query_view=copy(terrain)
+            query_view._review_witnesses={}
+            terrain._review_witnesses[key]=LocalTerrainBatch([query_view],device='cuda')
+        index=terrain._review_witnesses[key]
+        n=len(self.contact_points)
+        if self._cuda_constants is None:
+            design=np.c_[self.contact_points,np.ones(n)]
+            inverse=np.linalg.pinv(design)
+            body=np.c_[self.body_points,np.ones(len(self.body_points))]
+            self._cuda_constants=tuple(torch.as_tensor(x,device='cuda',dtype=torch.float64)
+                                       for x in (inverse,design,body))
+        inverse,design,body=self._cuda_constants
+        results=[]
+        for start in range(0,len(poses),self.pose_chunk):
+            group=poses[start:start+self.pose_chunk]
+            c,s=np.cos(group[:,2]),np.sin(group[:,2])
+            rotation=np.stack((c,s,-s,c),axis=-1).reshape(-1,2,2)
+            # Same NumPy transform as the CPU oracle; moving this tiny input
+            # transform would perturb nearest ties before the shared query.
+            xy=self.points@rotation+group[:,None,:2]
+            features,known=index.lookup(torch.as_tensor(xy[None],device='cuda'))
+            f=features[0];known=known[0]
+            h=f[:,:n,0]
+            plane=h@inverse.T
+            residual=h-plane@design.T
+            body_residual=(f[:,n:,0]-plane@body.T).reshape(-1,*self.body_shape)
+            rms=residual.square().mean(-1).sqrt()
+            slope=torch.maximum(plane[:,:2].norm(dim=-1),f[:,:,1:3].norm(dim=-1).amax(-1))
+            step=torch.maximum(torch.diff(body_residual,dim=1).abs().amax((1,2)),
+                               torch.diff(body_residual,dim=2).abs().amax((1,2)))
+            step=torch.maximum(step,residual.amax(-1)-residual.amin(-1))
+            clearance=self.spec.vehicle.ground_clearance-body_residual.amax((1,2))
+            t=self.spec.terrain
+            # The reference uses +1e-8 gates. A 1e-7 interior guard also sends
+            # floating-point boundary cases to its original least-squares path.
+            safe=(known.all(-1)&(f[:,:,4]>=t.minimum_traversability).all(-1)
+                  &(slope<t.driving_slope-1e-7)&(rms<t.roughness_rms-1e-7)
+                  &(clearance>1e-7)&(step<t.step_height-1e-7))
+            results.append(safe)
+        return torch.cat(results).cpu().numpy()
+
+    def _clear_sweep(self,start,delta,alphas,terrain,workspace,neighbors,time,relative_bound,intervals):
+        # Keep the cheaper exact-flat proof when it applies.
+        result=super()._clear_sweep(start,delta,alphas,terrain,workspace,neighbors,time,relative_bound,intervals)
+        if result is not False:return result
+        if (self.version!='footprint_review_v2' or type(terrain) is not FootprintTerrain
+                or terrain.profile_fingerprint!=self._fingerprint or terrain.query_version!=QUERY_V2):return False
+        poses=start+alphas[:,None]*delta
+        first_workspace=first_neighbor=len(poses)
+        if workspace is not None:
+            radius=self.spec.vehicle.effective_radius
+            gaps=np.concatenate((poses[:,:2]-radius-workspace[0],workspace[1]-poses[:,:2]-radius),axis=-1)
+            if (abs(gaps)<1e-9).any():return False
+            failed=np.flatnonzero((gaps<0.).any(-1))
+            if len(failed):first_workspace=int(failed[0])
+        times=time+alphas*self.spec.grid.dt
+        allowance=(np.linalg.norm(delta[:2])+relative_bound)/(2*intervals)
+        for peer in neighbors:
+            if times[0]<peer.times[0]-1e-9 or times[-1]>peer.times[-1]+1e-9:return False
+            xy=np.column_stack([np.interp(times,peer.times,peer.positions[:,j]) for j in range(2)])
+            radii=np.interp(times,peer.times,peer.radii)
+            gaps=np.linalg.norm(poses[:,:2]-xy,axis=-1)-(radii+allowance-1e-8)
+            if (abs(gaps)<1e-9).any():return False
+            failed=np.flatnonzero(gaps<0.)
+            if len(failed):first_neighbor=min(first_neighbor,int(failed[0]))
+        first=min(first_workspace,first_neighbor)
+        # No later static report can precede an already known dynamic failure.
+        relevant=poses[:min(first+1,len(poses))]
+        safe=self._strict_static_passes(relevant,terrain)
+        for i in np.flatnonzero(~safe):
+            report=self.pose(poses[i],terrain)
+            if not report.passed:
+                from dataclasses import replace
+                return replace(report,checked_poses=int(i)+1)
+        if first<len(poses):
+            reason='workspace_clearance' if first_workspace<=first_neighbor else 'neighbor_swept_clearance'
+            return FootprintReport(False,reason,checked_poses=first+1)
+        return True
+
+
 def create_reviewer(spec,acceleration='pose_scope_cache_v1'):
+    if acceleration=='cuda_sweep_pose_v1':return CudaSweepReviewer(spec)
     if acceleration==ACCELERATION_VERSION:return FlatGridPoseReviewer(spec)
     if acceleration=='flat_frame_pose_cache_v3':return FlatFramePoseReviewer(spec)
     if acceleration=='pose_scope_cache_v1':return PoseCachedReviewer(spec)

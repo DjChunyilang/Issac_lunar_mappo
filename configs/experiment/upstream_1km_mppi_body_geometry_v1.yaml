@@ -1,0 +1,12 @@
+# MPPI-only geometry calibration. Historical crater config stays reproducible.
+extends: upstream_1km_crater_classes_v1.yaml
+experiment:
+  name: upstream_1km_mppi_body_geometry_v1
+upstream_scale:
+  mppi_iterations: 4
+  mppi_parameters:
+    footprint_margin_m: 0.0
+    footprint_cover_spacing_m: 0.2
+    goal_scale: 4.0
+    noise_v: 0.2
+    noise_w: 0.1
